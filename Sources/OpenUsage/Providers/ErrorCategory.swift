@@ -226,6 +226,27 @@ extension OpenRouterUsageError: CategorizedError {
     }
 }
 
+extension MiniMaxAuthError: CategorizedError {
+    var errorCategory: ErrorCategory {
+        switch self {
+        case .missingKey: .notLoggedIn
+        case .invalidKey: .authInvalid
+        case .saveFailed, .deleteFailed: .other
+        }
+    }
+}
+
+extension MiniMaxUsageError: CategorizedError {
+    var errorCategory: ErrorCategory {
+        switch self {
+        case .connectionFailed: .network
+        case .invalidResponse: .decoding
+        case .requestFailed(let status): ErrorCategory.http(status)
+        case .noSubscription: .notAvailable
+        }
+    }
+}
+
 extension ZAIAuthError: CategorizedError {
     var errorCategory: ErrorCategory {
         switch self {

@@ -47,6 +47,7 @@ final class WidgetDataStore {
     private static let meterStyleKey = "meterStyle"
     private static let resetDisplayModeKey = "resetDisplayMode"
     private static let alwaysShowPacingKey = "alwaysShowPacing"
+    private static let showsMenuBarResetTimeKey = "showsMenuBarResetTime"
     /// How long a provider that just failed is skipped before the loop will probe it again. A failed
     /// refresh isn't cached, so — unlike a success, which the snapshot cache gates for an interval —
     /// nothing else stops the loop from re-probing a broken provider (logged-out Devin/Grok especially)
@@ -121,6 +122,10 @@ final class WidgetDataStore {
         didSet { defaults.set(alwaysShowPacing, forKey: Self.alwaysShowPacingKey) }
     }
 
+    var showsMenuBarResetTime: Bool {
+        didSet { defaults.set(showsMenuBarResetTime, forKey: Self.showsMenuBarResetTimeKey) }
+    }
+
     /// Restores the Usage Display preferences (meter style, reset-time format, always-show-pacing) to
     /// their defaults — the Settings "Reset All Settings" path. Cached usage snapshots are data, not
     /// settings, and stay untouched.
@@ -128,6 +133,7 @@ final class WidgetDataStore {
         meterStyle = .remaining
         resetDisplayMode = .relative
         alwaysShowPacing = false
+        showsMenuBarResetTime = false
     }
 
     init(
@@ -166,6 +172,7 @@ final class WidgetDataStore {
         self.meterStyle = defaults.enumValue(forKey: Self.meterStyleKey, default: .remaining)
         self.resetDisplayMode = defaults.enumValue(forKey: Self.resetDisplayModeKey, default: .relative)
         self.alwaysShowPacing = defaults.bool(forKey: Self.alwaysShowPacingKey)
+        self.showsMenuBarResetTime = defaults.bool(forKey: Self.showsMenuBarResetTimeKey)
         // Stale-while-revalidate: load whatever was cached (expired included) so the menu bar and
         // dashboard show last-known values immediately at launch instead of "—"; the refresh loop
         // replaces them as soon as fresh data lands.
@@ -542,6 +549,7 @@ final class WidgetDataStore {
         result.displayMode = meterStyle
         result.resetDisplayMode = resetDisplayMode
         result.alwaysShowPacing = alwaysShowPacing
+        result.showsMenuBarResetTime = showsMenuBarResetTime
         return result
     }
 
@@ -601,6 +609,7 @@ final class WidgetDataStore {
             // Descriptor opt-in (session-window meters read "Not started" when unused); the fresh
             // `.progress` result doesn't start from the sample, so carry the signal explicitly.
             result.sessionStartSignal = descriptor.sample.sessionStartSignal
+            result.displaySize = descriptor.sample.displaySize
             return result
         case .text:
             // Text lines carry provider notices for the local API; no dashboard descriptor consumes
@@ -636,6 +645,7 @@ final class WidgetDataStore {
             var data = descriptor.sample
             data.valueTextOverride = text
             data.subtitleOverride = subtitle
+            data.displaySize = descriptor.sample.displaySize
             return data
         case .chart(_, let points, let note):
             // Presentation (title, icon) from the sample; the live per-day points from the line. No

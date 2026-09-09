@@ -29,6 +29,7 @@ Either way, the app updates itself in place via signed, notarized [Sparkle](docs
 - **[Cursor](docs/providers/cursor.md)** — credits, total usage, Grok Bot, Cursor Models, Other Models, requests, on-demand, per-day spend
 - **[Devin](docs/providers/devin.md)** — weekly and daily quota, extra usage balance
 - **[Grok](docs/providers/grok.md)** — weekly shared pool, pay-as-you-go, local daily spend
+- **[MiniMax (中国版)](docs/providers/minimax.md)** — Token Plan session and weekly quotas (platform.minimaxi.com)
 - **[Ollama](docs/providers/ollama.md)** — Ollama Cloud session and weekly limits, recent activity spend
 - **[OpenCode](docs/providers/opencode.md)** — Go session/weekly/monthly caps, Zen spend, local daily spend
 - **[OpenRouter](docs/providers/openrouter.md)** — credit balance, daily/weekly/monthly spend (API key)

@@ -29,6 +29,9 @@ struct WidgetData: Hashable {
     /// the blue/healthy row also shows the even-pace tick and its projection copy. Yellow and red rows
     /// always show the tick when a reset window exists; this toggle only adds it on blue.
     var alwaysShowPacing: Bool = false
+    /// Whether to show the MiniMax session reset countdown in the menu bar. Stamped by `WidgetDataStore`
+    /// when the global toggle is on and the metric is MiniMax session.
+    var showsMenuBarResetTime: Bool = false
     var resetsAt: Date?
     /// Zero or more future expiry instants surfaced in the row's hover tooltip (Codex rate-limit-reset
     /// credits — one entry per still-available credit). Empty for every other row. Kept as raw `Date`s so
@@ -83,6 +86,10 @@ struct WidgetData: Hashable {
     /// and carried through `WidgetDataStore.resolve`, so the treatment is a descriptor opt-in rather
     /// than a hardcoded widget-ID list in the model. `nil` for every other row.
     var sessionStartSignal: SessionStartSignal?
+    /// Optional override for the menu-bar strip's font size. When `nil`, the strip uses its default
+    /// (12pt bold for a single metric, 9pt semibold for multiple). Set to `.small` on a metric that
+    /// should appear visually subordinate (e.g. a reset countdown under a primary percentage).
+    var displaySize: MenuBarDisplaySize?
 
     /// How a session-window meter tells a not-yet-started window from an in-flight one.
     enum SessionStartSignal: Hashable {

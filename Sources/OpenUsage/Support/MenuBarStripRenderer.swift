@@ -183,10 +183,19 @@ private struct MenuBarTextStrip: View {
             VStack(alignment: .trailing, spacing: -2) {
                 ForEach(metrics, id: \.id) { metric in
                     Text(metric.value)
+                        .font(font(for: metric.displaySize))
                 }
             }
-            .font(.system(size: 9, weight: .semibold))
             .fixedSize()
+        }
+    }
+
+    private func font(for displaySize: MenuBarDisplaySize?) -> Font {
+        switch displaySize {
+        case .small:
+            return .system(size: 7, weight: .regular)
+        case .standard, .none:
+            return .system(size: 11, weight: .bold)
         }
     }
 

@@ -11,8 +11,9 @@ struct MenuBarContent: Equatable {
         let label: String       // metric label, e.g. "Session" (shown when a provider has two metrics)
         let value: String       // tray display: a "%" for bounded metrics, the raw value (e.g. "$5.23") for unbounded, or the no-data marker
         let fraction: Double     // 0...1 fill, meaningful for bounded metrics (drives the bars)
-        let isBounded: Bool      // has a limit → has a fill, so it can render as a bar
+        let isBounded: Bool     // has a limit → has a fill, so it can render as a bar
         let hasData: Bool
+        let displaySize: MenuBarDisplaySize?  // font-size override for the menu-bar strip
     }
 
     /// A provider and its pinned metrics, in order. One segment of the Text strip.
@@ -60,7 +61,25 @@ enum MenuBarContentBuilder {
     /// membership; the strip shows whatever subset is real right now.
     static func build(groups: [ProviderMetrics], data: (WidgetDescriptor) -> WidgetData) -> MenuBarContent {
         let resolvedGroups = groups.compactMap { group -> MenuBarContent.Group? in
-            let metrics = group.metrics.map { resolve($0, data($0)) }.filter(\.hasData)
+            // Resolve all metrics with their WidgetData so we can inspect flags before resolving to Metric.
+            typealias Resolved = (descriptor: WidgetDescriptor, widgetData: WidgetData, metric: MenuBarContent.Metric)
+            let resolved: [Resolved] = group.metrics.map { descriptor in
+                let widgetData = data(descriptor)
+                return (descriptor, widgetData, resolve(descriptor, widgetData))
+            }.filter { $0.metric.hasData }
+
+            var metrics = resolved.map(\.metric)
+
+            // Inject sessionReset for MiniMax when the toggle is on and session is pinned.
+            if group.provider.id == "minimax",
+               resolved.contains(where: { $0.descriptor.metricLabel == "Session" && $0.widgetData.showsMenuBarResetTime }),
+               let resetDesc = group.metrics.first(where: { $0.id == "minimax.sessionReset" }) {
+                let resetData = data(resetDesc)
+                if resetData.hasData {
+                    metrics.append(resolve(resetDesc, resetData))
+                }
+            }
+
             guard !metrics.isEmpty else { return nil }
             return MenuBarContent.Group(
                 providerID: group.provider.id,
@@ -85,7 +104,8 @@ enum MenuBarContentBuilder {
             value: data.menuBarValue,
             fraction: data.fraction,
             isBounded: data.isBounded,
-            hasData: data.hasData
+            hasData: data.hasData,
+            displaySize: data.displaySize
         )
     }
 

@@ -55,7 +55,7 @@ final class MenuBarStripMemoTests: XCTestCase {
     private func makeContent(value: String) -> MenuBarContent {
         let metric = MenuBarContent.Metric(
             id: "claude.session", label: "Session", value: value,
-            fraction: 0.42, isBounded: true, hasData: true
+            fraction: 0.42, isBounded: true, hasData: true, displaySize: nil
         )
         return MenuBarContent(
             groups: [MenuBarContent.Group(
