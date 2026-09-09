@@ -131,7 +131,7 @@ enum MenuBarStripRenderer {
 }
 
 /// The brand gauge mark plus wordmark drawn in place of the strip while screen-share privacy is
-/// concealing usage. Same black-on-clear template treatment, glyph box, and type size as a
+/// concealing usage. Same primary-on-clear treatment, glyph box, and type size as a
 /// single-metric Text strip, so the swap doesn't jump the menu bar's rhythm.
 private struct MenuBarPrivacyLabel: View {
     var body: some View {
@@ -140,13 +140,13 @@ private struct MenuBarPrivacyLabel: View {
             // strip's glyph box so the swap keeps the provider-glyph scale.
             if let mark = ProviderMarks.mark(for: "openusage") {
                 ProviderIconShape(mark: mark, inset: 0.08)
-                    .fill(Color.black)
+                    .foregroundStyle(.primary)
                     .frame(width: 16, height: 16)
             }
             Text("OpenUsage")
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: 13, weight: .bold))
         }
-        .foregroundStyle(.black)
+        .foregroundStyle(.primary)
         .padding(.horizontal, 2)
         .padding(.vertical, 1)
         .fixedSize()
@@ -165,7 +165,7 @@ private struct MenuBarTextStrip: View {
                 }
             }
         }
-        .foregroundStyle(.black)
+        .foregroundStyle(.primary)
         .monospacedDigit()
         .padding(.horizontal, 2)
         .padding(.vertical, 1)
@@ -178,12 +178,16 @@ private struct MenuBarTextStrip: View {
     private func metricsView(_ metrics: [MenuBarContent.Metric]) -> some View {
         if metrics.count <= 1 {
             Text(metrics.first?.value ?? "")
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: 13, weight: .bold))
         } else {
-            VStack(alignment: .trailing, spacing: -2) {
+            VStack(alignment: .trailing, spacing: 2) {
                 ForEach(metrics, id: \.id) { metric in
-                    Text(metric.value)
-                        .font(font(for: metric.displaySize))
+                    if let fraction = metric.progressFraction, let level = metric.progressLevel {
+                        macaronBar(fraction: fraction, level: level)
+                    } else {
+                        Text(metric.value)
+                            .font(font(for: metric.displaySize))
+                    }
                 }
             }
             .fixedSize()
@@ -195,24 +199,47 @@ private struct MenuBarTextStrip: View {
         case .small:
             return .system(size: 7, weight: .regular)
         case .standard, .none:
-            return .system(size: 11, weight: .bold)
+            return .system(size: 13, weight: .bold)
         }
+    }
+
+    /// Thin horizontal progress bar tinted per macaron level.
+    private func macaronBar(fraction: Double, level: WidgetData.ProgressLevel) -> some View {
+        let fillOpacity: Double = switch level {
+        case .normal:   0.85
+        case .warning:  0.85
+        case .critical: 0.95
+        }
+        let trackOpacity: Double = 0.22
+        let fill = Color.primary.opacity(fillOpacity)
+        let track = Color.primary.opacity(trackOpacity)
+        return GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(track)
+                Capsule().fill(fill).frame(width: max(2, geo.size.width * fraction))
+            }
+        }
+        .frame(height: 4)
     }
 
     /// Side length of the glyph box. Sized to fill the strip's height so the mark reads at the same
     /// scale as the dual-line metric block beside it (the single number is shorter), instead of
     /// floating small in the middle. `ProviderIconShape` already normalizes every mark to its true
     /// bounding box, so a near-zero `inset` here makes each provider fill this box uniformly.
-    private static let glyphSide: CGFloat = 16
+    private static let glyphSide: CGFloat = 18
 
     @ViewBuilder
     private func glyph(_ icon: IconSource) -> some View {
         if let mark = ProviderMarks.mark(for: icon.providerID) {
             ProviderIconShape(mark: mark, inset: 0.04)
-                .fill(Color.black)
+                .foregroundStyle(.primary)
                 .frame(width: Self.glyphSide, height: Self.glyphSide)
+                .frame(maxHeight: .infinity, alignment: .center)
         } else {
-            Circle().fill(Color.black).frame(width: Self.glyphSide - 1, height: Self.glyphSide - 1)
+            Circle()
+                .foregroundStyle(.primary)
+                .frame(width: Self.glyphSide, height: Self.glyphSide)
+                .frame(maxHeight: .infinity, alignment: .center)
         }
     }
 }
