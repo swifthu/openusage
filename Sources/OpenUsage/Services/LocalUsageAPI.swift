@@ -158,12 +158,13 @@ enum LocalUsageAPI {
                 try container.encodeIfPresent(resetsAt.map(OpenUsageISO8601.string(from:)), forKey: .resetsAt)
                 try container.encodeIfPresent(periodDurationMs, forKey: .periodDurationMs)
                 try container.encode(color, forKey: .color)
-            case .badge(let label, let text, let color, let subtitle):
+            case .badge(let label, let text, let color, let subtitle, let resetsAt):
                 try container.encode("badge", forKey: .type)
                 try container.encode(label, forKey: .label)
                 try container.encode(text, forKey: .text)
                 try container.encode(color, forKey: .color)
                 try container.encode(subtitle, forKey: .subtitle)
+                try container.encodeIfPresent(resetsAt.map(OpenUsageISO8601.string(from:)), forKey: .resetsAt)
             case .chart(let label, let points, let note):
                 // The original app's `barChart` line shape: per-day {label, value, valueLabel} points
                 // plus an optional source note, so existing local-API integrations read the trend too.

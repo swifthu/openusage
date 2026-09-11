@@ -112,14 +112,14 @@ enum MetricLine: Hashable, Sendable, Codable {
         periodDurationMs: Int? = nil,
         colorHex: String? = nil
     )
-    case badge(label: String, text: String, colorHex: String? = nil, subtitle: String? = nil)
+    case badge(label: String, text: String, colorHex: String? = nil, subtitle: String? = nil, resetsAt: Date? = nil)
 
     var label: String {
         switch self {
         case .text(let label, _, _, _),
              .progress(let label, _, _, _, _, _, _),
              .values(let label, _, _, _, _, _),
-             .badge(let label, _, _, _),
+             .badge(let label, _, _, _, _),
              .chart(let label, _, _):
             return label
         }
@@ -131,7 +131,7 @@ enum MetricLine: Hashable, Sendable, Codable {
     static let errorBadgeLabel = "Error"
 
     var isError: Bool {
-        if case .badge(let label, _, _, _) = self {
+        if case .badge(let label, _, _, _, _) = self {
             return label == Self.errorBadgeLabel
         }
         return false
@@ -211,7 +211,8 @@ enum MetricLine: Hashable, Sendable, Codable {
                 label: label,
                 text: try container.decode(String.self, forKey: .text),
                 colorHex: try container.decodeIfPresent(String.self, forKey: .colorHex),
-                subtitle: try container.decodeIfPresent(String.self, forKey: .subtitle)
+                subtitle: try container.decodeIfPresent(String.self, forKey: .subtitle),
+                resetsAt: try container.decodeIfPresent(Date.self, forKey: .resetsAt)
             )
         case .chart:
             self = .chart(
@@ -248,12 +249,13 @@ enum MetricLine: Hashable, Sendable, Codable {
             try container.encodeIfPresent(resetsAt, forKey: .resetsAt)
             try container.encodeIfPresent(periodDurationMs, forKey: .periodDurationMs)
             try container.encodeIfPresent(colorHex, forKey: .colorHex)
-        case .badge(let label, let text, let colorHex, let subtitle):
+        case .badge(let label, let text, let colorHex, let subtitle, let resetsAt):
             try container.encode(LineType.badge, forKey: .type)
             try container.encode(label, forKey: .label)
             try container.encode(text, forKey: .text)
             try container.encodeIfPresent(colorHex, forKey: .colorHex)
             try container.encodeIfPresent(subtitle, forKey: .subtitle)
+            try container.encodeIfPresent(resetsAt, forKey: .resetsAt)
         case .chart(let label, let points, let note):
             try container.encode(LineType.chart, forKey: .type)
             try container.encode(label, forKey: .label)

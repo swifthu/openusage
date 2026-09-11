@@ -342,7 +342,7 @@ final class ZAIProviderTests: XCTestCase {
 
         XCTAssertEqual(snapshot.errorCategory, .notAvailable)
         XCTAssertEqual(snapshot.lines.first?.label, "Error")
-        guard case .badge(_, let text, _, _) = snapshot.lines.first else {
+        guard case .badge(_, let text, _, _, _) = snapshot.lines.first else {
             return XCTFail("expected an error badge")
         }
         XCTAssertTrue(text.contains("GLM Coding Plan"))

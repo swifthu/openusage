@@ -89,7 +89,7 @@ enum MiniMaxUsageMapper {
             if let resetsAt {
                 let remaining = max(0, resetsAt.timeIntervalSince(now()))
                 let text = Formatters.compactDuration(remaining) ?? "—"
-                lines.append(.badge(label: "5h Reset", text: text))
+                lines.append(.badge(label: "5h Reset", text: text, resetsAt: resetsAt))
             } else {
                 lines.append(.badge(label: "5h Reset", text: "—"))
             }

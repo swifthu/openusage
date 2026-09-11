@@ -305,7 +305,7 @@ final class ClaudeAccountIsolationTests: XCTestCase {
 
             let snapshot = await fixture.provider.refresh()
 
-            if case let .badge(_, message, _, _)? = snapshot.line(label: "Error") {
+            if case let .badge(_, message, _, _, _)? = snapshot.line(label: "Error") {
                 XCTAssertEqual(message, scenario.expected)
             } else {
                 XCTFail("Missing error for profile status \(scenario.status)")
@@ -388,7 +388,7 @@ final class ClaudeAccountIsolationTests: XCTestCase {
     }
 
     private func status(_ snapshot: ProviderSnapshot) -> String? {
-        guard case .badge(_, let text, _, _) = snapshot.line(label: "Status") else { return nil }
+        guard case .badge(_, let text, _, _, _) = snapshot.line(label: "Status") else { return nil }
         return text
     }
 }

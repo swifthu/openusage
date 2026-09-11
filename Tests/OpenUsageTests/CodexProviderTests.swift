@@ -534,7 +534,7 @@ final class CodexProviderTests: XCTestCase {
                        [MetricValue(number: 0.25, kind: .dollars, estimated: true),
                         MetricValue(number: 150, kind: .count, label: "tokens")])
         XCTAssertFalse(snapshot.lines.contains { line in
-            if case .badge(_, let value, _, _) = line { return value == "No usage data" }
+            if case .badge(_, let value, _, _, _) = line { return value == "No usage data" }
             return false
         })
     }

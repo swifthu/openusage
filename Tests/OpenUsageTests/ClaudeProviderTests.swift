@@ -289,7 +289,7 @@ final class ClaudeUsageMapperTests: XCTestCase {
     }
 
     private func badge(_ lines: [MetricLine], _ label: String) -> String? {
-        guard case .badge(_, let text, _, _) = lines.first(where: { $0.label == label }) else {
+        guard case .badge(_, let text, _, _, _) = lines.first(where: { $0.label == label }) else {
             return nil
         }
         return text
@@ -806,7 +806,7 @@ final class ClaudeProviderTests: XCTestCase {
     }
 
     private func badge(_ lines: [MetricLine], _ label: String) -> String? {
-        guard case .badge(_, let value, _, _) = lines.first(where: { $0.label == label }) else {
+        guard case .badge(_, let value, _, _, _) = lines.first(where: { $0.label == label }) else {
             return nil
         }
         return value

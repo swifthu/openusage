@@ -82,7 +82,7 @@ final class GrokCreditsConfigMapperTests: XCTestCase {
                        GrokCreditsFixtures.capturedPeriodEnd.timeIntervalSince1970, accuracy: 0.001)
         XCTAssertEqual(periodDurationMs, 7 * 24 * 60 * 60 * 1000)
 
-        guard case .badge(_, let text, let colorHex, _)? =
+        guard case .badge(_, let text, let colorHex, _, _)? =
                 mapped.lines.first(where: { $0.label == "Pay as you go" }) else {
             return XCTFail("expected a Pay as you go badge")
         }
@@ -94,7 +94,7 @@ final class GrokCreditsConfigMapperTests: XCTestCase {
         let mapped = try GrokUsageMapper.mapCreditsConfig(HTTPResponse(
             statusCode: 200, headers: [:], body: GrokCreditsFixtures.responseBody(onDemandCap: 2500)
         ))
-        guard case .badge(_, let text, let colorHex, _)? =
+        guard case .badge(_, let text, let colorHex, _, _)? =
                 mapped.lines.first(where: { $0.label == "Pay as you go" }) else {
             return XCTFail("expected a Pay as you go badge")
         }

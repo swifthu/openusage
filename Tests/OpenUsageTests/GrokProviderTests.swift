@@ -358,7 +358,7 @@ private func progress(_ lines: [MetricLine], _ label: String) -> (used: Double, 
 }
 
 private func badge(_ lines: [MetricLine], _ label: String) -> (text: String, colorHex: String?)? {
-    guard case .badge(_, let text, let colorHex, _) = lines.first(where: { $0.label == label }) else {
+    guard case .badge(_, let text, let colorHex, _, _) = lines.first(where: { $0.label == label }) else {
         return nil
     }
     return (text, colorHex)

@@ -198,11 +198,6 @@ struct SettingsScreen: View {
                     .settingsSwitchStyle()
                     .hoverTooltip("Show how you're pacing on every metric, not just ones near their limit")
             }
-            row("Show Time in MenuBar") {
-                Toggle("", isOn: $store.showsMenuBarResetTime)
-                    .settingsSwitchStyle()
-                    .hoverTooltip("Show the time until your MiniMax quota resets in the menu bar")
-            }
         }
     }
 

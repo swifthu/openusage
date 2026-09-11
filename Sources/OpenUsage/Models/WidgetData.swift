@@ -29,9 +29,6 @@ struct WidgetData: Hashable {
     /// the blue/healthy row also shows the even-pace tick and its projection copy. Yellow and red rows
     /// always show the tick when a reset window exists; this toggle only adds it on blue.
     var alwaysShowPacing: Bool = false
-    /// Whether to show the MiniMax session reset countdown in the menu bar. Stamped by `WidgetDataStore`
-    /// when the global toggle is on and the metric is MiniMax session.
-    var showsMenuBarResetTime: Bool = false
     var resetsAt: Date?
     /// Zero or more future expiry instants surfaced in the row's hover tooltip (Codex rate-limit-reset
     /// credits — one entry per still-available credit). Empty for every other row. Kept as raw `Date`s so
@@ -90,6 +87,12 @@ struct WidgetData: Hashable {
     /// (12pt bold for a single metric, 9pt semibold for multiple). Set to `.small` on a metric that
     /// should appear visually subordinate (e.g. a reset countdown under a primary percentage).
     var displaySize: MenuBarDisplaySize?
+    /// Optional progress-bar fraction (0...1) for the menu-bar strip. When set, the strip renders
+    /// this metric as a pastel-colored horizontal bar instead of text. Combine with `progressLevel`
+    /// for the macaron color.
+    var progressFraction: Double?
+    /// Color level for the menu-bar progress bar.
+    var progressLevel: ProgressLevel?
 
     /// How a session-window meter tells a not-yet-started window from an in-flight one.
     enum SessionStartSignal: Hashable {
@@ -102,6 +105,16 @@ struct WidgetData: Hashable {
         /// NOT trusted here: Claude reports utilization in whole percents, so an in-flight window
         /// under 1% also reads 0 (#1160) — the reset date is what tells the two apart.
         case missingResetDate
+    }
+
+    /// Color level for the MiniMax menu-bar progress bar.
+    enum ProgressLevel: String, Sendable, Equatable, Codable {
+        /// Plenty of time remaining (≥ 2h on the 5h Session window). Pastel green.
+        case normal
+        /// Limited time remaining (30min-2h on the 5h window). Pastel yellow.
+        case warning
+        /// Almost out of time (< 30min on the 5h window). Pastel pink/red.
+        case critical
     }
     /// Per-day points for a Usage Trend row (empty for every other tile). Set true `isChart` flags the
     /// row so the view draws the sparkline instead of the value layout; `chartNote` is the source line

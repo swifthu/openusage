@@ -36,9 +36,11 @@ final class MenuBarStripTrimTests: XCTestCase {
                     icon: .providerMark("claude"),
                     metrics: [
                         MenuBarContent.Metric(id: "claude.session", label: "Session", value: "99%",
-                                              fraction: 0.01, isBounded: true, hasData: true, displaySize: nil),
+                                              fraction: 0.01, isBounded: true, hasData: true, displaySize: nil,
+                                              progressFraction: nil, progressLevel: nil),
                         MenuBarContent.Metric(id: "claude.weekly", label: "Weekly", value: "87%",
-                                              fraction: 0.13, isBounded: true, hasData: true, displaySize: nil)
+                                              fraction: 0.13, isBounded: true, hasData: true, displaySize: nil,
+                                              progressFraction: nil, progressLevel: nil)
                     ]
                 )
             ],

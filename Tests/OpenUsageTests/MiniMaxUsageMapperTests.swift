@@ -188,7 +188,7 @@ final class MiniMaxUsageMapperTests: XCTestCase {
     }
 
     private func badge(_ lines: [MetricLine], _ label: String) -> String? {
-        guard case .badge(_, let text, _, _) = lines.first(where: { $0.label == label }) else {
+        guard case .badge(_, let text, _, _, _) = lines.first(where: { $0.label == label }) else {
             return nil
         }
         return text
@@ -244,5 +244,48 @@ final class MiniMaxUsageMapperTests: XCTestCase {
         let lines = try MiniMaxUsageMapper.map(data(sessionOnlyJSON))
         let resetBadge = try XCTUnwrap(badge(lines, "5h Reset"))
         XCTAssertEqual(resetBadge, "—")
+    }
+
+    func testSessionResetBadgeHasResetsAt() throws {
+        // bothLimitsJSON has remains_time: 7200000 (2 hours in ms)
+        let fixedNow = Date(timeIntervalSince1970: 1_800_000_000)
+        let lines = try MiniMaxUsageMapper.map(data(bothLimitsJSON), now: { fixedNow })
+
+        // Find the 5h Reset badge and verify resetsAt is set.
+        let resetsAt = try XCTUnwrap(lines.first { $0.label == "5h Reset" }.flatMap { line -> Date? in
+            if case .badge(_, _, _, _, let resetsAt) = line { return resetsAt }
+            return nil
+        })
+        // remains_time=7200000ms = 7200s, so resetsAt = fixedNow + 7200
+        XCTAssertEqual(resetsAt, fixedNow.addingTimeInterval(7200))
+    }
+
+    func testProgressFractionAndLevel() throws {
+        // Verify fraction and level computation for different remaining times.
+        // 2h remaining (out of 5h): fraction ≈ 0.4, level == .normal
+        let now = Date()
+        let twoHoursRemaining = now.addingTimeInterval(2 * 3600)
+        let totalSeconds = Double(MiniMaxUsageMapper.sessionPeriodMs) / 1000  // 18000 seconds
+        let fraction2h = twoHoursRemaining.timeIntervalSince(now) / totalSeconds
+        XCTAssertEqual(fraction2h, 0.4, accuracy: 0.001)
+        XCTAssertEqual(levelFromRemaining(2 * 3600), WidgetData.ProgressLevel.normal)
+
+        // 1h remaining: fraction ≈ 0.2, level == .warning
+        let oneHourRemaining = now.addingTimeInterval(1 * 3600)
+        let fraction1h = oneHourRemaining.timeIntervalSince(now) / totalSeconds
+        XCTAssertEqual(fraction1h, 0.2, accuracy: 0.001)
+        XCTAssertEqual(levelFromRemaining(1 * 3600), WidgetData.ProgressLevel.warning)
+
+        // 5min remaining: fraction ≈ 0.017, level == .critical
+        let fiveMinRemaining = now.addingTimeInterval(5 * 60)
+        let fraction5min = fiveMinRemaining.timeIntervalSince(now) / totalSeconds
+        XCTAssertEqual(fraction5min, 0.017, accuracy: 0.001)
+        XCTAssertEqual(levelFromRemaining(5 * 60), WidgetData.ProgressLevel.critical)
+    }
+
+    private func levelFromRemaining(_ seconds: TimeInterval) -> WidgetData.ProgressLevel {
+        if seconds >= 2 * 3600 { return .normal }
+        if seconds >= 30 * 60 { return .warning }
+        return .critical
     }
 }

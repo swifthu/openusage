@@ -14,6 +14,10 @@ struct MenuBarContent: Equatable {
         let isBounded: Bool     // has a limit → has a fill, so it can render as a bar
         let hasData: Bool
         let displaySize: MenuBarDisplaySize?  // font-size override for the menu-bar strip
+        /// Progress-bar fraction for MiniMax session-reset bar. Nil for text-only rendering.
+        let progressFraction: Double?
+        /// Color level for the MiniMax session-reset bar.
+        let progressLevel: WidgetData.ProgressLevel?
     }
 
     /// A provider and its pinned metrics, in order. One segment of the Text strip.
@@ -61,25 +65,7 @@ enum MenuBarContentBuilder {
     /// membership; the strip shows whatever subset is real right now.
     static func build(groups: [ProviderMetrics], data: (WidgetDescriptor) -> WidgetData) -> MenuBarContent {
         let resolvedGroups = groups.compactMap { group -> MenuBarContent.Group? in
-            // Resolve all metrics with their WidgetData so we can inspect flags before resolving to Metric.
-            typealias Resolved = (descriptor: WidgetDescriptor, widgetData: WidgetData, metric: MenuBarContent.Metric)
-            let resolved: [Resolved] = group.metrics.map { descriptor in
-                let widgetData = data(descriptor)
-                return (descriptor, widgetData, resolve(descriptor, widgetData))
-            }.filter { $0.metric.hasData }
-
-            var metrics = resolved.map(\.metric)
-
-            // Inject sessionReset for MiniMax when the toggle is on and session is pinned.
-            if group.provider.id == "minimax",
-               resolved.contains(where: { $0.descriptor.metricLabel == "Session" && $0.widgetData.showsMenuBarResetTime }),
-               let resetDesc = group.metrics.first(where: { $0.id == "minimax.sessionReset" }) {
-                let resetData = data(resetDesc)
-                if resetData.hasData {
-                    metrics.append(resolve(resetDesc, resetData))
-                }
-            }
-
+            let metrics = group.metrics.map { resolve($0, data($0)) }.filter { $0.hasData }
             guard !metrics.isEmpty else { return nil }
             return MenuBarContent.Group(
                 providerID: group.provider.id,
@@ -105,7 +91,9 @@ enum MenuBarContentBuilder {
             fraction: data.fraction,
             isBounded: data.isBounded,
             hasData: data.hasData,
-            displaySize: data.displaySize
+            displaySize: data.displaySize,
+            progressFraction: data.progressFraction,
+            progressLevel: data.progressLevel
         )
     }
 

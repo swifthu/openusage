@@ -47,7 +47,6 @@ final class WidgetDataStore {
     private static let meterStyleKey = "meterStyle"
     private static let resetDisplayModeKey = "resetDisplayMode"
     private static let alwaysShowPacingKey = "alwaysShowPacing"
-    private static let showsMenuBarResetTimeKey = "showsMenuBarResetTime"
     /// How long a provider that just failed is skipped before the loop will probe it again. A failed
     /// refresh isn't cached, so — unlike a success, which the snapshot cache gates for an interval —
     /// nothing else stops the loop from re-probing a broken provider (logged-out Devin/Grok especially)
@@ -122,10 +121,6 @@ final class WidgetDataStore {
         didSet { defaults.set(alwaysShowPacing, forKey: Self.alwaysShowPacingKey) }
     }
 
-    var showsMenuBarResetTime: Bool {
-        didSet { defaults.set(showsMenuBarResetTime, forKey: Self.showsMenuBarResetTimeKey) }
-    }
-
     /// Restores the Usage Display preferences (meter style, reset-time format, always-show-pacing) to
     /// their defaults — the Settings "Reset All Settings" path. Cached usage snapshots are data, not
     /// settings, and stay untouched.
@@ -133,7 +128,6 @@ final class WidgetDataStore {
         meterStyle = .remaining
         resetDisplayMode = .relative
         alwaysShowPacing = false
-        showsMenuBarResetTime = false
     }
 
     init(
@@ -172,7 +166,6 @@ final class WidgetDataStore {
         self.meterStyle = defaults.enumValue(forKey: Self.meterStyleKey, default: .remaining)
         self.resetDisplayMode = defaults.enumValue(forKey: Self.resetDisplayModeKey, default: .relative)
         self.alwaysShowPacing = defaults.bool(forKey: Self.alwaysShowPacingKey)
-        self.showsMenuBarResetTime = defaults.bool(forKey: Self.showsMenuBarResetTimeKey)
         // Stale-while-revalidate: load whatever was cached (expired included) so the menu bar and
         // dashboard show last-known values immediately at launch instead of "—"; the refresh loop
         // replaces them as soon as fresh data lands.
@@ -526,7 +519,7 @@ final class WidgetDataStore {
     /// A snapshot that carries only error lines is a failed refresh; its message comes from the badge.
     private static func errorMessage(in snapshot: ProviderSnapshot) -> String? {
         guard !snapshot.lines.isEmpty, snapshot.lines.allSatisfy(\.isError) else { return nil }
-        if case .badge(_, let text, _, _) = snapshot.lines[0] { return text }
+        if case .badge(_, let text, _, _, _) = snapshot.lines[0] { return text }
         return "Refresh failed"
     }
 
@@ -549,7 +542,6 @@ final class WidgetDataStore {
         result.displayMode = meterStyle
         result.resetDisplayMode = resetDisplayMode
         result.alwaysShowPacing = alwaysShowPacing
-        result.showsMenuBarResetTime = showsMenuBarResetTime
         return result
     }
 
@@ -641,11 +633,18 @@ final class WidgetDataStore {
                 ? WidgetData.localEstimateNote
                 : descriptor.sample.infoNote
             return data
-        case .badge(_, let text, _, let subtitle):
+        case .badge(_, let text, _, let subtitle, let resetsAt):
             var data = descriptor.sample
             data.valueTextOverride = text
             data.subtitleOverride = subtitle
             data.displaySize = descriptor.sample.displaySize
+            // Compute progress fraction and level if barPeriodMs is set on the descriptor.
+            if let periodMs = descriptor.barPeriodMs, let resetsAt {
+                let totalSeconds = Double(periodMs) / 1000
+                let remainingSeconds = max(0, resetsAt.timeIntervalSince(now()))
+                data.progressFraction = min(1.0, remainingSeconds / totalSeconds)
+                data.progressLevel = levelFromRemaining(remainingSeconds)
+            }
             return data
         case .chart(_, let points, let note):
             // Presentation (title, icon) from the sample; the live per-day points from the line. No
@@ -660,4 +659,10 @@ final class WidgetDataStore {
         }
     }
 
+    /// Determines the progress level from remaining seconds on a session window.
+    private func levelFromRemaining(_ seconds: TimeInterval) -> WidgetData.ProgressLevel {
+        if seconds >= 2 * 3600 { return .normal }
+        if seconds >= 30 * 60 { return .warning }
+        return .critical
+    }
 }

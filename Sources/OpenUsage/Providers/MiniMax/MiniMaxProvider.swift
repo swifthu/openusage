@@ -46,7 +46,8 @@ final class MiniMaxProvider: ProviderRuntime {
                 pinnable: true,
                 isSpendTile: false,
                 limitResources: [],
-                historyResource: nil
+                historyResource: nil,
+                barPeriodMs: MiniMaxUsageMapper.sessionPeriodMs
             )
         ]
     }

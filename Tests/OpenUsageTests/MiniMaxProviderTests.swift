@@ -71,6 +71,14 @@ final class MiniMaxProviderTests: XCTestCase {
         XCTAssertEqual(resetDescriptor.sample.displaySize, .small)
     }
 
+    func testSessionResetWidgetHasBarPeriodMs() {
+        let provider = MiniMaxProvider()
+        guard let resetDescriptor = provider.widgetDescriptors.first(where: { $0.id == "minimax.sessionReset" }) else {
+            return XCTFail("expected minimax.sessionReset widget")
+        }
+        XCTAssertEqual(resetDescriptor.barPeriodMs, MiniMaxUsageMapper.sessionPeriodMs)
+    }
+
     func testRefreshIncludesSessionResetBadgeWithCountdown() async throws {
         let fixedNow = Date(timeIntervalSince1970: 1_800_000_000)
         let provider = MiniMaxProvider(
@@ -84,7 +92,7 @@ final class MiniMaxProviderTests: XCTestCase {
         let snapshot = await provider.refresh()
 
         XCTAssertNil(snapshot.errorCategory)
-        guard case .badge(_, let text, _, _) = snapshot.line(label: "5h Reset") else {
+        guard case .badge(_, let text, _, _, _) = snapshot.line(label: "5h Reset") else {
             return XCTFail("Expected badge line for 5h Reset")
         }
         // bothLimitsJSON has remains_time=7200000ms = 7200s → "2h"

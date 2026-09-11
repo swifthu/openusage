@@ -19,6 +19,9 @@ struct WidgetDescriptor: Identifiable, Hashable {
     /// Explicit aggregation semantics for this provider's normalized daily history. Exactly one
     /// descriptor carries it for every provider that exposes the shared spend tiles.
     var historyResource: UsageHistoryDescriptor? = nil
+    /// Optional bar period in milliseconds for menu-bar progress bar rendering. When set on a badge
+    /// descriptor, the store computes `progressFraction` and `progressLevel` from `resetsAt` and `now()`.
+    var barPeriodMs: Int? = nil
 
     /// The metric's single display name.
     var title: String { sample.title }

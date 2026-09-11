@@ -1,10 +1,18 @@
 .DS_Store
+._*
 .build/
 dist/
 node_modules/
 *.log
 .agents/worktrees/
 .agents/scheduled_tasks.lock
+
+# Local tool indexes / caches (not part of the source tree)
+.codegraph/
+.claude/
+.superpowers/
+.codex/
+.cursor/
 
 # Local environment files
 .env

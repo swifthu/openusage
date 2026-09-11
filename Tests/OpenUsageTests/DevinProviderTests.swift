@@ -185,7 +185,7 @@ final class DevinProviderTests: XCTestCase {
     }
 
     private func errorText(_ lines: [MetricLine]) -> String? {
-        guard case .badge(_, let text, _, _) = lines.first else {
+        guard case .badge(_, let text, _, _, _) = lines.first else {
             return nil
         }
         return text
