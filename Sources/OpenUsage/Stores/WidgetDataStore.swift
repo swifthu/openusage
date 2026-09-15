@@ -642,8 +642,20 @@ final class WidgetDataStore {
             if let periodMs = descriptor.barPeriodMs, let resetsAt {
                 let totalSeconds = Double(periodMs) / 1000
                 let remainingSeconds = max(0, resetsAt.timeIntervalSince(now()))
-                data.progressFraction = min(1.0, remainingSeconds / totalSeconds)
-                data.progressLevel = levelFromRemaining(remainingSeconds)
+                // Final-hour emergency mode: when the long period is winding down to ≤ 1h, switch
+                // the bar to a 1-hour period so the countdown visibly walks down over the final hour
+                // instead of looking stalled near the end of the long window. Color flips to critical
+                // (red) so the urgency reads at a glance. The label still shows the actual remaining
+                // time ("30m", "5m"), so a partial-red bar matches its text. Only triggers on a
+                // period longer than 1h, so a 1h-period bar (no MiniMax provider currently uses one)
+                // keeps the full-period coloring.
+                if totalSeconds > 3600, remainingSeconds <= 3600 {
+                    data.progressFraction = min(1.0, remainingSeconds / 3600)
+                    data.progressLevel = .critical
+                } else {
+                    data.progressFraction = min(1.0, remainingSeconds / totalSeconds)
+                    data.progressLevel = levelFromRemaining(remainingSeconds)
+                }
             }
             return data
         case .chart(_, let points, let note):

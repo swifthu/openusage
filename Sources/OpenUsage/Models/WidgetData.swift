@@ -108,12 +108,17 @@ struct WidgetData: Hashable {
     }
 
     /// Color level for the MiniMax menu-bar progress bar.
+    ///
+    /// `.critical` covers the final-hour "emergency" mode: when ≤ 1h remains on the long window,
+    /// the strip switches the bar to a 1-hour period so the countdown walks down over that final
+    /// hour (see `WidgetDataStore.resolve(.badge)`). `.normal` / `.warning` only apply while the
+    /// full window is still ahead.
     enum ProgressLevel: String, Sendable, Equatable, Codable {
         /// Plenty of time remaining (≥ 2h on the 5h Session window). Pastel green.
         case normal
-        /// Limited time remaining (30min-2h on the 5h window). Pastel yellow.
+        /// Limited time remaining (1h–2h on the 5h window). Pastel yellow.
         case warning
-        /// Almost out of time (< 30min on the 5h window). Pastel pink/red.
+        /// Final-hour emergency mode (≤ 1h on the 5h window). Pastel pink/red.
         case critical
     }
     /// Per-day points for a Usage Trend row (empty for every other tile). Set true `isChart` flags the

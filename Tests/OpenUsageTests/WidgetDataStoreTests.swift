@@ -638,4 +638,109 @@ final class WidgetDataStoreTests: XCTestCase {
         defaults.removePersistentDomain(forName: suiteName)
         return defaults
     }
+
+    // MARK: - MiniMax 5h reset badge: final-hour emergency mode
+
+    /// Builds the descriptor shape MiniMax uses for its 5h Reset badge: a 5-hour bar period on a
+    /// `.small` display size, driven by the badge's `resetsAt`.
+    private func makeMiniMaxResetDescriptor(providerID: String) -> WidgetDescriptor {
+        WidgetDescriptor(
+            id: "\(providerID).sessionReset",
+            providerID: providerID,
+            metricLabel: "5h Reset",
+            sample: WidgetData(title: "5h Reset", icon: .providerMark("minimax"), kind: .count, used: 0, limit: nil),
+            pinnable: true,
+            isSpendTile: false,
+            limitResources: [],
+            historyResource: nil,
+            barPeriodMs: 5 * 60 * 60 * 1000
+        )
+    }
+
+    func testBadgeSwitchesToOneHourEmergencyModeWhenRemainingDropsBelowOneHour() async {
+        let provider = Provider(id: "minimax", displayName: "MiniMax", icon: .providerMark("minimax"))
+        let descriptor = makeMiniMaxResetDescriptor(providerID: provider.id)
+
+        // Pin the snapshot's `resetsAt` close enough that the fraction math stays stable across the
+        // test run: 30 minutes out → emergency fraction = 30min / 60min = 0.5.
+        let resetsAt = Date(timeIntervalSinceNow: 30 * 60)
+        let runtime = TestProviderRuntime(
+            provider: provider,
+            descriptors: [descriptor],
+            snapshot: ProviderSnapshot(
+                providerID: provider.id,
+                displayName: provider.displayName,
+                lines: [.badge(label: "5h Reset", text: "30m", resetsAt: resetsAt)]
+            )
+        )
+        let store = WidgetDataStore(
+            registry: WidgetRegistry(providers: [provider], descriptors: [descriptor]),
+            providers: [runtime],
+            defaults: makeUserDefaults("badge-emergency-30min")
+        )
+
+        await store.refreshAll()
+        let data = store.data(for: descriptor)
+
+        XCTAssertEqual(data.progressLevel, .critical)
+        XCTAssertEqual(data.progressFraction ?? 0, 0.5, accuracy: 0.05)
+    }
+
+    func testBadgeKeepsLongWindowColoringWhenMoreThanOneHourRemains() async {
+        let provider = Provider(id: "minimax", displayName: "MiniMax", icon: .providerMark("minimax"))
+        let descriptor = makeMiniMaxResetDescriptor(providerID: provider.id)
+
+        // 4h remaining on the 5h window → emergency mode must NOT trigger; level = .normal,
+        // fraction = 4h / 5h = 0.8.
+        let resetsAt = Date(timeIntervalSinceNow: 4 * 60 * 60)
+        let runtime = TestProviderRuntime(
+            provider: provider,
+            descriptors: [descriptor],
+            snapshot: ProviderSnapshot(
+                providerID: provider.id,
+                displayName: provider.displayName,
+                lines: [.badge(label: "5h Reset", text: "4h", resetsAt: resetsAt)]
+            )
+        )
+        let store = WidgetDataStore(
+            registry: WidgetRegistry(providers: [provider], descriptors: [descriptor]),
+            providers: [runtime],
+            defaults: makeUserDefaults("badge-long-window")
+        )
+
+        await store.refreshAll()
+        let data = store.data(for: descriptor)
+
+        XCTAssertEqual(data.progressLevel, .normal)
+        XCTAssertEqual(data.progressFraction ?? 0, 0.8, accuracy: 0.05)
+    }
+
+    func testBadgeEmergencyModeExactlyAtOneHourStillTriggers() async {
+        // Boundary: ≤ 1h triggers emergency mode. At exactly 1h remaining on a 5h period the new
+        // code path engages, fraction = 1.0 (full bar), level = .critical.
+        let provider = Provider(id: "minimax", displayName: "MiniMax", icon: .providerMark("minimax"))
+        let descriptor = makeMiniMaxResetDescriptor(providerID: provider.id)
+
+        let resetsAt = Date(timeIntervalSinceNow: 60 * 60)
+        let runtime = TestProviderRuntime(
+            provider: provider,
+            descriptors: [descriptor],
+            snapshot: ProviderSnapshot(
+                providerID: provider.id,
+                displayName: provider.displayName,
+                lines: [.badge(label: "5h Reset", text: "1h", resetsAt: resetsAt)]
+            )
+        )
+        let store = WidgetDataStore(
+            registry: WidgetRegistry(providers: [provider], descriptors: [descriptor]),
+            providers: [runtime],
+            defaults: makeUserDefaults("badge-emergency-1h")
+        )
+
+        await store.refreshAll()
+        let data = store.data(for: descriptor)
+
+        XCTAssertEqual(data.progressLevel, .critical)
+        XCTAssertEqual(data.progressFraction ?? 0, 1.0, accuracy: 0.05)
+    }
 }
