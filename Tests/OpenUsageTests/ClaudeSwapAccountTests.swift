@@ -103,7 +103,7 @@ final class ClaudeSwapAccountTests: XCTestCase {
         XCTAssertTrue(hasCredentials)
         let result = await provider.refresh()
         XCTAssertEqual(http.requests.count, 1)
-        if case let .badge(_, message, _, _)? = result.line(label: "Error") {
+        if case let .badge(_, message, _, _, _)? = result.line(label: "Error") {
             XCTAssertEqual(message, ClaudeAuthError.swapTokenExpired.localizedDescription)
         } else { XCTFail("Expected guidance to renew the saved Swap account") }
     }
