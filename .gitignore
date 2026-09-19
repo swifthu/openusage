@@ -1,5 +1,6 @@
 .DS_Store
 ._*
+.metadata_skip
 .build/
 dist/
 node_modules/
