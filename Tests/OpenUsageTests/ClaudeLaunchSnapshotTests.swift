@@ -269,7 +269,7 @@ final class ClaudeLaunchSnapshotTests: XCTestCase {
     }
 
     private func badge(_ lines: [MetricLine], _ label: String) -> String? {
-        guard case .badge(_, let text, _, _) = lines.first(where: { $0.label == label }) else { return nil }
+        guard case .badge(_, let text, _, _, _) = lines.first(where: { $0.label == label }) else { return nil }
         return text
     }
 }

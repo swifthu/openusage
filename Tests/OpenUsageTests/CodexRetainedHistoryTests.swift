@@ -27,7 +27,7 @@ final class CodexRetainedHistoryTests: XCTestCase {
         let snapshot = await provider.snapshot(mapped: CodexMappedUsage(plan: nil, lines: []))
         XCTAssertNil(snapshot.warning)
         XCTAssertTrue(snapshot.lines.contains { line in
-            if case .badge(_, let value, _, _) = line { return value == "No usage data" }
+            if case .badge(_, let value, _, _, _) = line { return value == "No usage data" }
             return false
         })
     }
