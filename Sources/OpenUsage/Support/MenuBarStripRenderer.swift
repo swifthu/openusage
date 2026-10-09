@@ -7,18 +7,22 @@ import SwiftUI
 /// outside the `label:` view builder (an `ImageRenderer` inline there throws obscure errors).
 @MainActor
 enum MenuBarStripRenderer {
-    /// Last render, memoized on (content, style). The observation loop re-renders on every snapshot
-    /// write — several times per refresh pass — but the strip's visible content rarely changes.
-    /// Returning the same `NSImage` instance lets `StatusItemImageUpdater` skip the status-item set
-    /// (an unconditional set still costs a WindowServer redraw), and keeps `ImageRenderer` (which
-    /// retains a little memory per run on macOS) to actual visual changes.
-    private static var lastRender: (content: MenuBarContent, style: MenuBarStyle, image: NSImage?)?
+    /// Last render, memoized on (content, style, appearance). The observation loop re-renders on
+    /// every snapshot write — several times per refresh pass — but the strip's visible content
+    /// rarely changes. Returning the same `NSImage` instance lets `StatusItemImageUpdater` skip the
+    /// status-item set (an unconditional set still costs a WindowServer redraw), and keeps
+    /// `ImageRenderer` (which retains a little memory per run on macOS) to actual visual changes.
+    /// The appearance name is part of the key because `labelColor` / `quaternaryLabelColor` resolve
+    /// to different RGB values under Aqua vs Dark Aqua — without it, a system-appearance flip would
+    /// hit the cache and ship the stale-mode image.
+    private static var lastRender: (content: MenuBarContent, style: MenuBarStyle, appearance: String, image: NSImage?)?
 
     /// The strip image for the given content and style, or `nil` when the content renders nothing
     /// in that style (caller falls back to the app icon). Memoized: equal inputs return the
     /// previously rendered instance.
     static func image(for content: MenuBarContent, style: MenuBarStyle) -> NSImage? {
-        if let lastRender, lastRender.content == content, lastRender.style == style {
+        let appearance = currentAppearanceName
+        if let lastRender, lastRender.content == content, lastRender.style == style, lastRender.appearance == appearance {
             AppLog.debug(.menubar, "strip cache hit")
             return lastRender.image
         }
@@ -28,8 +32,15 @@ enum MenuBarStripRenderer {
         case .text: image = textImage(for: content)
         case .bars: image = barsImage(for: content)
         }
-        lastRender = (content, style, image)
+        lastRender = (content, style, appearance, image)
         return image
+    }
+
+    /// Stable name for the current system appearance ("NSAppearanceNameAqua" / "NSAppearanceNameDarkAqua"
+    /// / "NSAppearanceNameVibrantLight" / etc.), used as part of the render cache key so the cached
+    /// image is dropped the moment the user flips light/dark.
+    private static var currentAppearanceName: String {
+        NSApp.effectiveAppearance.name.rawValue
     }
 
     /// The pinned-metrics strip, or `nil` when nothing is pinned or no pinned metric has data yet
@@ -49,7 +60,7 @@ enum MenuBarStripRenderer {
             cgImage: cgImage,
             size: NSSize(width: CGFloat(cgImage.width) / renderer.scale, height: CGFloat(cgImage.height) / renderer.scale)
         )
-        image.isTemplate = true
+        image.isTemplate = false
         image.accessibilityDescription = content.accessibilityText
         return image
     }
@@ -140,13 +151,13 @@ private struct MenuBarPrivacyLabel: View {
             // strip's glyph box so the swap keeps the provider-glyph scale.
             if let mark = ProviderMarks.mark(for: "openusage") {
                 ProviderIconShape(mark: mark, inset: 0.08)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(.white)
                     .frame(width: 16, height: 16)
             }
             Text("OpenUsage")
                 .font(.system(size: 13, weight: .bold))
         }
-        .foregroundStyle(.primary)
+        .foregroundStyle(.white)
         .padding(.horizontal, 2)
         .padding(.vertical, 1)
         .fixedSize()
@@ -165,7 +176,7 @@ private struct MenuBarTextStrip: View {
                 }
             }
         }
-        .foregroundStyle(.primary)
+        .foregroundStyle(.white)
         .monospacedDigit()
         .padding(.horizontal, 2)
         .padding(.vertical, 1)
@@ -203,7 +214,11 @@ private struct MenuBarTextStrip: View {
         }
     }
 
-    /// Thin horizontal progress bar tinted per macaron level.
+    /// Thin horizontal progress bar tinted per macaron level. Normal and warning keep a hardcoded
+    /// white fill (dev build only — the menu bar always renders against the system strip, where
+    /// white reads on both Light and Dark Aqua); the critical level — used only when ≤ 1h remains
+    /// on a long period — flips to a soft candy red so the final-hour window reads as urgent
+    /// without screaming. `#FF8C99` sits in the pastel-coral band (HSL 354° / 100% / 77%).
     private func macaronBar(fraction: Double, level: WidgetData.ProgressLevel) -> some View {
         let fillOpacity: Double = switch level {
         case .normal:   0.85
@@ -211,8 +226,13 @@ private struct MenuBarTextStrip: View {
         case .critical: 0.95
         }
         let trackOpacity: Double = 0.22
-        let fill = Color.primary.opacity(fillOpacity)
-        let track = Color.primary.opacity(trackOpacity)
+        let fill: Color = switch level {
+        case .normal, .warning:
+            Color.white.opacity(fillOpacity)
+        case .critical:
+            Color(red: 1.0, green: 0.549, blue: 0.6).opacity(fillOpacity)
+        }
+        let track = Color.white.opacity(trackOpacity)
         return GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Capsule().fill(track)
@@ -232,12 +252,12 @@ private struct MenuBarTextStrip: View {
     private func glyph(_ icon: IconSource) -> some View {
         if let mark = ProviderMarks.mark(for: icon.providerID) {
             ProviderIconShape(mark: mark, inset: 0.04)
-                .foregroundStyle(.primary)
+                .foregroundStyle(.white)
                 .frame(width: Self.glyphSide, height: Self.glyphSide)
                 .frame(maxHeight: .infinity, alignment: .center)
         } else {
             Circle()
-                .foregroundStyle(.primary)
+                .foregroundStyle(.white)
                 .frame(width: Self.glyphSide, height: Self.glyphSide)
                 .frame(maxHeight: .infinity, alignment: .center)
         }

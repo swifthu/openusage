@@ -53,7 +53,7 @@ final class MenuBarStripTrimTests: XCTestCase {
         let bounds = try XCTUnwrap(MenuBarStripRenderer.visibleBounds(of: cgImage))
 
         XCTAssertEqual(bounds, CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height))
-        XCTAssertTrue(image.isTemplate)
+        XCTAssertFalse(image.isTemplate)
         XCTAssertEqual(image.accessibilityDescription, content.accessibilityText)
     }
 
