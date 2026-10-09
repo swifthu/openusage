@@ -21,7 +21,7 @@ final class LocalLimitsAPITests: XCTestCase {
         let snapshot = ProviderSnapshot(
             providerID: "codex",
             displayName: "Codex",
-            plan: "Pro 20x",
+            plan: "Pro 200",
             lines: [
                 .progress(
                     label: "Session", used: 42, limit: 100, format: .percent,
@@ -49,7 +49,7 @@ final class LocalLimitsAPITests: XCTestCase {
         XCTAssertEqual(response.status, 200)
         XCTAssertEqual(root["schema"] as? String, "openusage.limits.v1")
         XCTAssertEqual(root["generatedAt"] as? String, "2026-07-13T01:40:00.000Z")
-        XCTAssertEqual(providerJSON["plan"] as? String, "Pro 20x")
+        XCTAssertEqual(providerJSON["plan"] as? String, "Pro 200")
         XCTAssertEqual(providerJSON["fetchedAt"] as? String, "2026-07-13T01:39:30.000Z")
         XCTAssertEqual(providerJSON["expiresAt"] as? String, "2026-07-13T01:44:30.000Z")
         XCTAssertEqual(providerJSON["stale"] as? Bool, false)
@@ -204,7 +204,7 @@ final class LocalLimitsAPITests: XCTestCase {
             Set(descriptors.flatMap(\.limitResources).map(\.key))
         }
         let expected: [String: Set<String>] = [
-            "claude": ["session", "weekly", "sonnet", "fable", "extraUsage"],
+            "claude": ["session", "weekly", "sonnet", "fable", "extraUsage", "rateLimitResets"],
             "codex": ["session", "weekly", "spark", "sparkWeekly", "credits", "creditValue", "rateLimitResets"],
             "cursor": ["totalUsage", "grokBot", "autoUsage", "apiUsage", "onDemand", "requests", "credits"],
             "antigravity": ["geminiSession", "geminiWeekly", "nonGeminiSession", "nonGeminiWeekly"],
@@ -212,7 +212,7 @@ final class LocalLimitsAPITests: XCTestCase {
             "devin": ["daily", "weekly", "extraUsageBalance"],
             "grok": ["weekly"],
             "minimax": ["session", "weekly"],
-            "ollama": ["session", "weekly"],
+            "ollama": ["session", "weekly", "monthly"],
             "opencode": ["session", "weekly", "monthly"],
             "openrouter": ["credits", "balance", "keyLimit"],
             "zai": ["session", "weekly", "webSearches"]

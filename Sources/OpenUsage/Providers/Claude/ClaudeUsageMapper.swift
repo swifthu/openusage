@@ -29,12 +29,19 @@ enum ClaudeUsageMapper {
         appendUsageWindow(body["seven_day_sonnet"], label: "Sonnet", periodDurationMs: weeklyPeriodMs, to: &lines)
         appendScopedWeeklyLimit(body["limits"], modelName: "Fable", label: "Fable", to: &lines)
         appendExtraUsage(body["extra_usage"], to: &lines)
+        appendResetGrants(body["cedar_ember"], now: now, to: &lines)
 
         return ClaudeMappedUsage(
             plan: formatPlan(subscriptionType: credentials.subscriptionType, rateLimitTier: credentials.rateLimitTier),
             lines: lines
         )
     }
+
+    /// Labels of the lines `mapUsageResponse` produces from the live usage endpoint (everything else on a
+    /// Claude snapshot is recomputed locally or is a rate-limit notice).
+    static let liveLimitLabels: Set<String> = [
+        "Session", "Weekly", "Sonnet", "Fable", "Extra usage spent", "Rate Limit Resets"
+    ]
 
     /// Snapshot shown when the usage endpoint rate-limits us and there is no last-good usage to fall back
     /// on (e.g. the first fetch after launch): a status badge plus the staleness note, no live bars.
@@ -186,6 +193,34 @@ enum ClaudeUsageMapper {
             // (compact like the spend tiles, e.g. "$1.2K spent") instead of a baked full-currency string.
             lines.append(.values(label: "Extra usage spent", values: [MetricValue(number: used, kind: .dollars)]))
         }
+    }
+
+    /// Usage-limit reset grants from the `cedar_ember` block (e.g. a launch promo's "one usage-limit reset
+    /// for Pro and Max"), shown read-only like Codex's reset credits: the row reads "N available" and each
+    /// remaining reset's grant deadline (`ends_at`) rides along in `expiriesAt` for the resets popover. A
+    /// grant with several resets left contributes one expiry per reset. Grants already past their deadline
+    /// or with none left are skipped. An ineligible account (`eligible: false`) reads "0 available"; a
+    /// missing or `null` block (plans outside the program) emits no row. Paused grants still count — they
+    /// are owned, just not usable this instant.
+    private static func appendResetGrants(_ value: Any?, now: Date, to lines: inout [MetricLine]) {
+        guard let object = value as? [String: Any] else { return }
+        var count = 0
+        var expiries: [Date] = []
+        if object["eligible"] as? Bool == true {
+            for case let grant as [String: Any] in object["grants"] as? [Any] ?? [] {
+                guard let left = ProviderParse.number(grant["resets_left"]), left >= 1 else { continue }
+                let resets = Int(left.rounded(.down))
+                let endsAt = resetDate(grant["ends_at"])
+                if let endsAt, endsAt <= now { continue }
+                count += resets
+                if let endsAt { expiries += Array(repeating: endsAt, count: resets) }
+            }
+        }
+        lines.append(.values(
+            label: "Rate Limit Resets",
+            values: [MetricValue(number: Double(count), kind: .count, label: "available")],
+            expiriesAt: expiries.sorted()
+        ))
     }
 
     private static func resetDate(_ value: Any?) -> Date? {
