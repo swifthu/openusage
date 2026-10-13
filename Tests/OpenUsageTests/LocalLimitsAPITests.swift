@@ -212,7 +212,7 @@ final class LocalLimitsAPITests: XCTestCase {
             "devin": ["daily", "weekly", "extraUsageBalance"],
             "grok": ["weekly"],
             "minimax": ["session", "weekly"],
-            "ollama": ["session", "weekly", "monthly"],
+            "ollama": ["session", "weekly", "monthly", "purchasedCredits"],
             "opencode": ["session", "weekly", "monthly"],
             "openrouter": ["credits", "balance", "keyLimit"],
             "zai": ["session", "weekly", "webSearches"]
