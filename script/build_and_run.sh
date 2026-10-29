@@ -14,8 +14,6 @@ set -euo pipefail
 # Usage: script/build_and_run.sh [run|build|logs|verify]
 # Env:   CODESIGN_IDENTITY  override signing identity (exact name or hash)
 #        CONFIG             "release" (default) or "debug"
-#        ICLOUD_PROVISIONING_PROFILE  optional override for the development provisioning profile;
-#                         otherwise the newest matching installed profile is selected automatically
 
 MODE="${1:-run}"
 CONFIG="${CONFIG:-release}"
@@ -23,12 +21,13 @@ CONFIG="${CONFIG:-release}"
 TARGET_NAME="OpenUsage"                 # SwiftPM target / binary name
 APP_DISPLAY="OpenUsage"                 # user-facing app name
 BUNDLE_ID="${BUNDLE_ID:-com.robinebers.openusage.dev}"
-ICLOUD_CONTAINER_ID="iCloud.com.robinebers.openusage.dev"
 MIN_SYSTEM_VERSION="15.0"
-APP_VERSION="0.7.14"
-APP_BUILD="14"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The dev build is labelled by its commit ("dev (abc1234)" in the footer and About panel), so it never
+# carries a stale release number. Releases take their version from the tag; see script/release.sh.
+APP_VERSION="dev ($(git -C "$ROOT_DIR" rev-parse --short HEAD))"
+APP_BUILD="$(git -C "$ROOT_DIR" rev-list --count HEAD)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_DISPLAY.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
@@ -39,10 +38,10 @@ APP_BINARY="$APP_MACOS/$TARGET_NAME"
 CLI_BINARY="$APP_HELPERS/openusage"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 RESOURCE_BUNDLE_NAME="${TARGET_NAME}_${TARGET_NAME}.bundle"
-ENTITLEMENTS="$ROOT_DIR/script/OpenUsage.dev.entitlements.plist"
 SIGN_ENTITLEMENTS="$ROOT_DIR/script/OpenUsage.local.entitlements.plist"
 
-pkill -x "$TARGET_NAME" >/dev/null 2>&1 || true
+# Stop only the dev build staged here, never an installed OpenUsage with the same executable name.
+pkill -f "^$APP_BINARY" >/dev/null 2>&1 || true
 
 echo "==> swift build ($CONFIG)"
 swift build -c "$CONFIG"
@@ -89,33 +88,13 @@ for bundle in "$BUILD_DIR"/*.bundle; do
 done
 shopt -u nullglob
 
-# Compile the Icon Composer source (assets/AppIcon.icon) into Assets.car so
-# Tahoe renders the real Liquid Glass icon. CFBundleIconName below must match
-# the .icon file stem ("AppIcon"). The app floor is macOS 15, so a classic .icns
-# fallback is relevant there (the release build supplies one); this dev build only
-# stages the Assets.car and runs on the maintainer's current OS.
-echo "==> compiling app icon (actool)"
-PREBUILT_ICON_DIR="$ROOT_DIR/assets/AppIcon.prebuilt"
-if xcrun actool "$ROOT_DIR/assets/AppIcon.icon" --compile "$APP_RESOURCES" \
-  --app-icon AppIcon \
-  --enable-on-demand-resources NO \
-  --development-region en \
-  --target-device mac \
-  --platform macosx \
-  --minimum-deployment-target "$MIN_SYSTEM_VERSION" \
-  --output-partial-info-plist /dev/null \
-  --output-format human-readable-text --errors --warnings; then
-  : # compiled the icon fresh
-elif [ -f "$PREBUILT_ICON_DIR/Assets.car" ]; then
-  # actool is broken on some toolchains; commit 08863d7 ships a prebuilt icon so release CI bypasses
-  # it. Reuse the same prebuilt here, so a failed actool doesn't abort the dev build under set -e and
-  # the app still gets its real icon.
-  echo "==> actool failed; using prebuilt icon (assets/AppIcon.prebuilt)"
-  cp "$PREBUILT_ICON_DIR/Assets.car" "$APP_RESOURCES/Assets.car"
-  [ -f "$PREBUILT_ICON_DIR/AppIcon.icns" ] && cp "$PREBUILT_ICON_DIR/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"
-else
-  echo "WARNING: actool failed and no prebuilt icon found; continuing without an icon" >&2
-fi
+# Install the prebuilt app icon, like the release build: actool crashes on the Icon Composer source
+# (assets/AppIcon.icon) on current toolchains, so script/compile_icon.sh regenerates
+# assets/AppIcon.prebuilt whenever the source changes. CFBundleIconName below must match the .icon
+# stem ("AppIcon").
+echo "==> installing app icon (assets/AppIcon.prebuilt)"
+cp "$ROOT_DIR/assets/AppIcon.prebuilt/Assets.car" "$APP_RESOURCES/Assets.car"
+cp "$ROOT_DIR/assets/AppIcon.prebuilt/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -146,42 +125,9 @@ cat >"$INFO_PLIST" <<PLIST
   <string>NSApplication</string>
   <key>NSHighResolutionCapable</key>
   <true/>
-  <key>NSUbiquitousContainers</key>
-  <dict>
-    <key>iCloud.com.robinebers.openusage.dev</key>
-    <dict>
-      <key>NSUbiquitousContainerIsDocumentScopePublic</key>
-      <false/>
-      <key>NSUbiquitousContainerName</key>
-      <string>OpenUsage</string>
-      <key>NSUbiquitousContainerSupportedFolderLevels</key>
-      <string>None</string>
-    </dict>
-  </dict>
 </dict>
 </plist>
 PLIST
-
-if [ -n "${ICLOUD_PROVISIONING_PROFILE:-}" ] && [ ! -f "$ICLOUD_PROVISIONING_PROFILE" ]; then
-  echo "iCloud provisioning profile not found: $ICLOUD_PROVISIONING_PROFILE" >&2
-  exit 1
-fi
-
-if [ -z "${ICLOUD_PROVISIONING_PROFILE:-}" ]; then
-  ICLOUD_PROVISIONING_PROFILE=$("$ROOT_DIR/script/find_icloud_provisioning_profile.sh" \
-    "$BUNDLE_ID" "$ICLOUD_CONTAINER_ID" || true)
-fi
-
-if [ -n "${ICLOUD_PROVISIONING_PROFILE:-}" ]; then
-  echo "==> using iCloud provisioning profile: $ICLOUD_PROVISIONING_PROFILE"
-  cp "$ICLOUD_PROVISIONING_PROFILE" "$APP_CONTENTS/embedded.provisionprofile"
-  SIGN_ENTITLEMENTS="$DIST_DIR/OpenUsage.dev.resolved.entitlements.plist"
-  "$ROOT_DIR/script/render_icloud_entitlements.sh" \
-    "$ENTITLEMENTS" "$ICLOUD_PROVISIONING_PROFILE" "$SIGN_ENTITLEMENTS" \
-    "$ICLOUD_CONTAINER_ID"
-else
-  echo "WARNING: no matching installed iCloud provisioning profile was found; iCloud Sync will be unavailable in this build." >&2
-fi
 
 # Pick a stable Apple Development identity so ad-hoc cdhash churn doesn't re-trigger
 # permission prompts on every rebuild. Fall back to ad-hoc only if none is found.
@@ -229,7 +175,7 @@ case "$MODE" in
   verify)
     launch_app
     sleep 1
-    pgrep -x "$TARGET_NAME" >/dev/null && echo "==> running"
+    pgrep -f "^$APP_BINARY" >/dev/null && echo "==> running"
     ;;
   *)
     echo "usage: $0 [run|build|logs|verify]" >&2
