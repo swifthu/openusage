@@ -14,6 +14,8 @@ set -euo pipefail
 # Usage: script/build_and_run.sh [run|build|logs|verify]
 # Env:   CODESIGN_IDENTITY  override signing identity (exact name or hash)
 #        CONFIG             "release" (default) or "debug"
+#        SWIFT_BUILD_FLAGS  extra flags for `swift build`, e.g. a scratch path or module-cache path.
+#                           Word-split on purpose so several flags can be passed at once.
 
 MODE="${1:-run}"
 CONFIG="${CONFIG:-release}"
@@ -44,8 +46,9 @@ SIGN_ENTITLEMENTS="$ROOT_DIR/script/OpenUsage.local.entitlements.plist"
 pkill -f "^$APP_BINARY" >/dev/null 2>&1 || true
 
 echo "==> swift build ($CONFIG)"
-swift build -c "$CONFIG"
-BUILD_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
+# shellcheck disable=SC2086  # SWIFT_BUILD_FLAGS is intentionally word-split into several flags.
+swift build -c "$CONFIG" ${SWIFT_BUILD_FLAGS:-}
+BUILD_DIR="$(swift build -c "$CONFIG" --show-bin-path ${SWIFT_BUILD_FLAGS:-})"
 BUILD_BINARY="$BUILD_DIR/$TARGET_NAME"
 BUILD_CLI_BINARY="$BUILD_DIR/openusage-cli"
 
@@ -137,15 +140,39 @@ if [ -z "$CODESIGN_IDENTITY" ]; then
     | /usr/bin/awk -F\" '/Apple Development:/ { print $2; exit }')
 fi
 
+# The hardened runtime enables library validation: every non-platform library the app loads must
+# carry the same team id as the app itself. An ad-hoc signature has no team id, so a runtime-signed
+# ad-hoc build dies at launch — dyld refuses the bundled Sparkle.framework with "mapping process
+# and mapped file (non-platform) have different Team IDs". Ad-hoc builds therefore sign without the
+# runtime flag; a real identity keeps it (notarization requires it).
+# No identity at all is the same situation as an unusable one: sign ad-hoc.
+if [ -z "$CODESIGN_IDENTITY" ]; then
+  CODESIGN_IDENTITY="-"
+fi
+SIGN_FLAGS="--options runtime"
+if [ "$CODESIGN_IDENTITY" = "-" ]; then
+  SIGN_FLAGS=""
+fi
+
+# A listed identity is not always a usable one: with a locked login keychain the private key
+# cannot be fetched and codesign fails with errSecInternalComponent. Probe the identity on the CLI
+# helper before committing the whole bundle to it, and fall back to ad-hoc when it cannot sign.
+if [ -n "$CODESIGN_IDENTITY" ] && [ "$CODESIGN_IDENTITY" != "-" ]; then
+  if ! /usr/bin/codesign --force $SIGN_FLAGS --sign "$CODESIGN_IDENTITY" "$CLI_BINARY" >/dev/null 2>&1; then
+    echo "WARNING: cannot sign with '$CODESIGN_IDENTITY' (is the login keychain unlocked?); using an ad-hoc signature." >&2
+    CODESIGN_IDENTITY="-"
+    SIGN_FLAGS=""
+  fi
+fi
+
 # Embed + sign Sparkle.framework before sealing the app. The executable links Sparkle, so without the
 # embedded framework the build would fail to launch — even though the updater stays dormant here (no
 # SUFeedURL in the Info.plist above; see UpdaterController).
-"$ROOT_DIR/script/embed_sparkle.sh" "$APP_BUNDLE" "$APP_BINARY" "$CODESIGN_IDENTITY" "--options runtime"
+"$ROOT_DIR/script/embed_sparkle.sh" "$APP_BUNDLE" "$APP_BINARY" "$CODESIGN_IDENTITY" "$SIGN_FLAGS"
 
-if [ -n "$CODESIGN_IDENTITY" ]; then
-  /usr/bin/codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$CLI_BINARY" >/dev/null
+if [ "$CODESIGN_IDENTITY" != "-" ]; then
   # Not --deep: the Sparkle framework is already signed above and must keep that signature.
-  /usr/bin/codesign --force --options runtime \
+  /usr/bin/codesign --force $SIGN_FLAGS \
     --sign "$CODESIGN_IDENTITY" \
     --entitlements "$SIGN_ENTITLEMENTS" \
     "$APP_BUNDLE" >/dev/null
@@ -153,7 +180,7 @@ if [ -n "$CODESIGN_IDENTITY" ]; then
 else
   /usr/bin/codesign --force --sign - "$CLI_BINARY" >/dev/null
   /usr/bin/codesign --force --sign - --entitlements "$SIGN_ENTITLEMENTS" "$APP_BUNDLE" >/dev/null
-  echo "WARNING: no Apple Development identity found; ad-hoc signed." >&2
+  echo "WARNING: ad-hoc signed (no usable signing identity)." >&2
 fi
 
 launch_app() {
