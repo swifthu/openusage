@@ -13,6 +13,7 @@ enum ProviderKind: String, Codable, CaseIterable, Sendable {
     case antigravity
     case copilot
     case grok
+    case minimax
     case ollama
     case opencodeGo = "opencode"
     case openrouter
@@ -26,6 +27,7 @@ enum ProviderKind: String, Codable, CaseIterable, Sendable {
         case .antigravity: "Antigravity"
         case .copilot: "Copilot"
         case .grok: "Grok"
+        case .minimax: "MiniMax"
         case .ollama: "Ollama"
         case .opencodeGo: "OpenCode"
         case .openrouter: "OpenRouter"
@@ -52,6 +54,8 @@ enum ProviderKind: String, Codable, CaseIterable, Sendable {
                            .init(label: "Usage Dashboard", url: URL(string: "https://openrouter.ai/activity")!),
                            .init(label: "Credits", url: URL(string: "https://openrouter.ai/settings/credits")!)]
         case .zai: [.init(label: "Usage Dashboard", url: URL(string: "https://z.ai/manage-apikey/coding-plan/personal/my-plan")!)]
+        case .minimax: [.init(label: "Usage Dashboard", url: URL(string: "https://platform.minimaxi.com/")!),
+                        .init(label: "API Keys", url: URL(string: "https://platform.minimaxi.com/user-center/basic-information/interface-key")!)]
         }
     }
 
@@ -62,6 +66,7 @@ enum ProviderKind: String, Codable, CaseIterable, Sendable {
         case .opencodeGo: .apiKey(keyPage: URL(string: "https://opencode.ai/console")!)
         case .openrouter: .apiKey(keyPage: URL(string: "https://openrouter.ai/settings/management-keys")!)
         case .zai: .apiKey(keyPage: URL(string: "https://z.ai/manage-apikey/apikey-list")!)
+        case .minimax: .apiKey(keyPage: URL(string: "https://platform.minimaxi.com/user-center/basic-information/interface-key")!)
         }
     }
 }

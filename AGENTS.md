@@ -125,3 +125,59 @@ response bodies.
 - Match the existing macOS design language; OpenUsage has a specific look and feel.
 - Only add tooltips (`hoverTooltip`) when explicitly asked to. Don't add them proactively to new
   controls.
+
+## This fork (`swifthu/openusage`)
+
+This fork tracks upstream `main` and adds the four things below. Everything else in this file is
+upstream's, unchanged: when upstream rewrites a rule here, take upstream's version and re-apply only
+these four.
+
+### 1. The MiniMax provider
+
+Upstream has no MiniMax provider; this fork maintains it.
+
+- It is an API-key provider: the account holds a MiniMax **Token Plan subscription key** (not the
+  pay-as-you-go API key), pasted into the app's Accounts screen like Ollama's or OpenRouter's key.
+- Its code lives in `Sources/OpenUsage/Providers/MiniMax/`: a usage client, a mapper, and an
+  `AccountProviderRuntime+MiniMax.swift` extension. There is no auth store — the key lives in the
+  app's own Keychain through `CredentialVault`, like every other provider.
+- Register it in four places: `ProviderKind` (and its display name, links, and auth method) in
+  `Models/Account.swift`, the `ProviderLoginCatalog` switch in `Services/DeviceProviderLogins.swift`,
+  the refresh switch and the reset-claim switch in `Providers/AccountProviderRuntime.swift`, and the
+  descriptor switch in `Providers/AccountProviderRuntime+Descriptors.swift`.
+- Never read a MiniMax key from a file or an environment variable. Upstream forbids it, and a key
+  read that way would be a standing fork divergence.
+
+### 2. The menu bar is white, not a template image
+
+Upstream draws the menu-bar strip as a template image so macOS tints it for the current appearance.
+This fork keeps it white.
+
+- `MenuBarStripRenderer.themeColor` is the single place that color lives. Draw the strip, the badge
+  capsule, the provider glyph, and the app icon from it; do not sprinkle literal colors.
+- Because the strip is white, its image is **not** a template (`isTemplate = false`). A template image
+  would let macOS tint it and lose the color.
+- The app-icon fallback (`MenuBarStripRenderer.appIcon(for:)`) is drawn the same way, including its
+  dimmed stale variant. A template icon there would render black next to a white strip.
+- This is a deliberate divergence: white reads on both Light and Dark Aqua, but it is close to
+  invisible on a light menu bar. If that ever becomes a problem, the fix is to make the color follow
+  the system appearance — not to sprinkle another literal color.
+
+### 3. No spend, no trend, no pricing
+
+The upstream `main` this fork merged removed spend and token tracking, model pricing, and every
+log scanner. This fork does not rebuild them.
+
+- No log scanning, no spend estimates, no external pricing, no `Pricing/` engine. A metric that a
+  provider does not report stays hidden.
+- The fork's `pricing-update` skill and `docs/pricing.md` are gone with the engine. Do not
+  reintroduce a pricing supplement or a snapshot script.
+
+### 4. Sync cadence
+
+- Sync with upstream every 2–4 weeks. Upstream's `main` moves fast and rewrites whole subsystems.
+- Before syncing, read `docs/superpowers/plans/` — the migration assessment and the MiniMax design
+  notes record why this fork diverges where it does.
+- Sync in two passes: merge upstream first and get the build and tests green on upstream's code
+  alone, then replay this fork's four sections on top. Do not resolve upstream conflicts and rewrite
+  fork features in one merge.

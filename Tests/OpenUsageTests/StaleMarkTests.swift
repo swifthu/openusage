@@ -75,7 +75,8 @@ final class StaleMarkTests: XCTestCase {
 
         XCTAssertEqual(try maxAlpha(MenuBarStripRenderer.appIcon(for: empty)), 255)
         let dimmed = MenuBarStripRenderer.appIcon(for: staleEmpty)
-        XCTAssertTrue(dimmed.isTemplate)
+        // The fork draws the icon in its own white, so macOS must not tint it.
+        XCTAssertFalse(dimmed.isTemplate)
         XCTAssertEqual(Double(try maxAlpha(dimmed)), 127.5, accuracy: 2)
     }
 

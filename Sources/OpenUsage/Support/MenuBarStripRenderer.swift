@@ -3,6 +3,14 @@ import SwiftUI
 
 @MainActor
 enum MenuBarStripRenderer {
+    /// The strip's ink.
+    ///
+    /// Upstream draws the strip as a template image so macOS tints it for the current menu-bar
+    /// appearance. This fork keeps the strip white instead: the menu bar always renders against the
+    /// system strip, where white reads on both Light and Dark Aqua. A non-template image is what
+    /// carries that choice, so the color lives here rather than in each drawing site.
+    static let themeColor = Color.white
+
     static func image(for content: MenuBarContent) -> NSImage? {
         guard !content.isEmpty else { return nil }
         let renderer = ImageRenderer(content: MenuBarTextStrip(content: content))
@@ -13,20 +21,33 @@ enum MenuBarStripRenderer {
             cgImage: cgImage,
             size: NSSize(width: CGFloat(cgImage.width) / renderer.scale, height: CGFloat(cgImage.height) / renderer.scale)
         )
-        image.isTemplate = true
+        image.isTemplate = false
         image.accessibilityDescription = content.accessibilityText
         return image
     }
 
     static func appIcon(for content: MenuBarContent) -> NSImage {
-        let icon = ProviderMarks.image(for: "openusage", side: 18, inset: 0.08)
+        let icon = themedAppIcon()
         guard content.isStale else { return icon }
         let dimmed = NSImage(size: icon.size, flipped: false) { rect in
             icon.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 0.5)
             return true
         }
-        dimmed.isTemplate = true
+        dimmed.isTemplate = false
         return dimmed
+    }
+
+    /// The brand mark in the theme color, drawn the same way the strip draws its glyphs so both
+    /// read as the same ink.
+    private static func themedAppIcon() -> NSImage {
+        let mark = ProviderMarks.image(for: "openusage", side: 18, inset: 0.08)
+        let renderer = ImageRenderer(content: Image(nsImage: mark)
+            .renderingMode(.template)
+            .foregroundStyle(themeColor))
+        renderer.scale = 2
+        guard let image = renderer.nsImage else { return mark }
+        image.isTemplate = false
+        return image
     }
 
     nonisolated static func trimmedToVisibleContent(_ image: CGImage) -> CGImage? {
@@ -84,7 +105,7 @@ private struct MenuBarTextStrip: View {
                 }
             }
         }
-        .foregroundStyle(.black)
+        .foregroundStyle(MenuBarStripRenderer.themeColor)
         .monospacedDigit()
         .padding(.horizontal, 2)
         .padding(.vertical, 1)
@@ -119,11 +140,11 @@ private struct MenuBarTextStrip: View {
             .padding(.horizontal, 2)
             .frame(minWidth: 8, minHeight: 8)
         return ZStack {
-            Capsule().fill(Color.black)
+            Capsule().fill(MenuBarStripRenderer.themeColor)
                 .padding(-1.25)
                 .blendMode(.destinationOut)
-            Capsule().fill(Color.black)
-            label.foregroundStyle(Color.black).blendMode(.destinationOut)
+            Capsule().fill(MenuBarStripRenderer.themeColor)
+            label.foregroundStyle(MenuBarStripRenderer.themeColor).blendMode(.destinationOut)
         }
         .fixedSize()
     }
@@ -131,6 +152,6 @@ private struct MenuBarTextStrip: View {
     private func glyph(_ icon: String) -> some View {
         Image(nsImage: ProviderMarks.image(for: icon, side: Self.glyphSide, inset: 0.04))
             .renderingMode(.template)
-            .foregroundStyle(Color.black)
+            .foregroundStyle(MenuBarStripRenderer.themeColor)
     }
 }

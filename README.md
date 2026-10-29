@@ -42,10 +42,11 @@ app's own Keychain service.
 
 ## Providers
 
-Claude, ChatGPT, Cursor, Antigravity, Copilot, Grok, Ollama, OpenCode, OpenRouter, and Z.ai. Claude,
-ChatGPT, Cursor, Antigravity, Copilot, and Grok sign in with OAuth. Ollama, OpenCode, OpenRouter, and
-Z.ai use API keys. OpenRouter's balance needs a Management key. [Providers](docs/providers.md) lists
-what each one shows and what each sign-in grants.
+Claude, ChatGPT, Cursor, Antigravity, Copilot, Grok, Ollama, OpenCode, OpenRouter, Z.ai, and
+MiniMax. Claude, ChatGPT, Cursor, Antigravity, Copilot, and Grok sign in with OAuth. Ollama,
+OpenCode, OpenRouter, Z.ai, and MiniMax use API keys. OpenRouter's balance needs a Management key;
+MiniMax needs a Token Plan subscription key. [Providers](docs/providers.md) lists what each one
+shows and what each sign-in grants.
 
 ## Features
 

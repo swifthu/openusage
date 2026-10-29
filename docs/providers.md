@@ -12,6 +12,7 @@ report stays hidden.
 | Antigravity | Browser (Google OAuth) | Gemini 5h, Gemini, Argon, Claude 5h, Claude |
 | Copilot | Device code (GitHub) | Credits, Extra Usage, Chat, Completions |
 | Grok | Device code (xAI) | Weekly, Extra Usage |
+| MiniMax | API key | Session, Weekly, 5h Reset |
 | Ollama | API key | Session, Weekly, Monthly, Extra Usage |
 | OpenCode | API key | Session, Weekly, Monthly |
 | OpenRouter | Management API key | Balance, Today, This Week, This Month |
@@ -106,6 +107,15 @@ The card's right-click menu adds a **Credits** link to
 Paste an API key from the [Z.ai key list](https://z.ai/manage-apikey/apikey-list). The card reads the
 GLM Coding Plan subscription and quota endpoints for the session and weekly windows, the web-search
 quota, and the plan.
+
+## MiniMax
+
+Paste your **Token Plan subscription key** from
+[platform.minimaxi.com](https://platform.minimaxi.com/user-center/basic-information/interface-key) —
+it is not the pay-as-you-go API key. The card reads `/v1/token_plan/remains` for the 5-hour session
+window and the weekly window, and the **5h Reset** row counts down to the session window's reset. An
+account without an active Token Plan says so instead of reporting a usage. More detail:
+[MiniMax (Chinese)](providers/minimax.md).
 
 ## Errors
 

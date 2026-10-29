@@ -139,6 +139,15 @@ extension AccountProviderRuntime {
                 .boundedCount(key: "webSearches", provider: provider, title: "Web Searches", limit: 0)
                     .exportingLimit("webSearches", unit: "searches")
             ]
+        case .minimax:
+            [
+                .percent(key: "session", provider: provider, title: "Session")
+                    .exportingLimit("session", unit: "percent")
+                    .pinnedByDefault(),
+                .percent(key: "weekly", provider: provider, title: "Weekly")
+                    .exportingLimit("weekly", unit: "percent"),
+                .badge(key: "sessionReset", provider: provider, title: "5h Reset")
+            ]
         }
     }
 

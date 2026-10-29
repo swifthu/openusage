@@ -122,7 +122,7 @@ enum ProviderLoginCatalog {
         case .antigravity: AntigravityLogin()
         case .copilot: CopilotLogin()
         case .grok: GrokLogin()
-        case .ollama, .opencodeGo, .openrouter, .zai: APIKeyLogin(kind: kind)
+        case .ollama, .opencodeGo, .openrouter, .zai, .minimax: APIKeyLogin(kind: kind)
         }
     }
 }

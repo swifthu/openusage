@@ -44,7 +44,9 @@ final class MenuBarStripTrimTests: XCTestCase {
         let bounds = try XCTUnwrap(MenuBarStripRenderer.visibleBounds(of: cgImage))
 
         XCTAssertEqual(bounds, CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height))
-        XCTAssertTrue(image.isTemplate)
+        // This fork keeps the strip white instead of letting macOS tint a template image, so the
+        // strip is not a template. See `MenuBarStripRenderer.themeColor`.
+        XCTAssertFalse(image.isTemplate)
         XCTAssertEqual(image.accessibilityDescription, content.accessibilityText)
     }
 

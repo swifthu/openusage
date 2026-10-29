@@ -1,5 +1,11 @@
 # MiniMax Provider（中国版）Implementation Plan
 
+> **已过时（2026-10-29）：** 这份文档描述的是旧的 `ProviderRuntime` + auth store 架构（从
+> `~/.config/openusage/minimax.json` 或环境变量读 Key）。上游 `main` 换成 Account 模型后，MiniMax
+> 改为在 App 的 Accounts 界面粘贴 Token Plan 订阅 Key，凭据存在 App 自己的 Keychain。
+> 当前实现见 `Sources/OpenUsage/Providers/MiniMax/`，迁移过程见
+> `docs/superpowers/plans/2026-10-29-upstream-account-model-migration-assessment.md`。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在 OpenUsage 中新增一个独立的 Provider，覆盖 MiniMax 中国版（`platform.minimaxi.com`）的 Token Plan 订阅配额监控，菜单栏 popover 显示「5 小时滚动窗口」与「周窗口」两个百分比进度条。

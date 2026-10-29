@@ -69,7 +69,7 @@ final class AccountProviderRuntime: ProviderRuntime {
                 refreshAccount: refreshAccount,
                 refreshDelay: .seconds(5)
             )
-        case .cursor, .antigravity, .copilot, .grok, .ollama, .opencodeGo, .openrouter, .zai:
+        case .cursor, .antigravity, .copilot, .grok, .ollama, .opencodeGo, .openrouter, .zai, .minimax:
             return nil
         }
     }
@@ -102,6 +102,7 @@ final class AccountProviderRuntime: ProviderRuntime {
         case .opencodeGo: try await refreshOpenCode(credential)
         case .openrouter: try await refreshOpenRouter(credential)
         case .zai: try await refreshZAI(credential)
+        case .minimax: try await refreshMiniMax(credential)
         }
     }
 
