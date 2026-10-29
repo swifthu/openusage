@@ -38,9 +38,10 @@ enum MenuBarStripRenderer {
 
     /// Stable name for the current system appearance ("NSAppearanceNameAqua" / "NSAppearanceNameDarkAqua"
     /// / "NSAppearanceNameVibrantLight" / etc.), used as part of the render cache key so the cached
-    /// image is dropped the moment the user flips light/dark.
+    /// image is dropped the moment the user flips light/dark. `NSApp` is nil outside a running
+    /// application (unit tests), so fall back to Aqua rather than trapping.
     private static var currentAppearanceName: String {
-        NSApp.effectiveAppearance.name.rawValue
+        NSApp?.effectiveAppearance.name.rawValue ?? NSAppearance.Name.aqua.rawValue
     }
 
     /// The pinned-metrics strip, or `nil` when nothing is pinned or no pinned metric has data yet
