@@ -77,6 +77,26 @@ final class MenuBarContentTests: XCTestCase {
         XCTAssertEqual(content.groups[0].metrics.map(\.value), ["67%", "$12K", "412", "$42"])
     }
 
+    func testAResetCountdownKeepsItsWindowFractionInTheStrip() {
+        var countdown = WidgetData(title: "5h Reset", kind: .count, used: 0, limit: nil)
+        countdown.progressFraction = 0.4
+        let content = MenuBarContentBuilder.build(
+            groups: [group("a", percent("a.m1", "Session", 89), descriptor("a.reset", "5h Reset", countdown))],
+            data: { $0.sample }
+        )
+
+        XCTAssertEqual(content.groups[0].metrics.map(\.progressFraction), [nil, 0.4])
+    }
+
+    func testOrdinaryMetricsCarryNoWindowFraction() {
+        let content = MenuBarContentBuilder.build(
+            groups: [group("a", percent("a.m1", "Session", 89))],
+            data: { $0.sample }
+        )
+
+        XCTAssertEqual(content.groups[0].metrics.map(\.progressFraction), [nil])
+    }
+
     private func group(_ providerID: String, _ metrics: WidgetDescriptor...) -> ProviderMetrics {
         let provider = Provider(id: providerID, kind: providerID == "a" ? .claude : .codex)
         return ProviderMetrics(provider: provider, metrics: metrics)

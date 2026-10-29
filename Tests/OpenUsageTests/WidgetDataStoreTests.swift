@@ -152,6 +152,53 @@ final class WidgetDataStoreTests: XCTestCase {
         XCTAssertNotNil(reset, "a meter with a reset date shows its countdown")
     }
 
+    func testAResetCountdownBadgeCarriesItsRemainingWindowFraction() async {
+        let provider = Provider(id: "minimax", kind: .minimax)
+        let descriptor = WidgetDescriptor.badge(key: "sessionReset", provider: provider, title: "5h Reset")
+        let runtime = StubRuntime(
+            provider: provider,
+            descriptors: [descriptor],
+            snapshot: ProviderSnapshot(
+                providerID: provider.id,
+                displayName: provider.displayName,
+                lines: [.badge(
+                    label: "5h Reset",
+                    text: "2h 30m",
+                    resetsAt: Date(timeIntervalSinceNow: 2.5 * 60 * 60),
+                    periodDurationMs: MetricPeriod.sessionMs
+                )]
+            )
+        )
+        let store = WidgetDataStore.forTesting([runtime], defaults: isolatedDefaults())
+
+        await store.refreshAll()
+        let data = store.data(for: descriptor)
+
+        // Half of the five-hour window is still to run — the bar the menu bar draws drains as the
+        // window does.
+        XCTAssertEqual(data.progressFraction ?? 0, 0.5, accuracy: 0.02)
+    }
+
+    func testABadgeWithoutAResetInstantCarriesNoWindowFraction() async {
+        let provider = Provider(id: "grok", kind: .grok)
+        let descriptor = WidgetDescriptor.badge(key: "payAsYouGo", provider: provider, title: "Extra Usage")
+        let runtime = StubRuntime(
+            provider: provider,
+            descriptors: [descriptor],
+            snapshot: ProviderSnapshot(
+                providerID: provider.id,
+                displayName: provider.displayName,
+                lines: [.badge(label: "Pay as you go", text: "$10 cap")]
+            )
+        )
+        let store = WidgetDataStore.forTesting([runtime], defaults: isolatedDefaults())
+
+        await store.refreshAll()
+        let data = store.data(for: descriptor)
+
+        XCTAssertNil(data.progressFraction, "only a countdown to a reset becomes a bar")
+    }
+
     func testBarFractionMatchesRoundedValue() {
         for (used, value, fraction) in [
             (0.3915, "0%", 0.0), (0.6, "1%", 0.01), (99.6, "100%", 1.0)

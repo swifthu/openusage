@@ -66,7 +66,14 @@ enum MiniMaxUsageMapper {
         if let remaining = ProviderParse.number(entry["current_interval_remaining_percent"]) {
             let used = ProviderParse.clampPercent(100 - remaining)
             lines.append(.percent("Session", used, resetsAt: resetsAt, periodMs: MetricPeriod.sessionMs))
-            lines.append(.badge(label: "5h Reset", text: countdownText(resetsAt, now: now)))
+            // The badge carries the window it counts down in, so the menu bar can draw the countdown
+            // as a bar draining towards the reset. Without a reset instant there is no window.
+            lines.append(.badge(
+                label: "5h Reset",
+                text: countdownText(resetsAt, now: now),
+                resetsAt: resetsAt,
+                periodDurationMs: resetsAt == nil ? nil : MetricPeriod.sessionMs
+            ))
         }
 
         if let remaining = ProviderParse.number(entry["current_weekly_remaining_percent"]) {

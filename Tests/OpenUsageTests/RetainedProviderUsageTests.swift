@@ -28,7 +28,7 @@ final class RetainedProviderUsageTests: XCTestCase {
         let mapped = try GrokUsageMapper.mapCreditsConfig(response)
 
         XCTAssertTrue(mapped.lines.contains { $0.label == "Weekly limit" })
-        guard case .badge(_, let text) = mapped.lines.first(where: { $0.label == "Pay as you go" })
+        guard case .badge(_, let text, _, _) = mapped.lines.first(where: { $0.label == "Pay as you go" })
         else { return XCTFail("expected Pay as you go badge") }
         XCTAssertEqual(text, "2500 cap")
     }

@@ -77,7 +77,7 @@ final class MiniMaxProviderTests: XCTestCase {
 
         let snapshot = try await runtime.refresh().get()
 
-        guard case .badge(_, let text) = snapshot.line(label: "5h Reset") else {
+        guard case .badge(_, let text, _, _) = snapshot.line(label: "5h Reset") else {
             return XCTFail("Expected badge line for 5h Reset")
         }
         // bothLimitsJSON has remains_time=7200000ms = 7200s → "2h"

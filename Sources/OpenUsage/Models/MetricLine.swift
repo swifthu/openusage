@@ -27,13 +27,20 @@ enum MetricLine: Hashable, Sendable, Codable {
         resetsAt: Date? = nil,
         periodDurationMs: Int? = nil
     )
-    case badge(label: String, text: String)
+    case badge(
+        label: String,
+        text: String,
+        /// The instant the countdown ends, for a badge that counts down to a window reset.
+        resetsAt: Date? = nil,
+        /// The length of that window in milliseconds, so the countdown can be drawn as a bar.
+        periodDurationMs: Int? = nil
+    )
 
     var label: String {
         switch self {
         case .progress(let label, _, _, _, _, _),
              .values(let label, _, _),
-             .badge(let label, _):
+             .badge(let label, _, _, _):
             return label
         }
     }

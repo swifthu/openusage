@@ -5,6 +5,9 @@ struct MenuBarContent: Equatable {
         let id: String
         let label: String
         let value: String
+        /// How much of the metric's window is still to run, for a reset countdown the strip draws as
+        /// a draining bar. Nil for every other metric.
+        var progressFraction: Double? = nil
     }
 
     struct Group: Equatable {
@@ -35,7 +38,12 @@ enum MenuBarContentBuilder {
             let metrics = group.metrics.compactMap { descriptor -> MenuBarContent.Metric? in
                 let data = data(descriptor)
                 guard data.hasData else { return nil }
-                return MenuBarContent.Metric(id: descriptor.id, label: trayLabel(descriptor.metricLabel), value: data.menuBarValue)
+                return MenuBarContent.Metric(
+                    id: descriptor.id,
+                    label: trayLabel(descriptor.metricLabel),
+                    value: data.menuBarValue,
+                    progressFraction: data.progressFraction
+                )
             }
             guard !metrics.isEmpty else { return nil }
             return MenuBarContent.Group(provider: group.provider, metrics: metrics)

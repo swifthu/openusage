@@ -120,14 +120,32 @@ private struct MenuBarTextStrip: View {
             Text(metrics.first?.value ?? "")
                 .font(.system(size: 12, weight: .bold))
         } else {
-            VStack(alignment: .trailing, spacing: -2) {
+            VStack(alignment: .trailing, spacing: metrics.contains { $0.progressFraction != nil } ? 2 : -2) {
                 ForEach(metrics, id: \.id) { metric in
-                    Text(metric.value)
+                    if let fraction = metric.progressFraction {
+                        progressBar(fraction: fraction)
+                    } else {
+                        Text(metric.value)
+                    }
                 }
             }
             .font(.system(size: 9, weight: .semibold))
             .fixedSize()
         }
+    }
+
+    /// A countdown window drawn as a bar draining towards its reset: the filled part is the time
+    /// still to run. White like the rest of the strip — the menu bar always renders against the
+    /// system strip, where white reads on both Light and Dark Aqua.
+    private func progressBar(fraction: Double) -> some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(MenuBarStripRenderer.themeColor.opacity(0.22))
+                Capsule().fill(MenuBarStripRenderer.themeColor.opacity(0.85))
+                    .frame(width: max(2, geo.size.width * fraction))
+            }
+        }
+        .frame(height: 4)
     }
 
     private static let glyphSide: CGFloat = 16

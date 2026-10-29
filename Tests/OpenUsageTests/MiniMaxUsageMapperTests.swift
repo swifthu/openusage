@@ -221,6 +221,29 @@ final class MiniMaxUsageMapperTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(badge(lines, "5h Reset")), MiniMaxUsageMapper.unknownResetText)
     }
 
+    func testSessionResetBadgeCarriesTheWindowItCountsDownIn() throws {
+        // The badge carries the reset instant and the window length, so the menu bar can draw the
+        // countdown as a bar draining towards the reset.
+        let fixedNow = Date(timeIntervalSince1970: 1_800_000_000)
+        let lines = try MiniMaxUsageMapper.map(data(bothLimitsJSON), now: fixedNow)
+
+        guard case .badge(_, _, let resetsAt, let periodDurationMs) = lines.first(where: { $0.label == "5h Reset" }) else {
+            return XCTFail("expected a 5h Reset badge")
+        }
+        XCTAssertEqual(resetsAt, fixedNow.addingTimeInterval(2 * 60 * 60))
+        XCTAssertEqual(periodDurationMs, MetricPeriod.sessionMs)
+    }
+
+    func testSessionResetBadgeWithoutRemainsTimeHasNoWindow() throws {
+        let lines = try MiniMaxUsageMapper.map(data(sessionOnlyJSON))
+
+        guard case .badge(_, _, let resetsAt, let periodDurationMs) = lines.first(where: { $0.label == "5h Reset" }) else {
+            return XCTFail("expected a 5h Reset badge")
+        }
+        XCTAssertNil(resetsAt)
+        XCTAssertNil(periodDurationMs)
+    }
+
     private func progress(_ lines: [MetricLine], _ label: String) -> (used: Double, limit: Double, format: ProgressFormat, resetsAt: Date?, periodDurationMs: Int?)? {
         guard case .progress(_, let used, let limit, let format, let resetsAt, let periodDurationMs) = lines.first(where: { $0.label == label }) else {
             return nil
@@ -229,7 +252,7 @@ final class MiniMaxUsageMapperTests: XCTestCase {
     }
 
     private func badge(_ lines: [MetricLine], _ label: String) -> String? {
-        guard case .badge(_, let text) = lines.first(where: { $0.label == label }) else {
+        guard case .badge(_, let text, _, _) = lines.first(where: { $0.label == label }) else {
             return nil
         }
         return text

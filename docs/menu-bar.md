@@ -22,8 +22,11 @@ page in Accounts.
 ## What the strip shows
 
 Each starred metric shows its provider's mark and the value. Two starred metrics from the same
-account stack as a labelled pair. The strip only renders real data: a starred metric with nothing
-fetched yet is skipped, and an account whose stars all lack data disappears from the strip. When
+account stack as a labelled pair. A metric that counts down to a reset — MiniMax's **5h Reset** — is
+drawn as a bar draining towards that reset instead of as text, but only while a second metric of the
+same account is starred beside it; starred on its own it keeps the countdown. The strip only renders
+real data: a starred metric with nothing fetched yet is skipped, and an account whose stars all lack
+data disappears from the strip. When
 nothing has data, the strip shows the app icon. With [Hide From Screen Share](privacy.md#screen-sharing)
 on, it also shows the app icon while your screen is shared or recorded. The strip, or the app icon in
 its place, dims while an account's values are out of date because its refreshes fail or a provider

@@ -255,9 +255,16 @@ final class WidgetDataStore {
             data.expiriesAt = expiriesAt
             data.hasData = !data.values.isEmpty
             return data
-        case .badge(_, let text):
+        case .badge(_, let text, let resetsAt, let periodDurationMs):
             var data = descriptor.sample
             data.valueTextOverride = text
+            // A badge that counts down to a window reset carries the window it counts down in, so
+            // the menu bar can draw it as a bar draining towards the reset instead of plain text.
+            if let periodDurationMs, let resetsAt {
+                let periodSeconds = Double(periodDurationMs) / 1000
+                let remaining = max(0, resetsAt.timeIntervalSince(now()))
+                data.progressFraction = periodSeconds > 0 ? min(1, remaining / periodSeconds) : nil
+            }
             return data
         }
     }

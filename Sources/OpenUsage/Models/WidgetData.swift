@@ -20,6 +20,9 @@ struct WidgetData: Hashable {
     var values: [MetricValue] = []
     var traySuffix: String?
     var sessionStartSignal: SessionStartSignal?
+    /// How much of a countdown window is still to run, 1 (just started) to 0 (about to reset). Set
+    /// only for a badge that counts down to a reset: the menu bar draws it as a draining bar.
+    var progressFraction: Double?
 
     enum SessionStartSignal: Hashable {
         /// Zero usage is the fresh signal. Antigravity reports a reset instant even for an untouched
