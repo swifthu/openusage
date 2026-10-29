@@ -591,10 +591,12 @@ final class CodexProviderTests: XCTestCase {
     func testOpenCodeCodexOAuthUsageIsMergedIntoCodexHistory() async throws {
         // A far-future fixture keeps PiUsageScanner.shared from folding the developer's real local pi
         // history into this integration test.
-        let now = OpenUsageISO8601.date(from: "2099-02-20T16:00:00.000Z")!
-        let milliseconds = Int(OpenUsageISO8601.date(
-            from: "2099-02-20T14:00:00.000Z"
-        )!.timeIntervalSince1970 * 1000)
+        //
+        // Both instants are local-calendar fixtures, not UTC ones: the spend tiles bucket by the local
+        // calendar day, so a UTC instant falls on a different day — and a different tile — in every
+        // timezone east of UTC+7.
+        let now = localDate(2099, 2, 20, hour: 16)
+        let milliseconds = Int(localDate(2099, 2, 20, hour: 14).timeIntervalSince1970 * 1000)
         let openCodeRows = "[[\(milliseconds),0,150,\"gpt-test\",100,0,0,50,0,\"open-code-message\"]]"
         let openCodeScanner = OpenCodeCodexUsageScanner(
             authStore: openCodeAuthStore(
@@ -642,6 +644,69 @@ final class CodexProviderTests: XCTestCase {
                 MetricValue(number: 150, kind: .count, label: "tokens")
             ]
         )
+    }
+
+    func testOpenCodeUsageLandsOnTheTodayTileByLocalCalendarDay() async throws {
+        // The spend tiles bucket by the local calendar day. This fixture puts `now` just after local
+        // midnight, so in every timezone east of UTC its UTC date is the *previous* day: a tile that
+        // bucketed by UTC would push this usage off "Today" and onto "Yesterday".
+        let now = localDate(2099, 2, 20, hour: 0, minute: 30)
+        let milliseconds = Int(localDate(2099, 2, 20, hour: 0, minute: 15).timeIntervalSince1970 * 1000)
+        let openCodeRows = "[[\(milliseconds),0,150,\"gpt-test\",100,0,0,50,0,\"open-code-message\"]]"
+        let openCodeScanner = OpenCodeCodexUsageScanner(
+            authStore: openCodeAuthStore(
+                files: FakeFiles(["/oc/auth.json": #"{"openai":{"type":"oauth","access":"token"}}"#])
+            ),
+            sqlite: OpenCodeFakeSQLite(data: ["/oc/opencode.db": openCodeRows]),
+            databasePaths: { ["/oc/opencode.db"] }
+        )
+        let provider = CodexProvider(
+            authStore: CodexAuthStore(
+                environment: FakeEnvironment(["CODEX_HOME": "/tmp/codex-home"]),
+                files: FakeFiles(["/tmp/codex-home/auth.json": #"{"tokens":{"access_token":"token"}}"#]),
+                keychain: FakeKeychain()
+            ),
+            usageClient: CodexUsageClient(http: FakeHTTPClient(response: HTTPResponse(
+                statusCode: 200, headers: [:], body: Data("{}".utf8)
+            ))),
+            logUsageScanner: CodexLogFixture.scanner(home: nil),
+            openCodeUsageScanner: openCodeScanner,
+            now: { now },
+            pricing: {
+                ModelPricing(
+                    supplement: PricingSupplement(),
+                    primary: PricingCatalog(entries: ["gpt-test": ModelRates(
+                        inputPerMillion: 1000, outputPerMillion: 3000,
+                        cacheWritePerMillion: 1000, cacheReadPerMillion: 100
+                    )]),
+                    secondary: PricingCatalog(entries: [:])
+                )
+            }
+        )
+
+        let snapshot = await provider.refresh()
+
+        // The history's day key is the local calendar day too, whatever the machine's timezone.
+        let fixtureModels = try XCTUnwrap(
+            snapshot.usageHistory?.modelUsage?.daily.first { $0.date == "2099-02-20" }?.models
+        )
+        XCTAssertEqual(fixtureModels.first { $0.model == "gpt-test" }?.totalTokens, 150)
+        XCTAssertEqual(
+            values(snapshot.lines, "Today"),
+            [
+                MetricValue(number: 0.25, kind: .dollars, estimated: true),
+                MetricValue(number: 150, kind: .count, label: "tokens")
+            ]
+        )
+        XCTAssertNil(values(snapshot.lines, "Yesterday"), "today's usage belongs on Today, not Yesterday")
+    }
+
+    /// An instant on the given local calendar day, so a fixture's day matches the local day-key the
+    /// spend tiles bucket by — whatever timezone the test machine runs in.
+    private func localDate(_ year: Int, _ month: Int, _ day: Int, hour: Int = 12, minute: Int = 0) -> Date {
+        Calendar.current.date(from: DateComponents(
+            year: year, month: month, day: day, hour: hour, minute: minute
+        ))!
     }
 
     private func values(_ lines: [MetricLine], _ label: String) -> [MetricValue]? {
