@@ -2,6 +2,7 @@ import AppKit
 
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let processStartedAt = ProcessInfo.processInfo.systemUptime
     private var container: AppContainer?
     private var statusItemController: StatusItemController?
     private var firstLaunchWindow: FirstLaunchWindowController?
@@ -128,6 +129,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startDashboard(_ container: AppContainer) {
         container.startRefreshing()
         statusItemController = StatusItemController(container: container, updater: updater)
+        let launchDurationMS = Int((ProcessInfo.processInfo.systemUptime - processStartedAt) * 1_000)
+        AppLog.info(.lifecycle, "launch to status item ready: \(launchDurationMS) ms")
         // Starts background update checks (release build only; dormant under preview/`swift run`).
         updater.start()
     }
@@ -137,10 +140,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    /// Flush queued telemetry on quit. The SDK's lifecycle autocapture is off (we emit our own daily
-    /// rollups), so it won't auto-flush on termination — this explicit flush keeps low-frequency events
-    /// from being stranded across a clean quit.
+    /// Flush pending snapshot writes and queued telemetry on quit. The SDK's lifecycle autocapture
+    /// is off (we emit our own daily rollups), so it won't auto-flush on termination — this explicit
+    /// flush keeps low-frequency events from being stranded across a clean quit.
     public func applicationWillTerminate(_ notification: Notification) {
+        container?.dataStore.flushPendingSnapshotWork()
         container?.telemetry.flush()
     }
 }
