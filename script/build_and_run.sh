@@ -62,7 +62,10 @@ if [ ! -x "$BUILD_CLI_BINARY" ]; then
 fi
 
 echo "==> staging $APP_BUNDLE"
-rm -rf "$APP_BUNDLE"
+# A stale NFS silly-rename file — one deleted while still open — can leave a bundle undeletable on
+# a network volume. The files this script writes are all overwritten below, so a bundle that will
+# not delete must not abort the build.
+rm -rf "$APP_BUNDLE" || true
 mkdir -p "$APP_MACOS" "$APP_HELPERS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
 cp "$BUILD_CLI_BINARY" "$CLI_BINARY"
