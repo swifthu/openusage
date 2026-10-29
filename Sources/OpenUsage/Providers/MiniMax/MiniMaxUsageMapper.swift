@@ -16,119 +16,90 @@ import Foundation
 /// }
 /// ```
 ///
-/// Usage = `100 - remaining_percent`. The `remains_time` field (ms until reset) is not mapped
-/// to `resetsAt` because it is a duration, not an absolute epoch — it does not fit `.progress`
-/// semantics. `base_resp.status_code != 0` throws `.invalidResponse`.
+/// Usage = `100 - remaining_percent`. `remains_time` (milliseconds until the 5-hour window resets)
+/// anchors the Session row's reset instant and the "5h Reset" countdown text.
 ///
 /// Pure (no I/O), so it tests cleanly against sample payloads.
 enum MiniMaxUsageMapper {
-    /// 5-hour rolling session window in milliseconds (MiniMax's documented 5-hour window).
-    static let sessionPeriodMs = 5 * 60 * 60 * 1000
-    /// 7-day rolling weekly window in milliseconds.
-    static let weeklyPeriodMs = 7 * 24 * 60 * 60 * 1000
+    /// Shown when the account has no Token Plan, or when the payload carries no reset time to count down.
+    static let unknownResetText = "—"
 
-    /// True when a 2xx body signals the "valid key, but no Token Plan subscription" condition.
-    /// MiniMax returns `{"success":false,"code":…,"msg":"…未订阅 Token Plan"}` with no `data`.
-    /// Kept for backward compatibility; the new API uses `base_resp.status_code != 0` in `map()`.
-    static func isNoSubscription(_ body: Data) -> Bool {
-        guard let root = ProviderParse.jsonObject(body),
-              (root["success"] as? Bool) == false else { return false }
-        let msg = ((root["msg"] as? String) ?? "").lowercased()
-        return msg.contains("token plan") || msg.contains("subscription")
-    }
+    static let noSubscriptionMessage =
+        "No active MiniMax Token Plan subscription. Subscribe at platform.minimaxi.com to see usage."
 
     /// Session + weekly meters from the quota payload.
     /// - Picks the `model_remains` entry with `model_name == "general"`; falls back to the first
     ///   entry if no "general" is present.
     /// - `current_interval_remaining_percent` → Session used = `100 - remaining`.
     /// - `current_weekly_remaining_percent` → Weekly used = `100 - remaining`.
-    /// - An empty `model_remains` array returns `.noUsageData`.
-    /// - `base_resp.status_code != 0` throws `.invalidResponse`.
-    /// - `now` is used to compute `resetsAt` from `remains_time` (ms until reset).
-    static func map(_ body: Data, now: @escaping () -> Date = Date.init) throws -> [MetricLine] {
+    /// - An empty `model_remains` array means the provider reported no usage.
+    /// - A failure payload (`base_resp.status_code != 0`, or the legacy `success: false`) throws.
+    /// - `now` anchors the reset instant read from `remains_time`.
+    static func map(_ body: Data, now: Date = Date()) throws -> [MetricLine] {
         guard let root = ProviderParse.jsonObject(body) else {
-            throw MiniMaxUsageError.invalidResponse
+            throw ProviderError.invalidResponse
         }
 
+        if noSubscription(in: root) {
+            throw ProviderError.unavailable(noSubscriptionMessage)
+        }
         if let baseResp = root["base_resp"] as? [String: Any],
            let statusCode = ProviderParse.number(baseResp["status_code"]),
            statusCode != 0 {
-            throw MiniMaxUsageError.invalidResponse
+            throw ProviderError.invalidResponse
         }
 
         guard let modelRemains = root["model_remains"] as? [[String: Any]] else {
-            throw MiniMaxUsageError.invalidResponse
+            throw ProviderError.invalidResponse
         }
+        guard !modelRemains.isEmpty else { return [] }
 
-        guard !modelRemains.isEmpty else { return [.noUsageData] }
-
-        // Prefer "general" model; fall back to first entry.
+        // Prefer the "general" model; fall back to the first entry.
         let entry = modelRemains.first(where: { ($0["model_name"] as? String) == "general" })
             ?? modelRemains[0]
 
-        // Compute resetsAt from remains_time (ms) if present.
-        let resetsAt: Date? = {
-            guard let ms = ProviderParse.number(entry["remains_time"]) else { return nil }
-            return now().addingTimeInterval(ms / 1000)
-        }()
+        let resetsAt: Date? = ProviderParse.number(entry["remains_time"])
+            .map { now.addingTimeInterval($0 / 1000) }
 
         var lines: [MetricLine] = []
 
         if let remaining = ProviderParse.number(entry["current_interval_remaining_percent"]) {
             let used = ProviderParse.clampPercent(100 - remaining)
-            lines.append(.progress(
-                label: "Session",
-                used: used,
-                limit: 100,
-                format: .percent,
-                resetsAt: resetsAt,
-                periodDurationMs: sessionPeriodMs
-            ))
-
-            // sessionReset shows the countdown text in the menu bar.
-            if let resetsAt {
-                let remaining = max(0, resetsAt.timeIntervalSince(now()))
-                let text = Formatters.compactDuration(remaining) ?? "—"
-                lines.append(.badge(label: "5h Reset", text: text, resetsAt: resetsAt))
-            } else {
-                lines.append(.badge(label: "5h Reset", text: "—"))
-            }
+            lines.append(.percent("Session", used, resetsAt: resetsAt, periodMs: MetricPeriod.sessionMs))
+            lines.append(.badge(label: "5h Reset", text: countdownText(resetsAt, now: now)))
         }
 
         if let remaining = ProviderParse.number(entry["current_weekly_remaining_percent"]) {
             let used = ProviderParse.clampPercent(100 - remaining)
-            lines.append(.progress(
-                label: "Weekly",
-                used: used,
-                limit: 100,
-                format: .percent,
-                resetsAt: resetsAt,
-                periodDurationMs: weeklyPeriodMs
-            ))
+            // The payload carries no weekly reset instant, so the weekly row carries none either.
+            lines.append(.percent("Weekly", used, periodMs: MetricPeriod.weekMs))
         }
 
-        guard !lines.isEmpty else { return [.noUsageData] }
         return lines
     }
-}
 
-enum MiniMaxUsageError: Error, LocalizedError, Equatable {
-    case connectionFailed
-    case invalidResponse
-    case requestFailed(Int)
-    /// The key is valid but the account has no active Token Plan subscription.
-    case noSubscription
+    /// The time left until the session window resets, as text.
+    private static func countdownText(_ resetsAt: Date?, now: Date) -> String {
+        guard let resetsAt else { return unknownResetText }
+        return Formatters.compactDuration(resetsAt.timeIntervalSince(now)) ?? unknownResetText
+    }
 
-    var errorDescription: String? {
-        switch self {
-        case .connectionFailed:
-            return ProviderUsageErrorText.connectionFailed
-        case .invalidResponse:
-            return ProviderUsageErrorText.invalidResponse
-        case .requestFailed(let status):
-            return ProviderUsageErrorText.requestFailed(statusCode: status)
-        case .noSubscription:
-            return "No active MiniMax Token Plan subscription. Subscribe at platform.minimaxi.com to see usage."
+    /// A valid key on an account without a Token Plan: the API answers 200 with a failure payload
+    /// instead of an empty quota.
+    private static func noSubscription(in root: [String: Any]) -> Bool {
+        if (root["success"] as? Bool) == false {
+            if mentionsSubscription((root["msg"] as? String) ?? "") { return true }
         }
+        if let baseResp = root["base_resp"] as? [String: Any],
+           let statusCode = ProviderParse.number(baseResp["status_code"]),
+           statusCode != 0 {
+            if mentionsSubscription((baseResp["status_msg"] as? String) ?? "") { return true }
+        }
+        return false
+    }
+
+    private static func mentionsSubscription(_ message: String) -> Bool {
+        let message = message.lowercased()
+        return message.contains("token plan") || message.contains("subscription")
     }
 }
