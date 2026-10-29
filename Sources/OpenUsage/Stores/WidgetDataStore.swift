@@ -212,7 +212,7 @@ final class WidgetDataStore {
         snapshots[providerID]?.plan
     }
 
-    static let stalenessThreshold = RefreshSetting.interval * 2
+    static var stalenessThreshold: TimeInterval { RefreshSetting.interval * 2 }
 
     func stalenessHint(for providerID: String) -> String? {
         if let backoff = backoffs[providerID], backoff.providerAsked, now() < backoff.retryAt {

@@ -4,14 +4,16 @@
 
 | Trigger | What refreshes |
 | --- | --- |
-| Launch | Every account whose saved values are 5 minutes old or more |
-| Every 5 minutes | Every account, whatever you are doing, so the menu bar stays current; a pass whose time came while the Mac slept runs as soon as it wakes |
+| Launch | Every account whose saved values are one refresh interval old or more |
+| Every refresh interval | Every account, whatever you are doing, so the menu bar stays current; a pass whose time came while the Mac slept runs as soon as it wakes |
 | Adding an account | That account |
 | **⌘R**, or clicking the footer's **Next update in …** | Every account, skipping the cache, the hourly reads and the wait after a failure, never a wait the provider asked for |
 | An account's **Refresh** menu item | Its accounts, the same way as ⌘R |
 | Claiming a rate-limit reset | That account, once the result has shown: 5 seconds after a ChatGPT claim, 30 seconds after a Claude claim |
 
-There is no setting for the interval. A wait a provider asked for (HTTP 429) holds for every trigger,
+The interval is a setting: **Refresh Interval** in Settings, from 30 seconds to 5 minutes, 5 minutes by
+default. A change takes effect within seconds, and a shorter one also shortens how long a failed
+account waits before it is tried again. A wait a provider asked for (HTTP 429) holds for every trigger,
 ⌘R included. Accounts fetch in parallel, so a fast provider never waits for a slow one. Each account's
 result shows and is saved as soon as it lands. While an account is fetching, a spinner shows next to
 its name and in the footer.
@@ -26,9 +28,9 @@ the next ⌘R. Claude's plan and reset grants are read halfway between two passe
 its usage, and ⌘R reads the reset grants again only once their last check is 15 minutes old.
 
 The last snapshot of every account is saved on disk and shown at launch, so you see your last-known
-values before the first fetch finishes. A value counts as fresh for one interval (5 minutes) after it
-was fetched, across a relaunch too: relaunching within 5 minutes of a refresh asks no provider until
-the next pass.
+values before the first fetch finishes. A value counts as fresh for one interval after it was fetched,
+across a relaunch too: relaunching within the interval of a refresh asks no provider until the next
+pass.
 
 ## When a fetch fails
 
@@ -36,7 +38,7 @@ A failed refresh never wipes your data. The last good values stay on screen and 
 next to the account's name; the account's right-click menu starts with the reason. The
 error clears on the next successful refresh.
 
-An account that failed waits before it is tried again: 5 minutes after the first failure, then twice
+An account that failed waits before it is tried again: one interval after the first failure, then twice
 as long after each further failure in a row, up to an hour. An account whose key or sign-in keeps
 being refused drops to one request an hour. A failure that never reached the provider (no internet)
 is tried again on the next pass without growing the wait. A successful refresh ends the wait, and a
@@ -49,9 +51,9 @@ asked OpenUsage to wait. Retrying at 14:32." A manual refresh does not ask befor
 
 Claude budgets requests per Anthropic login, so its wait covers the whole login: every card signed in
 to it, its usage, plan and reset-grant reads, and the refresh after a claim. When Claude names no wait
-(or a wait of 0), the first wait is 5 minutes and each 429 in a row doubles it, up to an hour. The wait
-is saved, so a relaunch inside it sends Claude nothing and shows the same "Retrying at" time. Two cards
-signed in to the same Claude login share one usage request per pass.
+(or a wait of 0), the first wait is one refresh interval and each 429 in a row doubles it, up to an
+hour. The wait is saved, so a relaunch inside it sends Claude nothing and shows the same "Retrying at"
+time. Two cards signed in to the same Claude login share one usage request per pass.
 
 An account that stops responding is given up on after two minutes. Its spinner stops, the warning reads
 "Refresh timed out after 120s", and it is tried again on a later pass.

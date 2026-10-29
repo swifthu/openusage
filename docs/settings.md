@@ -9,6 +9,7 @@ survives relaunch.
 |---|---|---|
 | Launch at Login | switch | Registers OpenUsage as a login item, so it starts when you sign in to your Mac. |
 | Global Shortcut | recorder | A keyboard shortcut that opens and closes the panel from any app. Click the field and press the keys. |
+| Refresh Interval | slider | How often OpenUsage asks every account for fresh usage, from 30 seconds to 5 minutes. 5 minutes by default. A shorter interval keeps the menu bar fresher and asks the providers more often. |
 
 ## Appearance
 

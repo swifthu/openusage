@@ -110,12 +110,29 @@ final class AppContainer {
                     providerName: { [layout] id in layout.provider(id: id)?.fullName ?? id }
                 )
                 telemetry.tick()
-                let next = ContinuousClock.now + .seconds(RefreshSetting.interval)
-                try? await Task.sleep(until: next - .seconds(RefreshSetting.interval / 2), clock: .continuous)
-                guard !Task.isCancelled else { return }
-                await dataStore.refreshHourlyReads()
-                try? await Task.sleep(until: next, clock: .continuous)
+                await sleepUntilNextRefresh()
             }
+        }
+    }
+
+    /// Waits out the refresh interval, waking every few seconds so a change to the chosen interval
+    /// takes effect straight away instead of at the end of the running cycle. The hourly read still
+    /// lands halfway through the interval.
+    private func sleepUntilNextRefresh() async {
+        let cycleStart = Date()
+        var hourlyDone = false
+        while !Task.isCancelled {
+            let interval = RefreshSetting.interval
+            let elapsed = Date().timeIntervalSince(cycleStart)
+            guard elapsed < interval else { return }
+            if !hourlyDone, elapsed >= interval / 2 {
+                await dataStore.refreshHourlyReads()
+                hourlyDone = true
+                continue
+            }
+            // Sleep to the hourly mark or the slice boundary, whichever comes first.
+            let until = hourlyDone ? interval : interval / 2
+            try? await Task.sleep(for: .seconds(max(1, min(5, until - elapsed))))
         }
     }
 

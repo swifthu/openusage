@@ -7,6 +7,7 @@ struct SettingsScreen: View {
     @Environment(UpdaterController.self) private var updater
     @AppStorage(AppearanceSetting.key) private var appearance = AppearanceSetting.system
     @AppStorage(TimeFormatSetting.key) private var timeFormat = TimeFormatSetting.auto
+    @AppStorage(RefreshSetting.key) private var refreshInterval = RefreshSetting.maxInterval
     @AppStorage(PaceMilestone.underTenPercent.settingKey) private var underTenPercent = false
     @AppStorage(PaceMilestone.healthyToClose.settingKey) private var healthyToClose = false
     @AppStorage(PaceMilestone.closeToRunningOut.settingKey) private var closeToRunningOut = false
@@ -26,6 +27,7 @@ struct SettingsScreen: View {
                     LabeledContent("Global Shortcut") {
                         ShortcutRecorderField(name: .togglePopover, isVisible: popover.screen == .settings)
                     }
+                    refreshIntervalControl
                 } header: {
                     Text("General")
                 } footer: {
@@ -61,6 +63,34 @@ struct SettingsScreen: View {
                 if underTenPercent || healthyToClose || closeToRunningOut { checkNotificationPermission() }
             }
         }
+    }
+
+    /// The refresh cadence, adjustable from 30 seconds to 5 minutes. The value lives in
+    /// UserDefaults and is read by `RefreshSetting.interval`; the refresh loop re-reads it while it
+    /// waits, so a change takes effect within seconds rather than at the end of the running cycle.
+    private var refreshIntervalControl: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Refresh Interval")
+                Spacer()
+                Text(Self.refreshIntervalLabel(refreshInterval))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Slider(
+                value: $refreshInterval,
+                in: RefreshSetting.minInterval...RefreshSetting.maxInterval,
+                step: 15
+            )
+        }
+    }
+
+    private static func refreshIntervalLabel(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds.rounded())
+        guard total >= 60 else { return "\(total)s" }
+        let minutes = total / 60
+        let rest = total % 60
+        return rest == 0 ? "\(minutes)m" : "\(minutes)m \(rest)s"
     }
 
     private var usageDisplaySection: some View {

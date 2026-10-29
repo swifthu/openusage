@@ -3,8 +3,19 @@ import XCTest
 
 @MainActor
 final class RefreshSettingTests: XCTestCase {
-    func testCadenceIsFixedAtFiveMinutes() {
+    func testTheDefaultCadenceIsFiveMinutes() {
+        // Nothing is stored in the test's own defaults domain, so the app falls back to the default.
         XCTAssertEqual(RefreshSetting.interval, 300)
+        XCTAssertEqual(RefreshSetting.maxInterval, 300)
+    }
+
+    func testAStoredIntervalIsClampedToTheSupportedRange() {
+        XCTAssertEqual(RefreshSetting.clamped(0), RefreshSetting.maxInterval, "nothing stored means the default")
+        XCTAssertEqual(RefreshSetting.clamped(10), RefreshSetting.minInterval)
+        XCTAssertEqual(RefreshSetting.clamped(30), 30)
+        XCTAssertEqual(RefreshSetting.clamped(90), 90)
+        XCTAssertEqual(RefreshSetting.clamped(300), 300)
+        XCTAssertEqual(RefreshSetting.clamped(600), RefreshSetting.maxInterval)
     }
 
     func testRelaunchWithinTheIntervalShowsTheSavedSnapshotWithoutRefetching() async {
