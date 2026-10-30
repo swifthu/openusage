@@ -14,6 +14,12 @@ feed, so the Updates section does not show.
 
 `./script/build_and_run.sh logs` launches the app and streams its log lines.
 
+The build's scratch directory — SwiftPM's build database, index store, module cache and fetched
+dependencies — lives on the local disk (`~/build` by default, `SWIFT_SCRATCH_PATH` to change it),
+not next to the sources. On a checkout that sits on a network volume those files get corrupted
+(stale NFS handles, module maps truncated mid-write) and the build fails at random. Override the
+path with `SWIFT_SCRATCH_PATH` when a different location is wanted.
+
 ## Read the logs
 
 OpenUsage logs through unified logging only, under the subsystem `OpenUsage`, one category per

@@ -21,6 +21,10 @@ set -euo pipefail
 #                         hard error so CI never publishes an un-notarized build.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# SwiftPM's scratch directory, on the local disk: the checkout may live on a network volume, where
+# the build database and module cache get corrupted. build_and_run.sh uses the same default.
+BUILD_SCRATCH="${SWIFT_SCRATCH_PATH:-$HOME/build}"
 cd "$ROOT_DIR"
 
 : "${CODESIGN_IDENTITY:?set CODESIGN_IDENTITY to your Developer ID Application identity}"
@@ -80,9 +84,9 @@ echo "==> building $APP_NAME $VERSION ($BUILD) — universal (arm64 + x86_64)"
 # `-Xswiftc -g` emits DWARF so `dsymutil` can build a real (line-level) dSYM for crash symbolication.
 # This does NOT grow the shipped binary: Mach-O keeps DWARF in the .o files (referenced by the binary's
 # debug map) and dsymutil extracts it into the .dSYM — the executable only carries the symbol table.
-swift build -c release --arch arm64 --arch x86_64 -Xswiftc -g --product OpenUsage
-swift build -c release --arch arm64 --arch x86_64 -Xswiftc -g --product openusage-cli
-BUILD_DIR="$(swift build -c release --arch arm64 --arch x86_64 -Xswiftc -g --show-bin-path)"
+swift build -c release --arch arm64 --arch x86_64 -Xswiftc -g --scratch-path "$BUILD_SCRATCH" --product OpenUsage
+swift build -c release --arch arm64 --arch x86_64 -Xswiftc -g --scratch-path "$BUILD_SCRATCH" --product openusage-cli
+BUILD_DIR="$(swift build -c release --arch arm64 --arch x86_64 -Xswiftc -g --scratch-path "$BUILD_SCRATCH" --show-bin-path)"
 BUILD_BINARY="$BUILD_DIR/$APP_NAME"
 BUILD_CLI_BINARY="$BUILD_DIR/openusage-cli"
 [ -x "$BUILD_BINARY" ] || { echo "missing built binary: $BUILD_BINARY" >&2; exit 1; }
@@ -187,7 +191,7 @@ cat >"$APP_CONTENTS/Info.plist" <<PLIST
 PLIST
 
 # Embed + sign Sparkle (Developer ID, hardened runtime, secure timestamp).
-"$ROOT_DIR/script/embed_sparkle.sh" "$APP_BUNDLE" "$APP_BINARY" "$CODESIGN_IDENTITY" "--options runtime --timestamp"
+"$ROOT_DIR/script/embed_sparkle.sh" "$APP_BUNDLE" "$APP_BINARY" "$CODESIGN_IDENTITY" "--options runtime --timestamp" "$BUILD_SCRATCH"
 
 echo "==> signing app (Developer ID, hardened runtime)"
 codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$CLI_BINARY"

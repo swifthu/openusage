@@ -14,11 +14,19 @@ set -euo pipefail
 # Usage: script/build_and_run.sh [run|build|logs|verify]
 # Env:   CODESIGN_IDENTITY  override signing identity (exact name or hash)
 #        CONFIG             "release" (default) or "debug"
-#        SWIFT_BUILD_FLAGS  extra flags for `swift build`, e.g. a scratch path or module-cache path.
+#        SWIFT_BUILD_FLAGS  extra flags for `swift build`, e.g. a module-cache path.
 #                           Word-split on purpose so several flags can be passed at once.
+#        SWIFT_SCRATCH_PATH SwiftPM's scratch directory. Defaults to a folder on the local disk.
 
 MODE="${1:-run}"
 CONFIG="${CONFIG:-release}"
+
+# SwiftPM's scratch directory — the build database, the index store, the module cache and the
+# checked-out dependencies. This checkout lives on a network volume, where those get corrupted
+# (stale NFS handles, module maps truncated mid-write), which breaks the build at random. Keeping
+# the scratch directory on the local disk avoids that. `embed_sparkle.sh` and `release.sh` have to
+# agree on it, so they take it as an argument or use the same default.
+BUILD_SCRATCH="${SWIFT_SCRATCH_PATH:-$HOME/build}"
 
 TARGET_NAME="OpenUsage"                 # SwiftPM target / binary name
 APP_DISPLAY="OpenUsage"                 # user-facing app name
@@ -47,8 +55,8 @@ pkill -f "^$APP_BINARY" >/dev/null 2>&1 || true
 
 echo "==> swift build ($CONFIG)"
 # shellcheck disable=SC2086  # SWIFT_BUILD_FLAGS is intentionally word-split into several flags.
-swift build -c "$CONFIG" ${SWIFT_BUILD_FLAGS:-}
-BUILD_DIR="$(swift build -c "$CONFIG" --show-bin-path ${SWIFT_BUILD_FLAGS:-})"
+swift build -c "$CONFIG" --scratch-path "$BUILD_SCRATCH" ${SWIFT_BUILD_FLAGS:-}
+BUILD_DIR="$(swift build -c "$CONFIG" --show-bin-path --scratch-path "$BUILD_SCRATCH" ${SWIFT_BUILD_FLAGS:-})"
 BUILD_BINARY="$BUILD_DIR/$TARGET_NAME"
 BUILD_CLI_BINARY="$BUILD_DIR/openusage-cli"
 
@@ -171,7 +179,7 @@ fi
 # Embed + sign Sparkle.framework before sealing the app. The executable links Sparkle, so without the
 # embedded framework the build would fail to launch — even though the updater stays dormant here (no
 # SUFeedURL in the Info.plist above; see UpdaterController).
-"$ROOT_DIR/script/embed_sparkle.sh" "$APP_BUNDLE" "$APP_BINARY" "$CODESIGN_IDENTITY" "$SIGN_FLAGS"
+"$ROOT_DIR/script/embed_sparkle.sh" "$APP_BUNDLE" "$APP_BINARY" "$CODESIGN_IDENTITY" "$SIGN_FLAGS" "$BUILD_SCRATCH"
 
 if [ "$CODESIGN_IDENTITY" != "-" ]; then
   # Not --deep: the Sparkle framework is already signed above and must keep that signature.

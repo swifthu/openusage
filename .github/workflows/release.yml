@@ -168,8 +168,9 @@ jobs:
           DOWNLOAD_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}/
         run: |
           # Locate generate_appcast from the Sparkle SwiftPM artifact that release.sh already fetched.
-          GA="$(find .build/artifacts -type f -name generate_appcast 2>/dev/null | head -n1)"
-          [ -x "$GA" ] || { echo "generate_appcast not found under .build/artifacts" >&2; exit 1; }
+          # It lives in SwiftPM's scratch directory, which release.sh keeps on the local disk.
+          GA="$(find "${SWIFT_SCRATCH_PATH:-$HOME/build}/artifacts" -type f -name generate_appcast 2>/dev/null | head -n1)"
+          [ -x "$GA" ] || { echo "generate_appcast not found under ${SWIFT_SCRATCH_PATH:-$HOME/build}/artifacts" >&2; exit 1; }
 
           # How many feed items existed before (to confirm nothing is dropped). 0 on first release.
           # Sparkle normally keeps only a few versions per branch; this release feed is intentionally
