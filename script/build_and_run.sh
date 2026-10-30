@@ -39,8 +39,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_VERSION="dev ($(git -C "$ROOT_DIR" rev-parse --short HEAD))"
 APP_BUILD="$(git -C "$ROOT_DIR" rev-list --count HEAD)"
 DIST_DIR="$ROOT_DIR/dist"
+# Where the app ends up.
 APP_BUNDLE="$DIST_DIR/$APP_DISPLAY.app"
-APP_CONTENTS="$APP_BUNDLE/Contents"
+# Where it is assembled. The bundle is staged on the local disk and only then copied into place.
+# Staging it where it will live means deleting the executable the running app may still hold open,
+# and on a network volume that leaves the old binary behind as an NFS silly-rename file — inside
+# the freshly signed bundle, which invalidates its signature.
+STAGED_BUNDLE="$BUILD_SCRATCH/staging/$APP_DISPLAY.app"
+APP_CONTENTS="$STAGED_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_HELPERS="$APP_CONTENTS/Helpers"
 APP_RESOURCES="$APP_CONTENTS/Resources"
@@ -51,7 +57,13 @@ RESOURCE_BUNDLE_NAME="${TARGET_NAME}_${TARGET_NAME}.bundle"
 SIGN_ENTITLEMENTS="$ROOT_DIR/script/OpenUsage.local.entitlements.plist"
 
 # Stop only the dev build staged here, never an installed OpenUsage with the same executable name.
-pkill -f "^$APP_BINARY" >/dev/null 2>&1 || true
+RUNNING_BINARY="$APP_BUNDLE/Contents/MacOS/$TARGET_NAME"
+pkill -f "^$RUNNING_BINARY" >/dev/null 2>&1 || true
+# Wait for it to actually exit, so the copy below never races a running app.
+for _ in $(seq 1 40); do
+  pgrep -f "^$RUNNING_BINARY" >/dev/null 2>&1 || break
+  sleep 0.25
+done
 
 echo "==> swift build ($CONFIG)"
 # shellcheck disable=SC2086  # SWIFT_BUILD_FLAGS is intentionally word-split into several flags.
@@ -69,11 +81,11 @@ if [ ! -x "$BUILD_CLI_BINARY" ]; then
   exit 1
 fi
 
-echo "==> staging $APP_BUNDLE"
-# A stale NFS silly-rename file — one deleted while still open — can leave a bundle undeletable on
-# a network volume. The files this script writes are all overwritten below, so a bundle that will
-# not delete must not abort the build.
-rm -rf "$APP_BUNDLE" || true
+echo "==> staging $STAGED_BUNDLE"
+# The staging directory is on the local disk and is rebuilt from scratch every time, so it never
+# inherits leftovers. A stale NFS silly-rename file — one deleted while still open — can leave a
+# bundle undeletable on a network volume, so the removal must not abort the build.
+rm -rf "$STAGED_BUNDLE" || true
 mkdir -p "$APP_MACOS" "$APP_HELPERS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
 cp "$BUILD_CLI_BINARY" "$CLI_BINARY"
@@ -179,19 +191,55 @@ fi
 # Embed + sign Sparkle.framework before sealing the app. The executable links Sparkle, so without the
 # embedded framework the build would fail to launch — even though the updater stays dormant here (no
 # SUFeedURL in the Info.plist above; see UpdaterController).
-"$ROOT_DIR/script/embed_sparkle.sh" "$APP_BUNDLE" "$APP_BINARY" "$CODESIGN_IDENTITY" "$SIGN_FLAGS" "$BUILD_SCRATCH"
+"$ROOT_DIR/script/embed_sparkle.sh" "$STAGED_BUNDLE" "$APP_BINARY" "$CODESIGN_IDENTITY" "$SIGN_FLAGS" "$BUILD_SCRATCH"
 
 if [ "$CODESIGN_IDENTITY" != "-" ]; then
   # Not --deep: the Sparkle framework is already signed above and must keep that signature.
   /usr/bin/codesign --force $SIGN_FLAGS \
     --sign "$CODESIGN_IDENTITY" \
     --entitlements "$SIGN_ENTITLEMENTS" \
-    "$APP_BUNDLE" >/dev/null
+    "$STAGED_BUNDLE" >/dev/null
   echo "==> signed with: $CODESIGN_IDENTITY"
 else
   /usr/bin/codesign --force --sign - "$CLI_BINARY" >/dev/null
-  /usr/bin/codesign --force --sign - --entitlements "$SIGN_ENTITLEMENTS" "$APP_BUNDLE" >/dev/null
+  /usr/bin/codesign --force --sign - --entitlements "$SIGN_ENTITLEMENTS" "$STAGED_BUNDLE" >/dev/null
   echo "WARNING: ad-hoc signed (no usable signing identity)." >&2
+fi
+
+# The bundle has to verify: a file that appears inside it after it was signed breaks the
+# signature, and macOS then refuses to launch the bundle. Catch it here instead of at launch.
+if ! /usr/bin/codesign --verify --strict "$STAGED_BUNDLE" >/dev/null 2>&1; then
+  echo "ERROR: the signed bundle does not verify — something changed inside it after signing." >&2
+  /usr/bin/codesign --verify --strict "$STAGED_BUNDLE" >&2 || true
+  exit 1
+fi
+
+# Put the signed bundle where it belongs. The old one is renamed out of the way rather than
+# deleted: on a network volume, deleting an executable the app was just running from leaves it
+# behind as an NFS silly-rename file, and that file would land inside the new bundle.
+mkdir -p "$DIST_DIR"
+PREVIOUS_BUNDLE="$DIST_DIR/.previous-$APP_DISPLAY.app"
+rm -rf "$PREVIOUS_BUNDLE" 2>/dev/null || true
+if [ -e "$PREVIOUS_BUNDLE" ]; then
+  # It could not be deleted — the server still holds a file in it — so use a fresh name and let the
+  # move below not nest one bundle inside another.
+  PREVIOUS_BUNDLE="$DIST_DIR/.previous-$APP_DISPLAY-$(date +%s).app"
+fi
+if [ -e "$APP_BUNDLE" ]; then
+  mv "$APP_BUNDLE" "$PREVIOUS_BUNDLE" 2>/dev/null || rm -rf "$APP_BUNDLE" 2>/dev/null || true
+fi
+if [ -e "$APP_BUNDLE" ]; then
+  echo "ERROR: could not replace $APP_BUNDLE" >&2
+  exit 1
+fi
+ditto "$STAGED_BUNDLE" "$APP_BUNDLE"
+# The previous bundle is only junk now; it may not delete while the server still holds a file in
+# it, so leftovers are swept once they can be removed.
+find "$DIST_DIR" -maxdepth 1 -name ".previous-$APP_DISPLAY*.app" -mtime +1 -exec rm -rf {} \; 2>/dev/null || true
+if ! /usr/bin/codesign --verify --strict "$APP_BUNDLE" >/dev/null 2>&1; then
+  echo "ERROR: the bundle at $APP_BUNDLE does not verify after being copied into place." >&2
+  /usr/bin/codesign --verify --strict "$APP_BUNDLE" >&2 || true
+  exit 1
 fi
 
 launch_app() {
@@ -213,7 +261,7 @@ case "$MODE" in
   verify)
     launch_app
     sleep 1
-    pgrep -f "^$APP_BINARY" >/dev/null && echo "==> running"
+    pgrep -f "^$RUNNING_BINARY" >/dev/null && echo "==> running"
     ;;
   *)
     echo "usage: $0 [run|build|logs|verify]" >&2
