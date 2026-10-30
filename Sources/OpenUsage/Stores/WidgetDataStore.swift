@@ -261,12 +261,27 @@ final class WidgetDataStore {
             // A badge that counts down to a window reset carries the window it counts down in, so
             // the menu bar can draw it as a bar draining towards the reset instead of plain text.
             if let periodDurationMs, let resetsAt {
-                let periodSeconds = Double(periodDurationMs) / 1000
+                let period = Double(periodDurationMs) / 1000
                 let remaining = max(0, resetsAt.timeIntervalSince(now()))
-                data.progressFraction = periodSeconds > 0 ? min(1, remaining / periodSeconds) : nil
+                guard period > 0 else { return data }
+                // The window's last stretch gets its own scale: the bar jumps to full and walks down
+                // over that stretch instead of looking stalled at the tail of a long window. The
+                // stretch takes the warning colour, and its last fifth the critical colour.
+                let finalStretch = min(Self.finalStretchSeconds, period)
+                if remaining <= finalStretch {
+                    data.progressFraction = min(1, remaining / finalStretch)
+                    data.progressLevel = remaining <= finalStretch / 5 ? .critical : .warning
+                } else {
+                    data.progressFraction = min(1, remaining / period)
+                    data.progressLevel = .normal
+                }
             }
             return data
         }
     }
+
+    /// The length of a countdown window's final stretch: the bar switches to it, and to its color,
+    /// once the window has this much left. A window shorter than this is one long final stretch.
+    static let finalStretchSeconds: TimeInterval = 60 * 60
 
 }

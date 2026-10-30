@@ -199,6 +199,43 @@ final class WidgetDataStoreTests: XCTestCase {
         XCTAssertNil(data.progressFraction, "only a countdown to a reset becomes a bar")
     }
 
+    func testAResetCountdownBarGoesThroughItsPhases() async {
+        // A five-hour window: white while it has time left, yellow over the last hour, red over the
+        // last fifth of that hour.
+        let period = MetricPeriod.sessionMs
+        let cases: [(remaining: TimeInterval, level: WidgetData.ProgressLevel, fraction: Double)] = [
+            (3 * 60 * 60, .normal, 0.6),
+            (30 * 60, .warning, 0.5),
+            (10 * 60, .critical, 1.0 / 6.0)
+        ]
+
+        for (remaining, level, fraction) in cases {
+            let provider = Provider(id: "minimax", kind: .minimax)
+            let descriptor = WidgetDescriptor.badge(key: "sessionReset", provider: provider, title: "5h Reset")
+            let runtime = StubRuntime(
+                provider: provider,
+                descriptors: [descriptor],
+                snapshot: ProviderSnapshot(
+                    providerID: provider.id,
+                    displayName: provider.displayName,
+                    lines: [.badge(
+                        label: "5h Reset",
+                        text: "2h 30m",
+                        resetsAt: Date(timeIntervalSinceNow: remaining),
+                        periodDurationMs: period
+                    )]
+                )
+            )
+            let store = WidgetDataStore.forTesting([runtime], defaults: isolatedDefaults())
+
+            await store.refreshAll()
+            let data = store.data(for: descriptor)
+
+            XCTAssertEqual(data.progressLevel, level, "\(remaining)s left should be \(level)")
+            XCTAssertEqual(data.progressFraction ?? 0, fraction, accuracy: 0.02, "\(remaining)s left")
+        }
+    }
+
     func testBarFractionMatchesRoundedValue() {
         for (used, value, fraction) in [
             (0.3915, "0%", 0.0), (0.6, "1%", 0.01), (99.6, "100%", 1.0)

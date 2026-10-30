@@ -128,7 +128,7 @@ private struct MenuBarTextStrip: View {
             VStack(alignment: .trailing, spacing: metrics.contains { $0.progressFraction != nil } ? 2 * scale : -2 * scale) {
                 ForEach(metrics, id: \.id) { metric in
                     if let fraction = metric.progressFraction {
-                        progressBar(fraction: fraction)
+                        progressBar(fraction: fraction, level: metric.progressLevel)
                     } else {
                         Text(metric.value)
                     }
@@ -140,13 +140,19 @@ private struct MenuBarTextStrip: View {
     }
 
     /// A countdown window drawn as a bar draining towards its reset: the filled part is the time
-    /// still to run. White like the rest of the strip — the menu bar always renders against the
-    /// system strip, where white reads on both Light and Dark Aqua.
-    private func progressBar(fraction: Double) -> some View {
-        GeometryReader { geo in
+    /// still to run. While the window has plenty left the bar is the strip's own white ink; over
+    /// the window's final stretch it takes the app's warning colour, and the critical colour over
+    /// the last fifth of that stretch.
+    private func progressBar(fraction: Double, level: WidgetData.ProgressLevel?) -> some View {
+        let fill: Color = switch level {
+        case .warning: Theme.severityColor(.warning)
+        case .critical: Theme.severityColor(.critical)
+        case .normal, .none: MenuBarStripRenderer.themeColor.opacity(0.85)
+        }
+        return GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Capsule().fill(MenuBarStripRenderer.themeColor.opacity(0.22))
-                Capsule().fill(MenuBarStripRenderer.themeColor.opacity(0.85))
+                Capsule().fill(fill)
                     .frame(width: max(2, geo.size.width * fraction))
             }
         }

@@ -8,6 +8,8 @@ struct MenuBarContent: Equatable {
         /// How much of the metric's window is still to run, for a reset countdown the strip draws as
         /// a draining bar. Nil for every other metric.
         var progressFraction: Double? = nil
+        /// How urgent that countdown is, which is the bar's color. Nil with no fraction.
+        var progressLevel: WidgetData.ProgressLevel? = nil
     }
 
     struct Group: Equatable {
@@ -42,7 +44,8 @@ enum MenuBarContentBuilder {
                     id: descriptor.id,
                     label: trayLabel(descriptor.metricLabel),
                     value: data.menuBarValue,
-                    progressFraction: data.progressFraction
+                    progressFraction: data.progressFraction,
+                    progressLevel: data.progressLevel
                 )
             }
             guard !metrics.isEmpty else { return nil }

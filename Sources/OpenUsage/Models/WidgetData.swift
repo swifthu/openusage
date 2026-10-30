@@ -23,6 +23,18 @@ struct WidgetData: Hashable {
     /// How much of a countdown window is still to run, 1 (just started) to 0 (about to reset). Set
     /// only for a badge that counts down to a reset: the menu bar draws it as a draining bar.
     var progressFraction: Double?
+    /// How urgent that countdown is, which is the bar's color. Set with `progressFraction`.
+    var progressLevel: ProgressLevel?
+
+    /// The urgency of a countdown window, and so the color of the bar that counts it down.
+    enum ProgressLevel: String, Sendable, Equatable, Codable {
+        /// Plenty of time left: the bar keeps the strip's own ink.
+        case normal
+        /// The window's final stretch: the bar takes the app's warning colour.
+        case warning
+        /// The last moments: the bar takes the critical colour.
+        case critical
+    }
 
     enum SessionStartSignal: Hashable {
         /// Zero usage is the fresh signal. Antigravity reports a reset instant even for an untouched
