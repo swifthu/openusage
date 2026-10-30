@@ -10,6 +10,7 @@ final class AppContainer {
     let renaming: AccountRenameStore
     let popover = PopoverState()
     let hideFromScreenShare: HideFromScreenShareSetting
+    let menuBarSize: MenuBarSizeSetting
     let telemetry: TelemetryRecorder
     @ObservationIgnored private var providers: [AccountProviderRuntime]
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
@@ -30,6 +31,7 @@ final class AppContainer {
         self.http = http
         self.defaults = defaults
         self.hideFromScreenShare = HideFromScreenShareSetting(defaults: defaults)
+        self.menuBarSize = MenuBarSizeSetting(defaults: defaults)
         let claudeSessions = ClaudeSessions(defaults: defaults)
         self.claudeSessions = claudeSessions
         let providers = ProviderCatalog.make(

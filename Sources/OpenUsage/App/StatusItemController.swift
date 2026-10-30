@@ -155,36 +155,39 @@ final class StatusItemController: NSObject {
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
     }
 
-    /// Shows a strip only when its content changed: setting even an identical image costs a full
-    /// status-item redraw through WindowServer on macOS 26+.
+    /// Shows a strip only when its content or its size changed: setting even an identical image
+    /// costs a full status-item redraw through WindowServer on macOS 26+.
     struct StripGate {
-        private var shown: MenuBarContent?
+        private var shown: (content: MenuBarContent, scale: Double)?
 
-        mutating func show(_ content: MenuBarContent, using show: (MenuBarContent) -> Void) {
-            guard content != shown else { return }
-            shown = content
-            show(content)
+        mutating func show(_ content: MenuBarContent, scale: Double, using show: (MenuBarContent, Double) -> Void) {
+            guard content != shown?.content || scale != shown?.scale else { return }
+            shown = (content, scale)
+            show(content, scale)
         }
     }
 
     private func updateImage() {
-        let content = withObservationTracking {
-            container.hideFromScreenShare.isConcealing
+        let (content, scale) = withObservationTracking {
+            // The size is read inside the tracked closure so changing it redraws the strip.
+            let scale = container.menuBarSize.scale
+            let content = container.hideFromScreenShare.isConcealing
                 ? MenuBarContent(groups: [])
                 : MenuBarContentBuilder.build(
                     groups: container.layout.pinnedGroups,
                     isStale: container.dataStore.hasStaleAccount,
                     data: { container.dataStore.data(for: $0) }
                 )
+            return (content, scale)
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(50))
                 self?.updateImage()
             }
         }
-        stripGate.show(content) { content in
-            statusItem.button?.image = MenuBarStripRenderer.image(for: content)
-                ?? MenuBarStripRenderer.appIcon(for: content)
+        stripGate.show(content, scale: scale) { content, scale in
+            statusItem.button?.image = MenuBarStripRenderer.image(for: content, scale: scale)
+                ?? MenuBarStripRenderer.appIcon(for: content, scale: scale)
         }
     }
 

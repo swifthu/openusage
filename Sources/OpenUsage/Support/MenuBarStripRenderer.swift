@@ -11,9 +11,10 @@ enum MenuBarStripRenderer {
     /// carries that choice, so the color lives here rather than in each drawing site.
     static let themeColor = Color.white
 
-    static func image(for content: MenuBarContent) -> NSImage? {
+    /// The strip image, drawn at `scale` times its default size.
+    static func image(for content: MenuBarContent, scale: Double = 1) -> NSImage? {
         guard !content.isEmpty else { return nil }
-        let renderer = ImageRenderer(content: MenuBarTextStrip(content: content))
+        let renderer = ImageRenderer(content: MenuBarTextStrip(content: content, scale: scale))
         renderer.scale = 2
         guard let rendered = renderer.cgImage else { return nil }
         let cgImage = trimmedToVisibleContent(rendered) ?? rendered
@@ -26,8 +27,9 @@ enum MenuBarStripRenderer {
         return image
     }
 
-    static func appIcon(for content: MenuBarContent) -> NSImage {
-        let icon = themedAppIcon()
+    /// The app icon shown when nothing is starred, drawn at `scale` times its default size.
+    static func appIcon(for content: MenuBarContent, scale: Double = 1) -> NSImage {
+        let icon = themedAppIcon(scale: scale)
         guard content.isStale else { return icon }
         let dimmed = NSImage(size: icon.size, flipped: false) { rect in
             icon.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 0.5)
@@ -39,8 +41,8 @@ enum MenuBarStripRenderer {
 
     /// The brand mark in the theme color, drawn the same way the strip draws its glyphs so both
     /// read as the same ink.
-    private static func themedAppIcon() -> NSImage {
-        let mark = ProviderMarks.image(for: "openusage", side: 18, inset: 0.08)
+    private static func themedAppIcon(scale: Double) -> NSImage {
+        let mark = ProviderMarks.image(for: "openusage", side: 18 * scale, inset: 0.08)
         let renderer = ImageRenderer(content: Image(nsImage: mark)
             .renderingMode(.template)
             .foregroundStyle(themeColor))
@@ -84,31 +86,34 @@ enum MenuBarStripRenderer {
 
 private struct MenuBarTextStrip: View {
     let content: MenuBarContent
+    /// The size the strip is drawn at, as a multiple of the default. Every dimension scales with it.
+    var scale: Double = 1
 
     var body: some View {
-        HStack(spacing: 11) {
+        HStack(spacing: 11 * scale) {
             ForEach(content.groups, id: \.provider.id) { group in
-                HStack(spacing: 4) {
+                HStack(spacing: 4 * scale) {
                     glyph(group.provider.icon)
                         .overlay(alignment: .bottomTrailing) {
                             if let badge = group.badge {
                                 badgeView(badge)
-                                    .offset(x: Self.badgeOverhang.width, y: Self.badgeOverhang.height)
+                                    .offset(x: badgeOverhang.width * scale,
+                                            y: badgeOverhang.height * scale)
                             }
                         }
                         .compositingGroup()
                         // The renderer draws only inside layout bounds, so reserve the badge's overhang
                         // (vertically on both sides, keeping the mark centred on its values) or it is cut off.
-                        .padding(.trailing, group.badge == nil ? 0 : Self.badgeOverhang.width)
-                        .padding(.vertical, group.badge == nil ? 0 : Self.badgeOverhang.height)
+                        .padding(.trailing, group.badge == nil ? 0 : badgeOverhang.width * scale)
+                        .padding(.vertical, group.badge == nil ? 0 : badgeOverhang.height * scale)
                     metricsView(group.metrics)
                 }
             }
         }
         .foregroundStyle(MenuBarStripRenderer.themeColor)
         .monospacedDigit()
-        .padding(.horizontal, 2)
-        .padding(.vertical, 1)
+        .padding(.horizontal, 2 * scale)
+        .padding(.vertical, 1 * scale)
         .fixedSize()
         .compositingGroup()
         .opacity(content.isStale ? 0.5 : 1)
@@ -118,9 +123,9 @@ private struct MenuBarTextStrip: View {
     private func metricsView(_ metrics: [MenuBarContent.Metric]) -> some View {
         if metrics.count <= 1 {
             Text(metrics.first?.value ?? "")
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: 12 * scale, weight: .bold))
         } else {
-            VStack(alignment: .trailing, spacing: metrics.contains { $0.progressFraction != nil } ? 2 : -2) {
+            VStack(alignment: .trailing, spacing: metrics.contains { $0.progressFraction != nil } ? 2 * scale : -2 * scale) {
                 ForEach(metrics, id: \.id) { metric in
                     if let fraction = metric.progressFraction {
                         progressBar(fraction: fraction)
@@ -129,7 +134,7 @@ private struct MenuBarTextStrip: View {
                     }
                 }
             }
-            .font(.system(size: 9, weight: .semibold))
+            .font(.system(size: 9 * scale, weight: .semibold))
             .fixedSize()
         }
     }
@@ -145,21 +150,21 @@ private struct MenuBarTextStrip: View {
                     .frame(width: max(2, geo.size.width * fraction))
             }
         }
-        .frame(height: 4)
+        .frame(height: 4 * scale)
     }
 
-    private static let glyphSide: CGFloat = 16
+    private var glyphSide: CGFloat { 16 * scale }
 
-    private static let badgeOverhang = CGSize(width: 5, height: 2.5)
+    private var badgeOverhang: CGSize { CGSize(width: 5 * scale, height: 2.5 * scale) }
 
     private func badgeView(_ badge: String) -> some View {
         let label = Text(badge)
-            .font(.system(size: 6.5, weight: .heavy))
-            .padding(.horizontal, 2)
-            .frame(minWidth: 8, minHeight: 8)
+            .font(.system(size: 6.5 * scale, weight: .heavy))
+            .padding(.horizontal, 2 * scale)
+            .frame(minWidth: 8 * scale, minHeight: 8 * scale)
         return ZStack {
             Capsule().fill(MenuBarStripRenderer.themeColor)
-                .padding(-1.25)
+                .padding(-1.25 * scale)
                 .blendMode(.destinationOut)
             Capsule().fill(MenuBarStripRenderer.themeColor)
             label.foregroundStyle(MenuBarStripRenderer.themeColor).blendMode(.destinationOut)
@@ -168,7 +173,7 @@ private struct MenuBarTextStrip: View {
     }
 
     private func glyph(_ icon: String) -> some View {
-        Image(nsImage: ProviderMarks.image(for: icon, side: Self.glyphSide, inset: 0.04))
+        Image(nsImage: ProviderMarks.image(for: icon, side: glyphSide, inset: 0.04))
             .renderingMode(.template)
             .foregroundStyle(MenuBarStripRenderer.themeColor)
     }

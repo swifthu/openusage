@@ -28,6 +28,7 @@ struct SettingsScreen: View {
                         ShortcutRecorderField(name: .togglePopover, isVisible: popover.screen == .settings)
                     }
                     refreshIntervalControl
+                    menuBarSizeControl
                 } header: {
                     Text("General")
                 } footer: {
@@ -91,6 +92,28 @@ struct SettingsScreen: View {
         let minutes = total / 60
         let rest = total % 60
         return rest == 0 ? "\(minutes)m" : "\(minutes)m \(rest)s"
+    }
+
+    /// How large the menu bar strip is drawn, from 70% to 130% of its default. The strip redraws at
+    /// the new size as soon as the slider moves.
+    private var menuBarSizeControl: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Menu Bar Size")
+                Spacer()
+                Text("\(Int((container.menuBarSize.scale * 100).rounded()))%")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Slider(
+                value: Binding(
+                    get: { container.menuBarSize.scale },
+                    set: { container.menuBarSize.set($0) }
+                ),
+                in: MenuBarSizeSetting.range,
+                step: 0.05
+            )
+        }
     }
 
     private var usageDisplaySection: some View {

@@ -37,3 +37,11 @@ initials: the first letter of its first word and of its last, so "Personal" read
 Machine 1" reads A1. Two accounts named alike share a tag; rename one to tell them apart.
 
 Stars follow your dashboard order.
+
+## Size
+
+The strip is drawn at 100% of its default size. **Menu Bar Size** in Settings scales it from 70% to
+130%: the provider mark, the values, the spacing between them and the countdown bar all grow or
+shrink together. The menu bar has a fixed height, so past the top of the range the strip is cut off
+by the system. The setting applies right away, and it also scales the app icon shown when nothing is
+starred.
