@@ -6,7 +6,7 @@ Alerts, and Advanced. Changes apply at once. Hover the ⓘ beside a setting to s
 ## General
 
 - **Launch at Login.** Starts OpenUsage when you sign in to your Mac.
-- **Default Tab.** Priority or All Usage, the tab the panel opens to.
+- **Default Tab.** Priority, All Usage or Rhythm, the tab the panel opens to.
 - **Global Shortcut.** Opens and closes the panel from any app. Click the field and press the keys.
 - **Refresh Interval.** How often OpenUsage asks every account for fresh usage, from 30 seconds to
   5 minutes. 5 minutes by default. A shorter interval keeps the menu bar fresher and asks the
