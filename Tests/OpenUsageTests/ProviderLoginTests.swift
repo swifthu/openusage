@@ -54,7 +54,7 @@ final class ProviderLoginTests: XCTestCase {
             do {
                 let result = try await ClaudeLogin(http: http).login(
                     prompt: Self.browserPrompt(PromptCapture(), callback: CallbackStatus()),
-                    pastedCode: emptyInput()
+                    pastedCode: noPastedCode()
                 )
                 XCTFail("signed in as \(result.label) without the profile that identifies the account (HTTP \(profile.statusCode))")
             } catch {
@@ -313,6 +313,14 @@ final class ProviderLoginTests: XCTestCase {
 
     private func emptyInput() -> AsyncStream<String> {
         AsyncStream { $0.finish() }
+    }
+
+    /// A pasted-code stream that never yields and never ends, so the sign-in goes through the
+    /// browser callback. An empty stream that ends at once reads as a cancelled sign-in, which
+    /// races the callback: on a loaded machine the empty stream finishes first and the login
+    /// reports the cancellation instead of the profile error the test is about.
+    private func noPastedCode() -> AsyncStream<String> {
+        AsyncStream { _ in }
     }
 
     private func pastedInput(_ value: String) -> AsyncStream<String> {
