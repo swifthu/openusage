@@ -7,9 +7,9 @@ your busy hours are.
 
 Every refresh, the app notes how much of each limit's window has been used and when. From those
 notes it builds a five-minute history of the last 90 days, kept in
-`~/Library/Application Support/OpenUsage/rhythm/`, one file per local day. The app's bundle
-identifier is in the path, so a development build and the installed app never write over each
-other's history.
+`~/Library/Application Support/OpenUsage/rhythm/<bundle id>/`, one file per local day. The app's
+bundle identifier is in the path, so a development build and the installed app never write over
+each other's history.
 
 What a file holds is the share of the window that was used, the provider it came from, the name of
 the metric and a local account id. It never holds a token count, a price, an account name or an
@@ -39,6 +39,10 @@ shows a thin baseline. A slice nothing was read from stays empty: "we do not kno
 was used".
 
 Turn the recording off in **Settings → Display → Usage → Record Usage Rhythm**, and remove what was
-already recorded with **Delete Rhythm History**. The two are separate: turning the recording off
-keeps the history, and deleting the history leaves the recording on. While the recording is on, the
-current day's file fills up again.
+already recorded with **Delete Rhythm History**, which asks before it removes anything. The two are
+separate: turning the recording off keeps the history, and deleting the history leaves the recording
+on. While the recording is on, the current day's file fills up again.
+
+The delete button is greyed out when the settings screen finds no history to remove. It is checked
+when the screen is opened, so a history that is recorded afterwards is only removed once the screen
+is opened again.

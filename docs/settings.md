@@ -53,9 +53,11 @@ Both of these are under **Settings → Display → Usage**.
 - **Record Usage Rhythm.** Keeps how fast your limits fill up, so the **Rhythm** tab can show when
   your busy hours are. On by default. Turning it off stops the recording and keeps what was already
   recorded.
-- **Delete Rhythm History.** Removes the recorded history from this Mac. The button is greyed out
-  when there is no history to remove. Stopping the recording and deleting the history are two
-  different things, and this is the second one.
+- **Delete Rhythm History.** Removes the recorded history from this Mac, after asking for a
+  confirmation. The button is greyed out when there is no history to remove; it is checked when the
+  screen is opened, so a history that is recorded afterwards is only removed once the screen is
+  opened again. Stopping the recording and deleting the history are two different things, and this
+  is the second one.
 
 See [Usage Rhythm](rhythm.md).
 

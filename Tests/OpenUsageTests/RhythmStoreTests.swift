@@ -23,6 +23,14 @@ final class RhythmStoreTests: XCTestCase {
         calendar.date(from: DateComponents(year: 2026, month: month, day: dayNumber))!
     }
 
+    /// Today's midnight in the store's calendar.
+    private var today: Date { calendar.startOfDay(for: Date()) }
+
+    /// A day that is this many days away from today.
+    private func daysFromToday(_ offset: Int) -> Date {
+        calendar.date(byAdding: .day, value: offset, to: today)!
+    }
+
     private func makeStore() -> FileRhythmStore {
         FileRhythmStore(directory: directory, calendar: calendar)
     }
@@ -141,6 +149,41 @@ final class RhythmStoreTests: XCTestCase {
 
         // Three days are kept, the day that was written and the two before it.
         XCTAssertEqual(try store.recordedDays(), [day(11, 2), day(11, 3), day(11, 4)])
+    }
+
+    func testWritingADayInThePastRemovesNothingThatIsInsideTheWindow() throws {
+        let store = makeStore(retentionDays: 3)
+
+        try store.save(record(daysFromToday(-2), points: []))
+        try store.save(record(daysFromToday(-1), points: []))
+        try store.save(record(today, points: []))
+        // An old day is written after the days around today.
+        try store.save(record(daysFromToday(-3), points: []))
+
+        // The days that are still inside the window are all there.
+        XCTAssertEqual(try store.recordedDays(), [daysFromToday(-3), daysFromToday(-2), daysFromToday(-1), today])
+    }
+
+    func testWritingADayInTheFutureRemovesNothing() throws {
+        let store = makeStore(retentionDays: 3)
+
+        try store.save(record(daysFromToday(-2), points: []))
+        try store.save(record(daysFromToday(-1), points: []))
+        try store.save(record(today, points: []))
+        // The clock was set forward, so the day that was written is in the future.
+        try store.save(record(daysFromToday(10), points: []))
+
+        // A clock that is wrong must not cost the user the history that is still inside the
+        // window.
+        XCTAssertEqual(try store.recordedDays(), [daysFromToday(-2), daysFromToday(-1), today, daysFromToday(10)])
+    }
+
+    func testTheHistoryIsKeptForNinetyDays() {
+        XCTAssertEqual(RhythmRetention.retentionDays, 90)
+        XCTAssertEqual(
+            FileRhythmStore(directory: directory, calendar: calendar).retentionDays,
+            RhythmRetention.retentionDays
+        )
     }
 
     func testTheRecordsBeforeADateAreDeleted() throws {

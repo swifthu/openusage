@@ -25,6 +25,8 @@ struct SettingsScreen: View {
     @State private var hasRhythmHistory = false
     /// What to tell the user when the history could not be deleted.
     @State private var rhythmErrorMessage: String?
+    /// Whether the user is asked to confirm the deletion of the history.
+    @State private var isConfirmingRhythmDeletion = false
 
     /// How far a grouped `Form` already sets its cards in from every edge.
     private static let formRowInset: CGFloat = 20
@@ -140,9 +142,19 @@ struct SettingsScreen: View {
                 titled("Record Usage Rhythm", info: "Keeps how fast your limits fill up, on this Mac")
             }
             Button("Delete Rhythm History") {
-                deleteRhythmHistory()
+                isConfirmingRhythmDeletion = true
             }
             .disabled(!hasRhythmHistory)
+            .confirmationDialog(
+                "Delete Rhythm History?",
+                isPresented: $isConfirmingRhythmDeletion,
+                titleVisibility: .visible
+            ) {
+                Button("Delete Rhythm History", role: .destructive) { deleteRhythmHistory() }
+            } message: {
+                Text("Every recorded day is deleted from this Mac. The recording stays on, and today's file is written again on the next refresh.")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         } header: {
             Text("Usage")
         } footer: {
@@ -343,12 +355,15 @@ struct SettingsScreen: View {
             try container.rhythm.deleteHistory()
             AppLog.notice(.rhythm, "the rhythm history was deleted")
             rhythmErrorMessage = nil
+            refreshRhythmHistoryState()
         } catch {
-            // Say what happened rather than what was meant: the files are still there.
+            // Say what happened rather than what was meant: the files are still there, so the
+            // button stays as it is. The message of the failed deletion is kept: a state refresh
+            // that failed as well must not hide it.
             AppLog.warn(.rhythm, "the rhythm history could not be deleted: \(error.localizedDescription)")
             rhythmErrorMessage = "The rhythm history could not be deleted: \(error.localizedDescription)"
+            hasRhythmHistory = true
         }
-        refreshRhythmHistoryState()
     }
 }
 

@@ -206,8 +206,8 @@ Upstream has none of this; the fork keeps it across a sync.
   deliberate reading of that heading: the ban is on trends of *spend*, and the rhythm charts the
   provider's own reported window. It is recorded here so that a sync does not quietly drop it.
 - The history lives in `~/Library/Application Support/OpenUsage/rhythm/<bundle id>/`, one file per
-  local day, and is never uploaded. Section 3 also forbids reading other tools' credentials, files
-  and logs; the rhythm reads none of them.
+  local day, and is never uploaded. The Architecture section further up also forbids reading other
+  tools' credentials, files and logs; the rhythm reads none of them.
 - Keep the recording and the analysis in `Sources/OpenUsage/Rhythm/`, and the views in
   `Sources/OpenUsage/Views/Rhythm*.swift`. A future cloud store is one more `RhythmStore`
   implementation, not a change to the recorder or the chart — and it needs its own stable identity

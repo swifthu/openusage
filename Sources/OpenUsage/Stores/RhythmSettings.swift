@@ -1,14 +1,12 @@
 import Foundation
 import Observation
 
-/// Whether the app records how fast each account's window fills up, and how long it keeps the
-/// history. The history never leaves this Mac.
+/// Whether the app records how fast each account's window fills up. The history never leaves this
+/// Mac, and how long it is kept is `RhythmRetention`'s business.
 @MainActor
 @Observable
 final class RhythmSettings {
     static let key = "recordsUsageRhythm"
-    /// How many days of history are kept. The store trims the days older than this.
-    nonisolated static let retentionDays = 90
     /// The longest window the rhythm history records: a day. A longer window sampled every few
     /// minutes is a slow drift, and its hourly rate says nothing about when the account is used.
     static let shortWindowMs = MetricPeriod.dayMs

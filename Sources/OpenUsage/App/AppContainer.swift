@@ -164,7 +164,7 @@ final class AppContainer {
     /// behind the slot is still the same one.
     static func accountMayHaveChanged(_ credential: AccountCredential, saved: AccountCredential?) -> Bool {
         guard let fresh = credential.identity, let old = saved?.identity else {
-            AppLog.info(.rhythm, "the rhythm of a replaced sign-in could not check whether the account behind the slot is the same one")
+            AppLog.info(.auth, "a replaced sign-in could not check whether the account behind the slot is the same one")
             return false
         }
         return fresh != old

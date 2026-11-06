@@ -94,6 +94,7 @@ Rhythm shows how fast your usage windows fill up over the day, and when the peak
 
 The recording behind the tab is turned on and off, and its history is deleted, in
 [Settings → Display → Usage](settings.md#usage-rhythm). See [Usage Rhythm](rhythm.md).
+
 ## Hiding, pinning, and ordering metrics
 
 An account's page in **Accounts** lists all of its metrics.

@@ -51,7 +51,7 @@ struct FileRhythmStore: RhythmStore {
     /// written, so the history does not grow without end.
     let retentionDays: Int
 
-    init(directory: URL = FileRhythmStore.defaultDirectory, calendar: Calendar, retentionDays: Int = RhythmSettings.retentionDays) {
+    init(directory: URL = FileRhythmStore.defaultDirectory, calendar: Calendar, retentionDays: Int = RhythmRetention.retentionDays) {
         self.directory = directory
         self.calendar = calendar
         self.retentionDays = retentionDays
@@ -87,15 +87,28 @@ struct FileRhythmStore: RhythmStore {
     }
 
     /// Removes the days that are older than the retention length, so the history does not grow
-    /// without end. The days are counted from the day that was just written: that day and the
-    /// `retentionDays - 1` days before it are kept.
+    /// without end. The days are counted from today and not from the day that was just written:
+    /// the retention is a promise about today, so a clock that was set forward must not delete a
+    /// history that is still inside the window.
     ///
     /// A day that cannot be removed is left in place and warned about: the history that is there
     /// is better than a history that is gone.
     private func trimOldDays(around day: Date) {
-        let today = calendar.startOfDay(for: day)
-        guard let cutoff = calendar.date(byAdding: .day, value: -(retentionDays - 1), to: today) else { return }
-        guard let days = try? recordedDays() else { return }
+        // A day that was written is normally today, but it can be in the past (a day the app
+        // writes after the clock was turned back) or in the future (a clock that was set
+        // forward). The cutoff follows the earlier of the two, so the future never pulls it up.
+        let today = calendar.startOfDay(for: min(day, Date()))
+        guard let cutoffDate = calendar.date(byAdding: .day, value: -(retentionDays - 1), to: today) else { return }
+        // Adding a day to a midnight that falls on a daylight-saving transition gives 01:00 and
+        // not 00:00, which would take the boundary day with it and lose a day for nothing.
+        let cutoff = calendar.startOfDay(for: cutoffDate)
+        let days: [Date]
+        do {
+            days = try recordedDays()
+        } catch {
+            AppLog.warn(.rhythm, "could not list the rhythm history to trim it: \(error.localizedDescription)")
+            return
+        }
         for old in days where old < cutoff {
             do {
                 try FileManager.default.removeItem(at: url(for: old))
