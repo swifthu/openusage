@@ -171,7 +171,7 @@ final class RhythmRecorder {
         let prefix = "\(providerID)/"
         let keys = lastReading.keys.filter { $0.hasPrefix(prefix) }
         guard !keys.isEmpty else { return }
-        AppLog.info(.rhythm, "the rhythm of \(providerID) starts a new baseline: the account behind it may be a different one")
+        AppLog.info(.rhythm, "the rhythm of \(providerID) starts a new baseline: \(keys.count) readings dropped, the account behind it may be a different one")
         for key in keys {
             lastReading.removeValue(forKey: key)
         }

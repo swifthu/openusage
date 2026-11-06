@@ -101,7 +101,14 @@ final class AppContainer {
     func replaceCredential(_ credential: AccountCredential, for providerID: String) async throws {
         guard let runtime = providers.first(where: { $0.provider.id == providerID }) else { return }
         let account = runtime.account
-        let saved = try? accounts.credential(for: account.id)
+        let saved: AccountCredential?
+        do {
+            saved = try accounts.credential(for: account.id)
+        } catch {
+            // The saved sign-in cannot be read, so the account behind this slot cannot be checked.
+            AppLog.warn(LogTag.auth("accounts"), "\(account.cardID) could not read its saved sign-in: \(error.localizedDescription)")
+            saved = nil
+        }
         if case .oauth = credential, let signedIn = credential.identity,
            let savedIdentity = saved?.identity, savedIdentity != signedIn {
             throw ProviderError.unavailable("That's a different account. Sign in to this one, or use Add New Account.")
@@ -149,8 +156,17 @@ final class AppContainer {
     /// carries a hash of itself: the same key is the same account, and a different key may be
     /// somebody else's. A sign-in that carries no identity at all is taken for the same account,
     /// which is what the app does everywhere else.
+    ///
+    /// When the two identities cannot be compared — the saved sign-in could not be read, or either
+    /// of them carries no identity — the account is still taken for the same one, because dropping
+    /// the baseline on every renewal would lose real consumption. The fact that it could not be
+    /// checked is worth saying out loud, though: the identity is what says whether the account
+    /// behind the slot is still the same one.
     static func accountMayHaveChanged(_ credential: AccountCredential, saved: AccountCredential?) -> Bool {
-        guard let fresh = credential.identity, let old = saved?.identity else { return false }
+        guard let fresh = credential.identity, let old = saved?.identity else {
+            AppLog.info(.rhythm, "the rhythm of a replaced sign-in could not check whether the account behind the slot is the same one")
+            return false
+        }
         return fresh != old
     }
 

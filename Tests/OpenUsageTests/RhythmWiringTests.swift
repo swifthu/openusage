@@ -296,6 +296,40 @@ final class RhythmWiringTests: XCTestCase {
         XCTAssertEqual(recorded.samples.reduce(0, +), 1)
     }
 
+    func testAReplacedSignInThroughTheContainerDropsTheOldBaseline() async throws {
+        let defaults = isolatedDefaults()
+        let accounts = AccountStore(defaults: defaults, vault: InMemoryCredentialVault())
+        // The first read finds a nearly empty window, the second a nearly full one. The jump
+        // between them is what a baseline that was not dropped would book as consumption.
+        let reads = TestSwitch(0)
+        let http = RoutingHTTPClient { _ in
+            let remaining = reads.value == 0 ? 80 : 20
+            reads.value += 1
+            return HTTPResponse.json("""
+            {"model_remains":[{"model_name":"general","current_interval_remaining_percent":\(remaining),\
+            "current_weekly_remaining_percent":100,"remains_time":7200000}],\
+            "base_resp":{"status_code":0,"status_msg":"success"}}
+            """)
+        }
+        let account = accounts.add(kind: .minimax, label: "Work", credential: .apiKey("key"))
+        let container = AppContainer.forTesting(accounts: accounts, defaults: defaults, http: http)
+
+        await container.dataStore.refresh(providerID: account.cardID, force: true)
+
+        // Another account's key is pasted into the same slot. An API key's identity is a hash of
+        // the key, so the two identities differ and the account behind the slot may be another one.
+        try await container.replaceCredential(.apiKey("another key"), for: account.cardID)
+        container.rhythm.flush(at: Date())
+
+        let store = try XCTUnwrap(container.rhythm.store as? RecordingRhythmStore)
+        let recorded = try XCTUnwrap(store.saved.first?.series.first { $0.key == "\(account.cardID)/Session" })
+        // Both readings are samples.
+        XCTAssertEqual(recorded.samples.reduce(0, +), 2)
+        // The jump is that other account's state, not consumption: the old baseline is gone, so the
+        // new reading starts from nothing.
+        XCTAssertEqual(recorded.points.reduce(0, +), 0, accuracy: 0.0001)
+    }
+
     func testTheFileStoreKeepsTheDayTheRecorderWrote() async throws {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("rhythm-wiring-\(UUID().uuidString)", isDirectory: true)

@@ -246,7 +246,10 @@ final class WidgetDataStore {
 
     /// Installs a validated key's runtime and snapshot together. Reads started by the previous
     /// runtime can finish later, but the runtime identity check discards their results.
-    func replaceProvider(_ provider: ProviderRuntime, snapshot: ProviderSnapshot, accountMayHaveChanged: Bool = false) {
+    ///
+    /// The flag has no default: every call site has to say whether the account behind the slot may
+    /// be a different one now, because forgetting it would quietly book a jump as consumption.
+    func replaceProvider(_ provider: ProviderRuntime, snapshot: ProviderSnapshot, accountMayHaveChanged: Bool) {
         let id = provider.provider.id
         inFlight.removeValue(forKey: id)?.cancel()
         providersByID[id] = provider
