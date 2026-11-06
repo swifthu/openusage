@@ -94,6 +94,10 @@ struct RhythmView: View {
                     ? "No readings were taken on this day."
                     : "No readings were taken in this range.")
             } else {
+                // What the bars are counted in, so the chart says what it adds up.
+                Text(zoom.unit)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
                 if zoom != .day {
                     RhythmContextStrip(
                         dayBars: contextBars,
@@ -193,7 +197,14 @@ struct RhythmView: View {
     }
 
     private var summary: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 4) {
+            // A write that failed leaves the chart empty with no explanation anywhere else, so the
+            // failure is said out loud. The recorder keeps retrying, so the history is not lost.
+            if let writeError {
+                Text("Writing the rhythm history failed: \(writeError)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
             // A read that failed leaves the summary out: the card says the history could not be
             // read, and a peak of the data that is still in memory would contradict that.
             if readError == nil, let peak = RhythmAnalytics.peakBars(in: bars), !bars.isEmpty {
@@ -206,9 +217,21 @@ struct RhythmView: View {
         }
     }
 
+    /// What went wrong the last time the history could not be written, if anything.
+    private var writeError: String? {
+        container.rhythm.lastWriteError
+    }
+
     /// What the empty chart says. "We do not know" is not the same as "nothing was used".
     private var emptyText: String {
-        guard hasHistory else { return "Nothing recorded yet. The rhythm builds up from today." }
+        guard hasHistory else {
+            // A recording that is switched off will not build up, so the empty state must not
+            // promise that it will.
+            guard container.rhythmSettings.isEnabled else {
+                return "The rhythm recording is off. Turn it on in Settings to start recording."
+            }
+            return "Nothing recorded yet. The rhythm builds up from today."
+        }
         return mode == .day ? "Nothing was recorded on this day." : "Nothing was recorded in this range."
     }
 
@@ -294,9 +317,19 @@ struct RhythmView: View {
     }
 
     private func clampOffset() {
-        offset = min(max(offset, 0), max(0, dayLength - zoom.window))
-        // The window always starts on a bar boundary, so the bars stay aligned with the buckets.
-        offset = (offset / zoom.barDuration).rounded(.down) * zoom.barDuration
+        offset = Self.clampedOffset(offset, zoom: zoom, dayLength: dayLength)
+    }
+
+    /// The offset the chart can show.
+    ///
+    /// The whole day starts at the day's midnight, so the offset goes back to zero there: on a day
+    /// of twenty-five hours an offset of an hour would leave the chart starting at 01:00 while
+    /// the axis still counts from zero. A window shorter than the day can only start so far into
+    /// it, and it always starts on a bar boundary, so the bars stay aligned with the buckets.
+    static func clampedOffset(_ offset: TimeInterval, zoom: RhythmZoom, dayLength: TimeInterval) -> TimeInterval {
+        guard zoom != .day else { return 0 }
+        let clamped = min(max(offset, 0), max(0, dayLength - zoom.window))
+        return (clamped / zoom.barDuration).rounded(.down) * zoom.barDuration
     }
 
     /// The days the chart needs: the selected day, or the days the chosen range covers.

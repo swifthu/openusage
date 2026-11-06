@@ -9,9 +9,9 @@ enum RhythmDifferencer {
     /// window's reading counts from its own zero. A gap longer than the window burns nothing for
     /// the same reason — the two readings describe different windows.
     ///
-    /// The delta is attributed to the day of the later reading. An interval that crosses midnight
-    /// therefore leaves the part before midnight in no bucket, which costs at most one refresh
-    /// interval of consumption per day boundary — see `RhythmClock.shares`.
+    /// The buckets are the ones of the day that is asked about. An interval that crosses midnight
+    /// therefore has to be asked about twice — once for the day that ended and once for the day
+    /// that began — or the part of it that fell in the other day is lost.
     static func delta(
         from previous: RhythmReading,
         to current: RhythmReading,
@@ -19,9 +19,9 @@ enum RhythmDifferencer {
         calendar: Calendar
     ) -> RhythmDelta {
         let interval = current.at.timeIntervalSince(previous.at)
-        guard interval > 0 else { return RhythmDelta(points: 0, buckets: []) }
+        guard interval > 0 else { return RhythmDelta(points: 0, buckets: [], clamped: false) }
         guard interval <= Double(current.windowMs) / 1000 else {
-            return RhythmDelta(points: 0, buckets: [])
+            return RhythmDelta(points: 0, buckets: [], clamped: false)
         }
         // The window the last reading described ended before this reading was taken, so the two
         // are not two points on the same window's curve.
@@ -31,14 +31,25 @@ enum RhythmDifferencer {
         } else {
             reset = current.fraction < previous.fraction
         }
-        guard !reset else { return RhythmDelta(points: 0, buckets: []) }
+        guard !reset else { return RhythmDelta(points: 0, buckets: [], clamped: false) }
 
         let burned = current.fraction - previous.fraction
-        guard burned > 0 else { return RhythmDelta(points: 0, buckets: []) }
+        guard burned > 0 else { return RhythmDelta(points: 0, buckets: [], clamped: false) }
         let points = min(burned, 1)
+        // More than the whole window burned in one interval: the provider's denominator changed —
+        // a new plan, a smaller limit — and the chart would show a full bar that nobody burned.
+        // The bar is drawn, so the log has to say that it is not a rate.
+        //
+        // The warning is logged once, for the day the reading belongs to: an interval that
+        // crosses midnight is asked about twice, and the clamp is one event.
+        if burned > 1, calendar.isDate(day, inSameDayAs: current.at) {
+            AppLog.warn(.rhythm, "the rhythm of \(current.key) burned \(String(format: "%.2f", burned)) points in \(Int(interval))s "
+                + "and was clamped to the whole window: the provider's limit probably changed")
+        }
         return RhythmDelta(
             points: points,
-            buckets: RhythmClock.shares(from: previous.at, to: current.at, day: day, calendar: calendar)
+            buckets: RhythmClock.shares(from: previous.at, to: current.at, day: day, calendar: calendar),
+            clamped: burned > 1
         )
     }
 }
@@ -50,11 +61,10 @@ enum RhythmDifferencer {
 /// does not lose the part that was written first, and a day another run of the app started is
 /// continued from what was written.
 ///
-/// A delta belongs to the day of the **later** reading. An interval that crosses midnight
-/// therefore leaves the part before midnight in no bucket, and an interval that *begins* before
-/// the day's midnight — a reading at 23:58 and the next one at 00:02 — lands in no bucket at all.
-/// Both losses are bounded by one refresh interval per day boundary, the same order as the use
-/// before a provider's window resets that the recorder also does not see.
+/// A burn belongs to the days the interval covered. An interval that crosses midnight is booked
+/// on both days: the part before midnight on the day that ended, the rest on the day that began.
+/// The consumption before a provider's window resets is still not seen, and the recorder does not
+/// guess at it.
 @MainActor
 @Observable
 final class RhythmRecorder {
@@ -80,6 +90,10 @@ final class RhythmRecorder {
     @ObservationIgnored private let flushInterval: TimeInterval
     /// How many writes have failed in a row.
     @ObservationIgnored private var failures = 0
+    /// What went wrong the last time the history could not be written, if anything. The recorder
+    /// keeps retrying, but the user has to know that the chart is not being filled — a disk that
+    /// cannot be written leaves the chart empty with no explanation anywhere else.
+    private(set) var lastWriteError: String?
     /// Whether a write was already attempted after the recording was turned off. The first such
     /// write is the user's own request and is not held back by the backoff; the retries after it
     /// are, so a disk that cannot be written does not warn on every refresh.
@@ -119,9 +133,12 @@ final class RhythmRecorder {
     /// The readings a snapshot carries: the session-sized metrics of one account.
     static func readings(from snapshot: ProviderSnapshot, kind: ProviderKind, at now: Date) -> [RhythmReading] {
         snapshot.lines.compactMap { line in
-            guard case .progress(let label, let used, let limit, _, let resetsAt, let periodMs) = line else {
+            guard case .progress(let label, let used, let limit, let format, let resetsAt, let periodMs) = line else {
                 return nil
             }
+            // The share of a money budget is the rate at which money is spent, and this fork does
+            // not chart spending. A count and a percentage are both shares of a window.
+            guard !format.isMoney else { return nil }
             // Only a window that is short enough to have a rhythm inside a day. A weekly window
             // sampled every few minutes is a slow drift, and its hourly rate says nothing.
             guard let periodMs, periodMs > 0, periodMs <= RhythmSettings.shortWindowMs else { return nil }
@@ -190,6 +207,17 @@ final class RhythmRecorder {
         }
     }
 
+    /// Takes the readings of a snapshot as the baseline of the next ones, without booking a burn.
+    ///
+    /// The app's cache holds the last snapshot of every provider, so the consumption between it
+    /// and the first reading of this run — a whole night, for a provider with a day-long window —
+    /// is not lost.
+    func adoptBaseline(_ snapshot: ProviderSnapshot, kind: ProviderKind) {
+        for reading in Self.readings(from: snapshot, kind: kind, at: snapshot.refreshedAt) {
+            lastReading[reading.key] = reading
+        }
+    }
+
     /// Writes the buckets that changed since the last write, and remembers them as written so only
     /// what changed since is waiting to be written again. Returns whether every day was written.
     ///
@@ -214,6 +242,7 @@ final class RhythmRecorder {
                 try history.save(record)
                 written[day] = series
                 lastFlush = now
+                lastWriteError = nil
                 if day != recordedDay {
                     // The day is on disk, so the recorder does not need to hold it any more.
                     days.removeValue(forKey: day)
@@ -224,6 +253,7 @@ final class RhythmRecorder {
                 failed = true
                 failures += 1
                 lastFailure = now
+                lastWriteError = error.localizedDescription
                 AppLog.warn(.rhythm, "could not write the rhythm history for \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
                 if failures >= 5 {
                     AppLog.error(.rhythm, "the rhythm history stopped being written after \(failures) failures in a row")
@@ -235,8 +265,23 @@ final class RhythmRecorder {
     }
 
     private func apply(_ reading: RhythmReading, at now: Date) {
-        let day = calendar.startOfDay(for: now)
+        let day = calendar.startOfDay(for: reading.at)
         if recordedDay != day {
+            // The day rolled over. The burn since the last reading may have crossed midnight: the
+            // part before it belongs to the day that ended and the rest to the day that began. It
+            // is worked out first, while the day that ended is still in memory — writing that day
+            // before the burn is known would lose it.
+            let previous = lastReading[reading.key]
+            let endedDay = previous.map { calendar.startOfDay(for: $0.at) }
+            let endedBurn = previous.flatMap {
+                RhythmDifferencer.delta(from: $0, to: reading, day: calendar.startOfDay(for: $0.at), calendar: calendar)
+            }
+            let begunBurn = previous.flatMap {
+                RhythmDifferencer.delta(from: $0, to: reading, day: day, calendar: calendar)
+            }
+            if let endedBurn, let endedDay, endedDay != day {
+                burn(endedBurn, of: reading, on: endedDay)
+            }
             // The day that just ended is written before the new reading is folded in, so what is on
             // disk is always a whole number of readings. A day whose write failed stays in memory
             // until it lands.
@@ -244,6 +289,13 @@ final class RhythmRecorder {
             days[day] = days[day] ?? [:]
             flush(at: now)
             continueFromStore(on: day)
+            // The day that began is continued from what was written, so the burn that belongs to
+            // it is added after that.
+            if let begunBurn {
+                burn(begunBurn, of: reading, on: day)
+            }
+        } else if let previous = lastReading[reading.key] {
+            burn(from: previous, to: reading, on: day)
         }
         var series = days[day] ?? [:]
         var record = series[reading.key] ?? RhythmSeriesRecord(
@@ -254,12 +306,6 @@ final class RhythmRecorder {
             points: Array(repeating: 0, count: RhythmClock.bucketCount(on: day, calendar: calendar)),
             samples: Array(repeating: 0, count: RhythmClock.bucketCount(on: day, calendar: calendar))
         )
-        if let previous = lastReading[reading.key] {
-            let delta = RhythmDifferencer.delta(from: previous, to: reading, day: day, calendar: calendar)
-            for share in delta.buckets where share.index < record.points.count {
-                record.points[share.index] += delta.points * share.share
-            }
-        }
         if let index = RhythmClock.bucketIndex(for: reading.at, on: day, calendar: calendar),
            index < record.samples.count {
             record.samples[index] += 1
@@ -267,6 +313,31 @@ final class RhythmRecorder {
         series[reading.key] = record
         days[day] = series
         lastReading[reading.key] = reading
+    }
+
+    /// Adds the burn between two readings to the buckets of the day it is asked about.
+    private func burn(from previous: RhythmReading, to current: RhythmReading, on day: Date) {
+        let delta = RhythmDifferencer.delta(from: previous, to: current, day: day, calendar: calendar)
+        burn(delta, of: current, on: day)
+    }
+
+    /// Adds a burn to the buckets of the day it belongs to.
+    private func burn(_ delta: RhythmDelta, of reading: RhythmReading, on day: Date) {
+        guard !delta.buckets.isEmpty else { return }
+        var series = days[day] ?? [:]
+        var record = series[reading.key] ?? RhythmSeriesRecord(
+            key: reading.key,
+            kind: reading.kind,
+            label: reading.label,
+            windowMs: reading.windowMs,
+            points: Array(repeating: 0, count: RhythmClock.bucketCount(on: day, calendar: calendar)),
+            samples: Array(repeating: 0, count: RhythmClock.bucketCount(on: day, calendar: calendar))
+        )
+        for share in delta.buckets where share.index < record.points.count {
+            record.points[share.index] += delta.points * share.share
+        }
+        series[reading.key] = record
+        days[day] = series
     }
 
     private func pendingSeries(on day: Date) -> [RhythmSeriesRecord] {

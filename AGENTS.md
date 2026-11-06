@@ -202,6 +202,10 @@ Upstream has none of this; the fork keeps it across a sync.
   reported number against its own limit — sampled on every refresh and differenced between
   readings. No log scanning, no spend estimate, no pricing and no absolute token count anywhere
   in it, which is what section 3's body bans.
+- The chart carries the share of each **recorded** window, and a provider's money is not one of
+  them: a dollar budget is the rate at which money is spent, and section 3's body bans spend, so
+  a metric whose unit is money is not recorded at all. The shares that are recorded are added up,
+  including the windows of different lengths.
 - Section 3's heading also says "no trend". The rhythm is a time series, so this is the fork's
   deliberate reading of that heading: the ban is on trends of *spend*, and the rhythm charts the
   provider's own reported window. It is recorded here so that a sync does not quietly drop it.

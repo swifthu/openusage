@@ -19,6 +19,10 @@ logs of other tools.
 Only windows of a day or less are recorded. A weekly limit sampled every few minutes is a slow
 drift, and its hourly rate says nothing about when you are actually working.
 
+A metric whose unit is money is not recorded. A dollar budget is the rate at which money is
+spent, and this app does not chart spending. What the chart carries is the share of each recorded
+window — a percentage or a count — and nothing else.
+
 ## The two views
 
 **This Day** shows one day. The arrows step a day at a time, and a long press on the date opens a
@@ -37,6 +41,11 @@ A bar's height is how much of the window that slice burned, as a share of the wi
 drawn in the app's blue and the rest in a lighter shade of it. A slice that was read but not used
 shows a thin baseline. A slice nothing was read from stays empty: "we do not know" is not "nothing
 was used".
+
+The chart adds up the share of every recorded window, including windows of different lengths: two
+accounts whose windows each burned 5% make a bar of 10 points. The unit above the chart says how
+much time each bar covers, so it follows the zoom level — "Percentage Points / Hour" for a whole
+day, "Percentage Points / 5 Minutes" for the narrowest one.
 
 Turn the recording off in **Settings → Display → Usage → Record Usage Rhythm**, and remove what was
 already recorded with **Delete Rhythm History**, which asks before it removes anything. The two are

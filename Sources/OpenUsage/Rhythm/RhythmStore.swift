@@ -3,11 +3,19 @@ import Foundation
 /// A rhythm history that cannot be read.
 enum RhythmStoreError: LocalizedError {
     case unknownSchema(String)
+    /// The file holds another day than the one it was asked for, so it was renamed or restored.
+    case dayMismatch(expected: String, actual: String)
+    /// The file's buckets do not fit the day it holds, so they are out of step.
+    case bucketMismatch(expected: Int, found: Int)
 
     var errorDescription: String? {
         switch self {
         case .unknownSchema(let schema):
             "The rhythm history uses an unknown format (\(schema))."
+        case .dayMismatch(let expected, let actual):
+            "The rhythm history file holds \(actual) and was asked for \(expected)."
+        case .bucketMismatch(let expected, let found):
+            "The rhythm history file has \(found) buckets where \(expected) were expected."
         }
     }
 }
@@ -74,12 +82,19 @@ struct FileRhythmStore: RhythmStore {
 
     private struct Payload: Codable {
         var schema: String
+        /// The day the file holds. A file that was renamed or restored must not pass for the day
+        /// it is asked about.
+        var day: String?
         var series: [RhythmSeriesRecord]
     }
 
     func save(_ record: RhythmDayRecord) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let payload = Payload(schema: RhythmDayRecord.currentSchema, series: record.series)
+        let payload = Payload(
+            schema: RhythmDayRecord.currentSchema,
+            day: RhythmClock.dayKey(for: record.day, calendar: calendar),
+            series: record.series
+        )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         try encoder.encode(payload).write(to: url(for: record.day), options: .atomic)
@@ -124,6 +139,23 @@ struct FileRhythmStore: RhythmStore {
         let payload = try JSONDecoder().decode(Payload.self, from: Data(contentsOf: file))
         guard payload.schema == RhythmDayRecord.currentSchema else {
             throw RhythmStoreError.unknownSchema(payload.schema)
+        }
+        // The file has to say which day it holds, and it has to be the day it is asked for: a file
+        // that was renamed or restored would otherwise pass for the day it is read on.
+        let key = RhythmClock.dayKey(for: day, calendar: calendar)
+        guard let payloadDay = payload.day else {
+            throw RhythmStoreError.dayMismatch(expected: key, actual: "no day")
+        }
+        guard payloadDay == key else {
+            throw RhythmStoreError.dayMismatch(expected: key, actual: payloadDay)
+        }
+        // The buckets have to fit the day: a file written for a day of 288 buckets that is read on
+        // a day of 276 or 300 — or after the time zone changed — has its buckets out of step.
+        let count = RhythmClock.bucketCount(on: day, calendar: calendar)
+        for series in payload.series {
+            guard series.points.count == count, series.samples.count == count else {
+                throw RhythmStoreError.bucketMismatch(expected: count, found: series.points.count)
+            }
         }
         return RhythmDayRecord(day: calendar.startOfDay(for: day), series: payload.series)
     }

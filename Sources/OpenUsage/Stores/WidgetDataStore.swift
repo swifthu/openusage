@@ -105,6 +105,13 @@ final class WidgetDataStore {
         let ids = Set(registry.providers.map(\.id))
         self.snapshots = cache.load().filter { ids.contains($0.key) }
         for (id, snapshot) in snapshots { providersByID[id]?.restore(snapshot) }
+        // The cached snapshot is the baseline of the first reading of this run, so the consumption
+        // since the app was last closed is not lost — for a provider with a day-long window, that
+        // is a whole night.
+        for (id, snapshot) in snapshots {
+            guard let kind = providersByID[id]?.provider.kind else { continue }
+            rhythm?.adoptBaseline(snapshot, kind: kind)
+        }
     }
 
     func apply(providers: [ProviderRuntime], registry: WidgetRegistry) {

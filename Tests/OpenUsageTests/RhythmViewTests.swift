@@ -29,6 +29,76 @@ final class RhythmViewTests: QuietWindowTestCase {
         }
     }
 
+    /// An empty history with the recording switched off must not promise a rhythm that will not
+    /// build up.
+    func testAnEmptyHistoryWithTheRecordingOffSaysSo() async throws {
+        let defaults = isolatedDefaults()
+        defaults.set(false, forKey: RhythmSettings.key)
+        let container = makeContainer(store: RecordingRhythmStore(calendar: .current), defaults: defaults)
+        let (_, host) = show(rhythmView(container), in: .titled, size: CGSize(width: PanelMetrics.width, height: 400))
+
+        try await waitUntil {
+            texts(in: host).contains("The rhythm recording is off. Turn it on in Settings to start recording.")
+        }
+    }
+
+    /// A write that failed has to reach the user: a disk that cannot be written leaves the chart
+    /// empty with no explanation anywhere the user can see.
+    func testAWriteThatFailedIsSaidOutLoud() async throws {
+        let store = RecordingRhythmStore(calendar: .current)
+        let container = makeContainer(store: store)
+        let (_, host) = show(rhythmView(container), in: .titled, size: CGSize(width: PanelMetrics.width, height: 400))
+        try await waitUntil { !store.requestedRanges.isEmpty }
+
+        // The disk cannot be written, and the recorder finds out.
+        store.setFailing(true)
+        container.rhythm.record(
+            ProviderSnapshot(
+                providerID: "account-1",
+                displayName: "Claude",
+                lines: [
+                    .progress(
+                        label: "Session",
+                        used: 20,
+                        limit: 100,
+                        format: .percent,
+                        resetsAt: Date(),
+                        periodDurationMs: MetricPeriod.sessionMs
+                    )
+                ]
+            ),
+            kind: .claude,
+            at: Date()
+        )
+        container.rhythm.flush(at: Date())
+
+        try await waitUntil {
+            texts(in: host).contains { $0.contains("Writing the rhythm history failed") }
+        }
+    }
+
+    /// The chart says what its bars are counted in.
+    func testTheChartSaysWhatItsUnitIs() async throws {
+        let store = RecordingRhythmStore(calendar: .current)
+        try store.save(recordToday())
+        let container = makeContainer(store: store)
+        let (_, host) = show(rhythmView(container), in: .titled, size: CGSize(width: PanelMetrics.width, height: 400))
+
+        try await waitUntil {
+            texts(in: host).contains("Percentage Points / Hour")
+        }
+    }
+
+    /// The whole day starts at the day's midnight, even on a day of twenty-five hours.
+    func testTheWholeDayStartsAtTheMidnight() {
+        XCTAssertEqual(RhythmView.clampedOffset(3600, zoom: .day, dayLength: 25 * 3600), 0)
+    }
+
+    /// A window shorter than the day keeps the offset it was moved to.
+    func testANarrowedWindowKeepsItsOffset() {
+        XCTAssertEqual(RhythmView.clampedOffset(3600, zoom: .halfDay, dayLength: 25 * 3600), 3600)
+    }
+
     /// A recorded day puts its peak on show, with the hours it runs.
     func testARecordedDayShowsItsPeak() async throws {
         let store = RecordingRhythmStore(calendar: .current)
@@ -194,8 +264,11 @@ final class RhythmViewTests: QuietWindowTestCase {
 
     // MARK: - Helpers
 
-    private func makeContainer(store: RecordingRhythmStore) -> AppContainer {
-        let defaults = isolatedDefaults()
+    private func makeContainer(
+        store: RecordingRhythmStore,
+        defaults: UserDefaults? = nil
+    ) -> AppContainer {
+        let defaults = defaults ?? isolatedDefaults()
         return AppContainer.forTesting(
             accounts: AccountStore(defaults: defaults, vault: InMemoryCredentialVault()),
             defaults: defaults,

@@ -60,6 +60,9 @@ struct RhythmDelta: Hashable, Sendable {
     var points: Double
     /// Where the burned share goes.
     var buckets: [RhythmBucketShare]
+    /// Whether the burn was bigger than the whole window and was clamped to it. A clamped burn
+    /// means the provider's denominator changed, so the bar is not a rate the user burned.
+    var clamped: Bool
 }
 
 /// One bucket's share of a delta.

@@ -48,6 +48,22 @@ enum RhythmZoom: Int, CaseIterable, Sendable {
         case .twoHours: "2 Hours"
         }
     }
+
+    /// The name of the time each bar stands for.
+    var barDurationLabel: String {
+        switch self {
+        case .day: "Hour"
+        case .halfDay: "30 Minutes"
+        case .sixHours: "15 Minutes"
+        case .twoHours: "5 Minutes"
+        }
+    }
+
+    /// The unit of the chart: the share of the window each bar covers. The bars add up the share
+    /// of every recorded window, so the unit says how much time each bar stands for.
+    var unit: String {
+        "Percentage Points / \(barDurationLabel)"
+    }
 }
 
 /// Turns the recorded buckets into the bars the chart draws.

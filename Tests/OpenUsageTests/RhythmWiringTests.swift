@@ -39,7 +39,8 @@ final class RhythmWiringTests: XCTestCase {
                 format: .percent,
                 resetsAt: resetsAt ?? now.addingTimeInterval(3600),
                 periodDurationMs: MetricPeriod.sessionMs
-            )]
+            )],
+            refreshedAt: now
         )
     }
 
@@ -328,6 +329,42 @@ final class RhythmWiringTests: XCTestCase {
         // The jump is that other account's state, not consumption: the old baseline is gone, so the
         // new reading starts from nothing.
         XCTAssertEqual(recorded.points.reduce(0, +), 0, accuracy: 0.0001)
+    }
+
+    /// The app's cache holds the last snapshot of every provider, so the consumption between it
+    /// and the first reading of a new run is not lost — for a provider with a day-long window,
+    /// that is a whole night.
+    func testTheCachedSnapshotIsTheBaselineOfTheFirstReading() async throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = recorder(store)
+        let defaults = isolatedDefaults()
+        let clock = TestClock(moment(14, 5))
+        let provider = Provider(id: "account-1", kind: .claude)
+        // The app was closed since 14:00: its cache holds the reading of that moment.
+        let cache = ProviderSnapshotCache(userDefaults: defaults)
+        cache.save(["account-1": snapshot(fraction: 0.2, at: moment(14, 0), resetsAt: moment(19, 0))])
+        let runtime = StubRuntime(
+            provider: provider,
+            descriptors: [],
+            snapshot: snapshot(fraction: 0.35, at: moment(14, 5), resetsAt: moment(19, 0))
+        )
+        let dataStore = WidgetDataStore.forTesting(
+            [runtime],
+            cache: cache,
+            defaults: defaults,
+            now: { clock.now },
+            rhythm: recorder
+        )
+
+        await dataStore.refresh(providerID: provider.id, force: true)
+        recorder.flush(at: clock.now)
+
+        let recorded = try XCTUnwrap(store.saved.first?.series.first)
+        // The 0.15 that was burned while the app was closed is booked.
+        XCTAssertEqual(recorded.points.reduce(0, +), 0.15, accuracy: 0.0001)
+        // Only the reading of this run is a sample: the cached one was counted by the run that
+        // took it.
+        XCTAssertEqual(recorded.samples.reduce(0, +), 1)
     }
 
     func testTheFileStoreKeepsTheDayTheRecorderWrote() async throws {

@@ -286,4 +286,12 @@ final class RhythmAnalyticsTests: XCTestCase {
             }
         }
     }
+
+    /// The chart says what its bars are counted in, and the unit follows the zoom level.
+    func testTheUnitFollowsTheZoomLevel() {
+        XCTAssertEqual(RhythmZoom.day.unit, "Percentage Points / Hour")
+        XCTAssertEqual(RhythmZoom.halfDay.unit, "Percentage Points / 30 Minutes")
+        XCTAssertEqual(RhythmZoom.sixHours.unit, "Percentage Points / 15 Minutes")
+        XCTAssertEqual(RhythmZoom.twoHours.unit, "Percentage Points / 5 Minutes")
+    }
 }

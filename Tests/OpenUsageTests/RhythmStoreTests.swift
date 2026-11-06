@@ -44,6 +44,15 @@ final class RhythmStoreTests: XCTestCase {
     }
 
     private func record(_ day: Date, points: [Double]) -> RhythmDayRecord {
+        // The store refuses a file whose buckets do not fit the day, so a record carries as many
+        // buckets as the day it belongs to.
+        let count = RhythmClock.bucketCount(on: day, calendar: calendar)
+        let padded = points + [Double](repeating: 0, count: max(0, count - points.count))
+        return rawRecord(day, points: padded)
+    }
+
+    /// A record with the buckets it is given, however many there are.
+    private func rawRecord(_ day: Date, points: [Double]) -> RhythmDayRecord {
         RhythmDayRecord(day: day, series: [
             RhythmSeriesRecord(
                 key: "account-1/Session",
@@ -266,5 +275,71 @@ final class RhythmStoreTests: XCTestCase {
                 return XCTFail("expected an unknown schema error, got \(error)")
             }
         }
+    }
+
+    /// The file says which day it holds, so a file that was renamed or restored cannot pass for
+    /// the day it is read on.
+    func testTheFileCarriesTheDayItHolds() throws {
+        let store = makeStore()
+        try store.save(record(day(11, 6), points: [Double](repeating: 0, count: 288)))
+
+        let data = try Data(contentsOf: directory.appendingPathComponent(fileName(11, 6)))
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(json["day"] as? String, "2026-11-06")
+    }
+
+    func testAFileThatHoldsAnotherDayIsRefused() throws {
+        let store = makeStore()
+        try store.save(record(day(11, 6), points: [Double](repeating: 0, count: 288)))
+        // The file is renamed to another day.
+        try FileManager.default.moveItem(
+            at: directory.appendingPathComponent(fileName(11, 6)),
+            to: directory.appendingPathComponent(fileName(11, 7))
+        )
+
+        XCTAssertThrowsError(try store.load(day: day(11, 7))) { error in
+            guard case RhythmStoreError.dayMismatch = error else {
+                return XCTFail("expected a day mismatch, got \(error)")
+            }
+        }
+    }
+
+    func testAFileThatDoesNotSayWhichDayItHoldsIsRefused() throws {
+        let store = makeStore()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let payload = #"{"schema":"openusage.rhythm.v1","series":[]}"#
+        try Data(payload.utf8).write(to: directory.appendingPathComponent(fileName(11, 6)))
+
+        XCTAssertThrowsError(try store.load(day: day(11, 6))) { error in
+            guard case RhythmStoreError.dayMismatch = error else {
+                return XCTFail("expected a day mismatch, got \(error)")
+            }
+        }
+    }
+
+    /// A file written for a day of 288 buckets that is read on a day of 276 or 300 — or after the
+    /// time zone changed — has its buckets out of step, so it is skipped.
+    func testAFileWithTheWrongNumberOfBucketsIsRefused() throws {
+        let store = makeStore()
+        // The day has 288 buckets; the file has 276.
+        try store.save(rawRecord(day(11, 6), points: [Double](repeating: 0, count: 276)))
+
+        XCTAssertThrowsError(try store.load(day: day(11, 6))) { error in
+            guard case RhythmStoreError.bucketMismatch = error else {
+                return XCTFail("expected a bucket mismatch, got \(error)")
+            }
+        }
+    }
+
+    /// A file that does not fit the day is skipped, and the days around it are still read.
+    func testAFileThatDoesNotFitTheDayIsSkippedInARange() throws {
+        let store = makeStore()
+        try store.save(record(day(11, 1), points: [Double](repeating: 0, count: 288)))
+        try store.save(rawRecord(day(11, 6), points: [Double](repeating: 0, count: 276)))
+        try store.save(record(day(11, 8), points: [Double](repeating: 0, count: 288)))
+
+        let loaded = try store.load(days: day(11, 1)...day(11, 8))
+
+        XCTAssertEqual(loaded.map(\.day), [day(11, 1), day(11, 8)])
     }
 }

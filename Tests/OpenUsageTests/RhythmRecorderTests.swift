@@ -2,8 +2,8 @@ import XCTest
 @testable import OpenUsage
 
 /// The recorder differences one refresh against the last one, so the history says how much of a
-/// window was burned and when. A window that reset, and a gap longer than the window, burn
-/// nothing: the use before the reset was never read.
+/// window was burned and when. The rules of the difference themselves are in
+/// `RhythmRecorderTestsRules`.
 @MainActor
 final class RhythmRecorderTests: XCTestCase {
     private var calendar: Calendar {
@@ -14,126 +14,6 @@ final class RhythmRecorderTests: XCTestCase {
 
     private func moment(_ hour: Int, _ minute: Int = 0) -> Date {
         calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: hour, minute: minute))!
-    }
-
-    private func reading(
-        fraction: Double,
-        at: Date,
-        resetsAt: Date? = nil,
-        key: String = "account-1/Session"
-    ) -> RhythmReading {
-        RhythmReading(
-            key: key,
-            kind: .claude,
-            label: "Session",
-            windowMs: MetricPeriod.sessionMs,
-            fraction: fraction,
-            resetsAt: resetsAt,
-            at: at
-        )
-    }
-
-    func testTheDifferenceBetweenTwoReadingsIsTheBurnedShare() {
-        let delta = RhythmDifferencer.delta(
-            from: reading(fraction: 0.2, at: moment(14, 0)),
-            to: reading(fraction: 0.35, at: moment(14, 5)),
-            day: moment(0),
-            calendar: calendar
-        )
-
-        XCTAssertEqual(delta.points, 0.15, accuracy: 0.0001)
-        XCTAssertEqual(delta.buckets.count, 1)
-        XCTAssertEqual(delta.buckets[0].index, 168)
-        XCTAssertEqual(delta.buckets[0].share, 1, accuracy: 0.0001)
-    }
-
-    func testAWindowThatResetBurnsNothing() {
-        let delta = RhythmDifferencer.delta(
-            from: reading(fraction: 0.8, at: moment(14, 0), resetsAt: moment(14, 1)),
-            to: reading(fraction: 0.05, at: moment(14, 5), resetsAt: moment(19, 0)),
-            day: moment(0),
-            calendar: calendar
-        )
-
-        XCTAssertEqual(delta.points, 0)
-        XCTAssertTrue(delta.buckets.isEmpty)
-    }
-
-    func testAWindowThatResetIsNoticedEvenWhenTheReadingWentUp() {
-        // The old window was nearly empty and the new one is nearly full: the reading went up, but
-        // the window reset in between, so nothing was burned.
-        let delta = RhythmDifferencer.delta(
-            from: reading(fraction: 0.2, at: moment(14, 0), resetsAt: moment(14, 1)),
-            to: reading(fraction: 0.9, at: moment(14, 5), resetsAt: moment(19, 0)),
-            day: moment(0),
-            calendar: calendar
-        )
-
-        XCTAssertEqual(delta.points, 0)
-    }
-
-    func testWithoutAResetInstantAFallingReadingMeansTheWindowReset() {
-        let delta = RhythmDifferencer.delta(
-            from: reading(fraction: 0.8, at: moment(14, 0)),
-            to: reading(fraction: 0.05, at: moment(14, 5)),
-            day: moment(0),
-            calendar: calendar
-        )
-
-        XCTAssertEqual(delta.points, 0)
-    }
-
-    func testAGapLongerThanTheWindowBurnsNothing() {
-        let delta = RhythmDifferencer.delta(
-            from: reading(fraction: 0.2, at: moment(10, 0), resetsAt: moment(15, 0)),
-            to: reading(fraction: 0.4, at: moment(16, 0), resetsAt: moment(21, 0)),
-            day: moment(0),
-            calendar: calendar
-        )
-
-        XCTAssertEqual(delta.points, 0)
-    }
-
-    func testTheBurnedShareNeverExceedsTheWholeWindow() {
-        let delta = RhythmDifferencer.delta(
-            from: reading(fraction: 0.0, at: moment(14, 0), resetsAt: moment(19, 0)),
-            to: reading(fraction: 4.0, at: moment(14, 5), resetsAt: moment(19, 0)),
-            day: moment(0),
-            calendar: calendar
-        )
-
-        XCTAssertEqual(delta.points, 1, accuracy: 0.0001)
-    }
-
-    func testOnlySessionSizedWindowsAreRecorded() {
-        let snapshot = ProviderSnapshot(
-            providerID: "account-1",
-            displayName: "Claude",
-            lines: [
-                .progress(label: "Session", used: 20, limit: 100, format: .percent, resetsAt: moment(19, 0), periodDurationMs: MetricPeriod.sessionMs),
-                .progress(label: "Weekly", used: 30, limit: 100, format: .percent, resetsAt: moment(100, 0), periodDurationMs: MetricPeriod.weekMs),
-                .progress(label: "No Window", used: 10, limit: 100, format: .percent),
-                .values(label: "Balance", values: []),
-                .badge(label: "Top Up", text: "Ready")
-            ]
-        )
-
-        let readings = RhythmRecorder.readings(from: snapshot, kind: .claude, at: moment(14, 0))
-
-        XCTAssertEqual(readings.count, 1)
-        XCTAssertEqual(readings[0].label, "Session")
-        XCTAssertEqual(readings[0].fraction, 0.2, accuracy: 0.0001)
-        XCTAssertEqual(readings[0].key, "account-1/Session")
-    }
-
-    func testAMetricWithoutALimitIsNotRecorded() {
-        let snapshot = ProviderSnapshot(
-            providerID: "account-1",
-            displayName: "Claude",
-            lines: [.progress(label: "Session", used: 20, limit: 0, format: .percent, resetsAt: moment(19, 0), periodDurationMs: MetricPeriod.sessionMs)]
-        )
-
-        XCTAssertTrue(RhythmRecorder.readings(from: snapshot, kind: .claude, at: moment(14, 0)).isEmpty)
     }
 
     func testTheRecorderAccumulatesIntoTheHourOfTheReading() throws {
@@ -219,6 +99,39 @@ final class RhythmRecorderTests: XCTestCase {
         XCTAssertEqual(series.points[287], 0.05625, accuracy: 0.0001)
         XCTAssertEqual(series.samples[286], 1)
         XCTAssertEqual(series.samples[287], 1)
+    }
+
+    /// A burn that crosses midnight is booked on both days: the part before midnight on the day
+    /// that ended, the part after midnight on the day that began. The window did not reset in
+    /// between, so nothing of the burn is lost.
+    func testABurnThatCrossesMidnightIsBookedOnBothDays() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: moment(0))!
+        // The window runs on past the midnight, so the two readings describe the same window.
+        let resets = calendar.date(byAdding: .day, value: 1, to: moment(19, 0))!
+
+        recorder.record(snapshot(fraction: 0.4, resetsAt: resets), kind: .claude, at: moment(23, 50))
+        recorder.record(snapshot(fraction: 0.55, resetsAt: resets), kind: .claude, at: nextDay.addingTimeInterval(600))
+
+        // The part before the midnight belongs to the day that ended. Ten of the twenty minutes
+        // fell in it, so each of its two buckets carries a quarter of the 0.15 that was burned.
+        let ended = try XCTUnwrap(store.saved.first { $0.day == moment(0) })
+        let endedSeries = try XCTUnwrap(ended.series.first)
+        XCTAssertEqual(endedSeries.points[286], 0.0375, accuracy: 0.0001)
+        XCTAssertEqual(endedSeries.points[287], 0.0375, accuracy: 0.0001)
+
+        // The part after the midnight belongs to the day that began.
+        let begun = try XCTUnwrap(recorder.pendingSeries.first)
+        XCTAssertEqual(begun.points[0], 0.0375, accuracy: 0.0001)
+        XCTAssertEqual(begun.points[1], 0.0375, accuracy: 0.0001)
+
+        // The whole burn is booked, not one part of it.
+        XCTAssertEqual(
+            endedSeries.points.reduce(0, +) + begun.points.reduce(0, +),
+            0.15,
+            accuracy: 0.0001
+        )
     }
 
     func testTheDayIsKeptUntilItsWriteLands() throws {

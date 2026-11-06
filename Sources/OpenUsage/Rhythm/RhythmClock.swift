@@ -40,10 +40,11 @@ enum RhythmClock {
     /// burned in its final minutes.
     ///
     /// The shares cover only the part of the interval that falls inside `day`. A share is a
-    /// fraction of the **whole** interval, so when the interval crosses midnight the shares of
-    /// one day sum to less than one: the part that fell in the next day is in no bucket of the day
-    /// it was asked about and is not represented. The caller is expected to lose at most one
-    /// refresh interval of consumption per day boundary as a result.
+    /// fraction of the **whole** interval, so the shares of the two days an interval crosses sum
+    /// to one: the part that fell in the next day is in no bucket of the day it was asked about,
+    /// and the part that fell in the day before is in no bucket of the day it was asked about
+    /// either. The caller is expected to ask about both days, or to lose the consumption that
+    /// crossed the boundary.
     static func shares(
         from start: Date,
         to end: Date,
@@ -59,12 +60,16 @@ enum RhythmClock {
         let clampedEnd = min(end, dayEnd)
 
         let first: Int
-        let last: Int
         if let index = bucketIndex(for: start, on: day, calendar: calendar) {
             first = index
+        } else if start < dayStart {
+            // The interval began before this day, so the part of it that falls in this day starts
+            // at the day's first bucket.
+            first = 0
         } else {
             return []
         }
+        let last: Int
         if let index = bucketIndex(for: clampedEnd, on: day, calendar: calendar) {
             last = index
         } else {
@@ -84,24 +89,37 @@ enum RhythmClock {
         return result
     }
 
+    /// The key a day's file carries, "yyyy-MM-dd".
+    ///
+    /// The key is built from the calendar's own parts rather than from a formatter, so it is the
+    /// same in every time zone the calendar names and no formatter has to be kept alive: the tab
+    /// reads up to ninety of these names every thirty seconds.
+    static func dayKey(for day: Date, calendar: Calendar = .current) -> String {
+        let parts = calendar.dateComponents([.year, .month, .day], from: day)
+        guard let year = parts.year, let month = parts.month, let dayNumber = parts.day else { return "" }
+        return String(format: "%04d-%02d-%02d", year, month, dayNumber)
+    }
+
     /// The name a day's file carries.
     static func fileName(for day: Date, calendar: Calendar = .current) -> String {
-        formatter(calendar: calendar).string(from: day) + ".json"
+        dayKey(for: day, calendar: calendar) + ".json"
     }
 
     /// The day a file name carries, nil when the name is not one of ours.
     static func day(fromFileName name: String, calendar: Calendar = .current) -> Date? {
         guard name.hasSuffix(".json") else { return nil }
-        guard let day = formatter(calendar: calendar).date(from: String(name.dropLast(5))) else { return nil }
-        return calendar.startOfDay(for: day)
-    }
-
-    private static func formatter(calendar: Calendar) -> DateFormatter {
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = calendar.timeZone
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
+        let parts = String(name.dropLast(5)).split(separator: "-")
+        guard parts.count == 3 else { return nil }
+        guard let year = Int(parts[0]), let month = Int(parts[1]), let dayNumber = Int(parts[2]) else { return nil }
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = dayNumber
+        guard let date = calendar.date(from: components) else { return nil }
+        // A day that does not exist — the thirteenth of a month — is rolled over by the calendar
+        // instead of refused, so the name is checked against the day it names.
+        let named = calendar.dateComponents([.year, .month, .day], from: date)
+        guard named.year == year, named.month == month, named.day == dayNumber else { return nil }
+        return calendar.startOfDay(for: date)
     }
 }

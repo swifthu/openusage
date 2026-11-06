@@ -81,6 +81,29 @@ final class RhythmClockTests: XCTestCase {
         XCTAssertEqual(shares.reduce(0) { $0 + $1.share }, 0.5, accuracy: 0.001)
     }
 
+    /// The day after the crossing holds the part of the interval that fell in it: the interval
+    /// began before its midnight, so the part starts at the day's first bucket.
+    func testAnIntervalThatBeganBeforeTheDaySharesWhatFallsInIt() {
+        let day = calendar.date(from: DateComponents(year: 2026, month: 11, day: 7))!
+        let start = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: 23, minute: 50))!
+        let end = calendar.date(from: DateComponents(year: 2026, month: 11, day: 7, minute: 10))!
+
+        let shares = RhythmClock.shares(from: start, to: end, day: day, calendar: calendar)
+
+        XCTAssertEqual(shares.map(\.index), [0, 1])
+        // Ten of the twenty minutes fell in this day.
+        XCTAssertEqual(shares.reduce(0) { $0 + $1.share }, 0.5, accuracy: 0.001)
+    }
+
+    /// An interval that lies entirely before the day holds nothing of it.
+    func testAnIntervalThatEndedBeforeTheDayHoldsNothingOfIt() {
+        let day = calendar.date(from: DateComponents(year: 2026, month: 11, day: 7))!
+        let start = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: 23, minute: 40))!
+        let end = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: 23, minute: 50))!
+
+        XCTAssertTrue(RhythmClock.shares(from: start, to: end, day: day, calendar: calendar).isEmpty)
+    }
+
     func testABucketStartsWhereTheGridSaysItDoes() {
         let day = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6))!
         let midnight = calendar.startOfDay(for: day)
