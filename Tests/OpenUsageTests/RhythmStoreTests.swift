@@ -23,6 +23,14 @@ final class RhythmStoreTests: XCTestCase {
         calendar.date(from: DateComponents(year: 2026, month: month, day: dayNumber))!
     }
 
+    private func makeStore() -> FileRhythmStore {
+        FileRhythmStore(directory: directory, calendar: calendar)
+    }
+
+    private func fileName(_ month: Int, _ dayNumber: Int) -> String {
+        RhythmClock.fileName(for: day(month, dayNumber), calendar: calendar)
+    }
+
     private func record(_ day: Date, points: [Double]) -> RhythmDayRecord {
         RhythmDayRecord(day: day, series: [
             RhythmSeriesRecord(
@@ -37,7 +45,7 @@ final class RhythmStoreTests: XCTestCase {
     }
 
     func testASavedDayComesBack() throws {
-        let store = FileRhythmStore(directory: directory)
+        let store = makeStore()
         let points = [Double](repeating: 1.5, count: 288)
 
         try store.save(record(day(11, 6), points: points))
@@ -51,13 +59,13 @@ final class RhythmStoreTests: XCTestCase {
     }
 
     func testADayThatWasNeverRecordedHasNoFile() throws {
-        let store = FileRhythmStore(directory: directory)
+        let store = makeStore()
 
         XCTAssertNil(try store.load(day: day(11, 6)))
     }
 
     func testSavingADayTwiceReplacesIt() throws {
-        let store = FileRhythmStore(directory: directory)
+        let store = makeStore()
 
         try store.save(record(day(11, 6), points: [Double](repeating: 1, count: 288)))
         try store.save(record(day(11, 6), points: [Double](repeating: 2, count: 288)))
@@ -67,7 +75,7 @@ final class RhythmStoreTests: XCTestCase {
     }
 
     func testTheRecordedDaysAreListedOldestFirst() throws {
-        let store = FileRhythmStore(directory: directory)
+        let store = makeStore()
 
         try store.save(record(day(11, 8), points: []))
         try store.save(record(day(11, 6), points: []))
@@ -77,7 +85,7 @@ final class RhythmStoreTests: XCTestCase {
     }
 
     func testTheRecordsBeforeADateAreDeleted() throws {
-        let store = FileRhythmStore(directory: directory)
+        let store = makeStore()
         try store.save(record(day(11, 1), points: []))
         try store.save(record(day(11, 6), points: []))
         try store.save(record(day(11, 8), points: []))
@@ -88,7 +96,7 @@ final class RhythmStoreTests: XCTestCase {
     }
 
     func testTheRecordsOfARangeComeBackOldestFirst() throws {
-        let store = FileRhythmStore(directory: directory)
+        let store = makeStore()
         try store.save(record(day(11, 1), points: []))
         try store.save(record(day(11, 6), points: []))
         try store.save(record(day(11, 8), points: []))
@@ -98,19 +106,32 @@ final class RhythmStoreTests: XCTestCase {
         XCTAssertEqual(loaded.map(\.day), [day(11, 6), day(11, 8)])
     }
 
-    func testAFileThatIsNotOursIsSkipped() throws {
-        let store = FileRhythmStore(directory: directory)
+    func testAFileThatIsNotOursIsRefused() throws {
+        let store = makeStore()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Data("not json".utf8).write(to: directory.appendingPathComponent("2026-11-06.json"))
+        try Data("not json".utf8).write(to: directory.appendingPathComponent(fileName(11, 6)))
 
         XCTAssertThrowsError(try store.load(day: day(11, 6)))
     }
 
+    func testABrokenFileDoesNotTakeTheRangeWithIt() throws {
+        let store = makeStore()
+        try store.save(record(day(11, 1), points: []))
+        try store.save(record(day(11, 6), points: []))
+        try store.save(record(day(11, 8), points: []))
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("not json".utf8).write(to: directory.appendingPathComponent(fileName(11, 7)))
+
+        let loaded = try store.load(days: day(11, 1)...day(11, 8))
+
+        XCTAssertEqual(loaded.map(\.day), [day(11, 1), day(11, 6), day(11, 8)])
+    }
+
     func testAFileWithAnotherSchemaIsRefused() throws {
-        let store = FileRhythmStore(directory: directory)
+        let store = makeStore()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let payload = #"{"schema":"openusage.rhythm.v99","series":[]}"#
-        try Data(payload.utf8).write(to: directory.appendingPathComponent("2026-11-06.json"))
+        try Data(payload.utf8).write(to: directory.appendingPathComponent(fileName(11, 6)))
 
         XCTAssertThrowsError(try store.load(day: day(11, 6))) { error in
             guard case RhythmStoreError.unknownSchema = error else {

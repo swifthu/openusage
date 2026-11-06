@@ -34,6 +34,10 @@ enum RhythmClock {
     }
 
     /// The buckets an interval touches, and the share of it that falls in each.
+    ///
+    /// An interval that ends exactly on the next midnight still belongs to the day it started in:
+    /// its last instant is that day's last bucket, and dropping it would lose the share the day
+    /// burned in its final minutes.
     static func shares(
         from start: Date,
         to end: Date,
@@ -41,17 +45,33 @@ enum RhythmClock {
         calendar: Calendar = .current
     ) -> [RhythmBucketShare] {
         let total = end.timeIntervalSince(start)
-        guard total > 0,
-              let first = bucketIndex(for: start, on: day, calendar: calendar),
-              let last = bucketIndex(for: end, on: day, calendar: calendar),
-              last >= first
-        else { return [] }
+        guard total > 0 else { return [] }
+
+        let count = bucketCount(on: day, calendar: calendar)
+        let dayStart = calendar.startOfDay(for: day)
+        let dayEnd = dayStart.addingTimeInterval(Double(count) * bucketSeconds)
+        let clampedEnd = min(end, dayEnd)
+
+        let first: Int
+        let last: Int
+        if let index = bucketIndex(for: start, on: day, calendar: calendar) {
+            first = index
+        } else {
+            return []
+        }
+        if let index = bucketIndex(for: clampedEnd, on: day, calendar: calendar) {
+            last = index
+        } else {
+            // The end landed exactly on the day's boundary, so it is the day's last bucket.
+            last = count - 1
+        }
+        guard last >= first else { return [] }
 
         var result: [RhythmBucketShare] = []
         for index in first...last {
             let bucketStart = self.start(of: index, on: day, calendar: calendar)
             let bucketEnd = bucketStart.addingTimeInterval(bucketSeconds)
-            let overlap = min(bucketEnd, end).timeIntervalSince(max(bucketStart, start))
+            let overlap = min(bucketEnd, clampedEnd).timeIntervalSince(max(bucketStart, start))
             guard overlap > 0 else { continue }
             result.append(RhythmBucketShare(index: index, share: overlap / total))
         }

@@ -59,6 +59,28 @@ final class RhythmClockTests: XCTestCase {
         XCTAssertEqual(shares[0].share + shares[1].share, 1, accuracy: 0.001)
     }
 
+    func testAnIntervalEndingAtMidnightKeepsItsLastShare() {
+        let day = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6))!
+        let start = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: 23, minute: 50))!
+        let end = calendar.date(from: DateComponents(year: 2026, month: 11, day: 7))!
+
+        let shares = RhythmClock.shares(from: start, to: end, day: day, calendar: calendar)
+
+        XCTAssertEqual(shares.map(\.index), [286, 287])
+        XCTAssertEqual(shares.reduce(0) { $0 + $1.share }, 1, accuracy: 0.001)
+    }
+
+    func testAnIntervalCrossingMidnightOnlySharesWhatFallsInTheDay() {
+        let day = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6))!
+        let start = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: 23, minute: 50))!
+        let end = calendar.date(from: DateComponents(year: 2026, month: 11, day: 7, minute: 10))!
+
+        let shares = RhythmClock.shares(from: start, to: end, day: day, calendar: calendar)
+
+        XCTAssertEqual(shares.map(\.index), [286, 287])
+        XCTAssertEqual(shares.reduce(0) { $0 + $1.share }, 0.5, accuracy: 0.001)
+    }
+
     func testADayFileNameCarriesItsDate() {
         let day = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6))!
 

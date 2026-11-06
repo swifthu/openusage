@@ -31,9 +31,13 @@ protocol RhythmStore: Sendable {
 struct FileRhythmStore: RhythmStore {
     /// The folder the day files live in.
     let directory: URL
+    /// The calendar the days are measured in. It decides which file a moment belongs to, so it has
+    /// to be the same one the recorder writes with.
+    let calendar: Calendar
 
-    init(directory: URL = FileRhythmStore.defaultDirectory) {
+    init(directory: URL = FileRhythmStore.defaultDirectory, calendar: Calendar = .current) {
         self.directory = directory
+        self.calendar = calendar
     }
 
     static var defaultDirectory: URL {
@@ -64,13 +68,21 @@ struct FileRhythmStore: RhythmStore {
         guard payload.schema == RhythmDayRecord.currentSchema else {
             throw RhythmStoreError.unknownSchema(payload.schema)
         }
-        return RhythmDayRecord(day: Calendar.current.startOfDay(for: day), series: payload.series)
+        return RhythmDayRecord(day: calendar.startOfDay(for: day), series: payload.series)
     }
 
+    /// A day that cannot be read is skipped: one broken file must not take the whole range with it.
     func load(days: ClosedRange<Date>) throws -> [RhythmDayRecord] {
         try recordedDays()
             .filter { days.contains($0) }
-            .compactMap { try load(day: $0) }
+            .compactMap { day in
+                do {
+                    return try load(day: day)
+                } catch {
+                    AppLog.warn(.rhythm, "Skipping the unreadable rhythm day file \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
+                    return nil
+                }
+            }
     }
 
     func recordedDays() throws -> [Date] {
@@ -78,7 +90,7 @@ struct FileRhythmStore: RhythmStore {
             return []
         }
         return names
-            .compactMap { RhythmClock.day(fromFileName: $0) }
+            .compactMap { RhythmClock.day(fromFileName: $0, calendar: calendar) }
             .sorted()
     }
 
@@ -89,6 +101,6 @@ struct FileRhythmStore: RhythmStore {
     }
 
     private func url(for day: Date) -> URL {
-        directory.appendingPathComponent(RhythmClock.fileName(for: day))
+        directory.appendingPathComponent(RhythmClock.fileName(for: day, calendar: calendar))
     }
 }
