@@ -90,8 +90,9 @@ The five-minute grid and the file store. Together they are the layer everything 
   - `struct RhythmBucketShare: Hashable, Sendable` with `index: Int`, `share: Double`
   - `enum RhythmClock` with `bucketSeconds`, `bucketCount(on:calendar:)`, `bucketIndex(for:on:calendar:)`, `start(of:on:calendar:)`, `shares(from:to:day:calendar:)`, `fileName(for:calendar:)`, `day(fromFileName:calendar:)`
   - `protocol RhythmStore: Sendable` with `save(_:)`, `load(day:)`, `load(days:)`, `recordedDays()`, `delete(before:)`
-  - `struct FileRhythmStore: RhythmStore` with `init(directory:)`, `static var defaultDirectory: URL`
+  - `struct FileRhythmStore: RhythmStore` with `init(directory:calendar:)` — the calendar decides which file a moment belongs to, so the store must be told which one rather than reaching for `Calendar.current` — and `static var defaultDirectory: URL`
   - `enum RhythmStoreError: LocalizedError` with `unknownSchema(String)`
+  - `LogTag.rhythm` — the log tag the rhythm feature writes under
 
 - [ ] **Step 1: Write the failing clock tests**
 
@@ -106,7 +107,9 @@ import XCTest
 final class RhythmClockTests: XCTestCase {
     private var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        // A zone that keeps daylight saving, so the bucket count really does change with the
+        // season. Asia/Shanghai abolished daylight saving in 1991 and would never show it.
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
         return calendar
     }
 
@@ -134,7 +137,7 @@ final class RhythmClockTests: XCTestCase {
         let day = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6))!
         let moment = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: 14, minute: 17))!
 
-        XCTAssertEqual(RhythmClock.bucketIndex(for: moment, on: day, calendar: calendar), 170)
+        XCTAssertEqual(RhythmClock.bucketIndex(for: moment, on: day, calendar: calendar), 171)
     }
 
     func testAMomentOutsideTheDayHasNoBucket() {
@@ -295,6 +298,12 @@ enum RhythmClock {
     }
 
     /// The buckets an interval touches, and the share of it that falls in each.
+    ///
+    /// The shares are fractions of the **whole** interval, and they cover only the part of it
+    /// that falls inside `day`. An interval that crosses midnight therefore leaves the part in
+    /// the next day in no bucket, and the shares for one day sum to less than one. That loss is
+    /// bounded by one refresh interval (at most five minutes) once per day, the same order as
+    /// the use before a provider's window resets that the recorder also does not see.
     static func shares(
         from start: Date,
         to end: Date,
@@ -302,11 +311,28 @@ enum RhythmClock {
         calendar: Calendar = .current
     ) -> [RhythmBucketShare] {
         let total = end.timeIntervalSince(start)
-        guard total > 0,
-              let first = bucketIndex(for: start, on: day, calendar: calendar),
-              let last = bucketIndex(for: end, on: day, calendar: calendar),
-              last >= first
-        else { return [] }
+        guard total > 0 else { return [] }
+
+        let count = bucketCount(on: day, calendar: calendar)
+        let dayStart = calendar.startOfDay(for: day)
+        let dayEnd = dayStart.addingTimeInterval(Double(count) * bucketSeconds)
+        // An interval that ends on the next midnight belongs to this day, up to its last bucket.
+        let clampedEnd = min(end, dayEnd)
+
+        let first: Int
+        let last: Int
+        if let index = bucketIndex(for: start, on: day, calendar: calendar) {
+            first = index
+        } else {
+            return []
+        }
+        if let index = bucketIndex(for: clampedEnd, on: day, calendar: calendar) {
+            last = index
+        } else {
+            // The end landed exactly on the day's boundary, so it is the day's last bucket.
+            last = count - 1
+        }
+        guard last >= first else { return [] }
 
         var result: [RhythmBucketShare] = []
         for index in first...last {
@@ -362,9 +388,12 @@ final class RhythmStoreTests: XCTestCase {
     private var directory: URL!
 
     override func setUpWithError() throws {
-        directory = URL(fileURLWithPath: NSTemporaryDirectory())
+        // The teardown block captures the URL, not `self`: Swift 6's strict concurrency rejects a
+        // teardown block that captures the test case.
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("rhythm-tests-\(UUID().uuidString)", isDirectory: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: self.directory) }
+        self.directory = directory
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
     }
 
     private var calendar: Calendar {
@@ -391,7 +420,7 @@ final class RhythmStoreTests: XCTestCase {
     }
 
     func testASavedDayComesBack() throws {
-        let store = FileRhythmStore(directory: directory)
+        let store = FileRhythmStore(directory: directory, calendar: calendar)
         let points = [Double](repeating: 1.5, count: 288)
 
         try store.save(record(day(11, 6), points: points))
@@ -405,13 +434,13 @@ final class RhythmStoreTests: XCTestCase {
     }
 
     func testADayThatWasNeverRecordedHasNoFile() throws {
-        let store = FileRhythmStore(directory: directory)
+        let store = FileRhythmStore(directory: directory, calendar: calendar)
 
         XCTAssertNil(try store.load(day: day(11, 6)))
     }
 
     func testSavingADayTwiceReplacesIt() throws {
-        let store = FileRhythmStore(directory: directory)
+        let store = FileRhythmStore(directory: directory, calendar: calendar)
 
         try store.save(record(day(11, 6), points: [Double](repeating: 1, count: 288)))
         try store.save(record(day(11, 6), points: [Double](repeating: 2, count: 288)))
@@ -421,7 +450,7 @@ final class RhythmStoreTests: XCTestCase {
     }
 
     func testTheRecordedDaysAreListedOldestFirst() throws {
-        let store = FileRhythmStore(directory: directory)
+        let store = FileRhythmStore(directory: directory, calendar: calendar)
 
         try store.save(record(day(11, 8), points: []))
         try store.save(record(day(11, 6), points: []))
@@ -431,18 +460,18 @@ final class RhythmStoreTests: XCTestCase {
     }
 
     func testTheRecordsBeforeADateAreDeleted() throws {
-        let store = FileRhythmStore(directory: directory)
+        let store = FileRhythmStore(directory: directory, calendar: calendar)
         try store.save(record(day(11, 1), points: []))
         try store.save(record(day(11, 6), points: []))
         try store.save(record(day(11, 8), points: []))
 
         try store.delete(before: day(11, 7))
 
-        XCTAssertEqual(try store.recordedDays(), [day(11, 7), day(11, 8)])
+        XCTAssertEqual(try store.recordedDays(), [day(11, 8)])
     }
 
     func testTheRecordsOfARangeComeBackOldestFirst() throws {
-        let store = FileRhythmStore(directory: directory)
+        let store = FileRhythmStore(directory: directory, calendar: calendar)
         try store.save(record(day(11, 1), points: []))
         try store.save(record(day(11, 6), points: []))
         try store.save(record(day(11, 8), points: []))
@@ -453,7 +482,7 @@ final class RhythmStoreTests: XCTestCase {
     }
 
     func testAFileThatIsNotOursIsSkipped() throws {
-        let store = FileRhythmStore(directory: directory)
+        let store = FileRhythmStore(directory: directory, calendar: calendar)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try Data("not json".utf8).write(to: directory.appendingPathComponent("2026-11-06.json"))
 
@@ -461,7 +490,7 @@ final class RhythmStoreTests: XCTestCase {
     }
 
     func testAFileWithAnotherSchemaIsRefused() throws {
-        let store = FileRhythmStore(directory: directory)
+        let store = FileRhythmStore(directory: directory, calendar: calendar)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let payload = #"{"schema":"openusage.rhythm.v99","series":[]}"#
         try Data(payload.utf8).write(to: directory.appendingPathComponent("2026-11-06.json"))
@@ -507,6 +536,8 @@ protocol RhythmStore: Sendable {
     func save(_ record: RhythmDayRecord) throws
     /// The record of a day, nil when nothing was recorded for it.
     func load(day: Date) throws -> RhythmDayRecord?
+    /// The records of the days in a range, oldest first.
+    func load(days: ClosedRange<Date>) throws -> [RhythmDayRecord]
     /// The days that have a record, oldest first.
     func recordedDays() throws -> [Date]
     /// Deletes the records before a date.
@@ -517,9 +548,13 @@ protocol RhythmStore: Sendable {
 struct FileRhythmStore: RhythmStore {
     /// The folder the day files live in.
     let directory: URL
+    /// The calendar the days are measured in. It decides which file a moment belongs to, so it has
+    /// to be the same one the recorder writes with.
+    let calendar: Calendar
 
-    init(directory: URL = FileRhythmStore.defaultDirectory) {
+    init(directory: URL = FileRhythmStore.defaultDirectory, calendar: Calendar) {
         self.directory = directory
+        self.calendar = calendar
     }
 
     static var defaultDirectory: URL {
@@ -550,32 +585,48 @@ struct FileRhythmStore: RhythmStore {
         guard payload.schema == RhythmDayRecord.currentSchema else {
             throw RhythmStoreError.unknownSchema(payload.schema)
         }
-        return RhythmDayRecord(day: Calendar.current.startOfDay(for: day), series: payload.series)
+        return RhythmDayRecord(day: calendar.startOfDay(for: day), series: payload.series)
     }
 
+    /// A day that cannot be read is skipped: one broken file must not take the whole range with it.
     func load(days: ClosedRange<Date>) throws -> [RhythmDayRecord] {
-        try recordedDays()
-            .filter { days.contains($0) }
-            .compactMap { try load(day: $0) }
+        // The range names days, so it is compared as days: a range that starts in the afternoon
+        // still includes the record of that same day.
+        let firstDay = calendar.startOfDay(for: days.lowerBound)
+        let lastDay = calendar.startOfDay(for: days.upperBound)
+        return try recordedDays()
+            .filter { $0 >= firstDay && $0 <= lastDay }
+            .compactMap { day in
+                do {
+                    return try load(day: day)
+                } catch {
+                    AppLog.warn(.rhythm, "Skipping the unreadable rhythm day file \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
+                    return nil
+                }
+            }
     }
 
+    /// The days that have a record, oldest first. A folder that does not exist yet holds no
+    /// records; anything else that goes wrong is thrown, because a history that cannot be read is
+    /// not the same as a history that is empty.
     func recordedDays() throws -> [Date] {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else {
-            return []
-        }
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
         return names
-            .compactMap { RhythmClock.day(fromFileName: $0) }
+            .compactMap { RhythmClock.day(fromFileName: $0, calendar: calendar) }
             .sorted()
     }
 
+    /// Deletes the records before a date. The date names a day, so it is compared as one.
     func delete(before date: Date) throws {
-        for day in try recordedDays() where day < date {
-            try? FileManager.default.removeItem(at: url(for: day))
+        let cutoff = calendar.startOfDay(for: date)
+        for day in try recordedDays() where day < cutoff {
+            try FileManager.default.removeItem(at: url(for: day))
         }
     }
 
     private func url(for day: Date) -> URL {
-        directory.appendingPathComponent(RhythmClock.fileName(for: day))
+        directory.appendingPathComponent(RhythmClock.fileName(for: day, calendar: calendar))
     }
 }
 ```
@@ -768,11 +819,14 @@ final class RhythmRecorderTests: XCTestCase {
         recorder.record(snapshot(fraction: 0.35), kind: .claude, at: moment(14, 5))
 
         let pending = try XCTUnwrap(recorder.pendingSeries.first)
+        // The interval 14:00 - 14:05 lies wholly in the first bucket, so it carries all of it.
         XCTAssertEqual(pending.points[168], 0.15, accuracy: 0.0001)
-        XCTAssertEqual(pending.samples[168], 2)
+        // Each reading is counted in the bucket it was taken in.
+        XCTAssertEqual(pending.samples[168], 1)
+        XCTAssertEqual(pending.samples[169], 1)
     }
 
-    func testTheRecorderSplitsAGapAcrossTheHoursItCovers() throws {
+    func testTheRecorderSplitsAGapAcrossTheBucketsItCovers() throws {
         let store = RecordingRhythmStore()
         let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
 
@@ -780,9 +834,12 @@ final class RhythmRecorderTests: XCTestCase {
         recorder.record(snapshot(fraction: 0.5), kind: .claude, at: moment(16, 0))
 
         let pending = try XCTUnwrap(recorder.pendingSeries.first)
-        XCTAssertEqual(pending.points[168], 0.1, accuracy: 0.0001)  // 14:00 - 15:00
-        XCTAssertEqual(pending.points[180], 0.1, accuracy: 0.0001)  // 15:00 - 16:00
-        XCTAssertEqual(pending.points[192], 0.1, accuracy: 0.0001)  // 16:00 - 17:00
+        // The gap covers 14:00 to 16:00: 24 buckets, each carrying the same share of the 0.3
+        // that was burned, so the burn shows as a flat two hours rather than one tall bar.
+        XCTAssertEqual(pending.points[168], 0.0125, accuracy: 0.0001)
+        XCTAssertEqual(pending.points[180], 0.0125, accuracy: 0.0001)
+        XCTAssertEqual(pending.points[191], 0.0125, accuracy: 0.0001)
+        XCTAssertEqual(pending.points[168...191].reduce(0, +), 0.3, accuracy: 0.0001)
     }
 
     func testNothingIsRecordedWhileTheSettingIsOff() throws {
@@ -908,6 +965,10 @@ enum RhythmDifferencer {
     /// A window that reset burns nothing: the use before the reset was never read, and the new
     /// window's reading counts from its own zero. A gap longer than the window burns nothing for
     /// the same reason — the two readings describe different windows.
+    ///
+    /// The delta is attributed to the day of the later reading. An interval that crosses midnight
+    /// therefore leaves the part before midnight in no bucket, which costs at most one refresh
+    /// interval of consumption per day boundary — see `RhythmClock.shares`.
     static func delta(
         from previous: RhythmReading,
         to current: RhythmReading,
@@ -1077,9 +1138,10 @@ final class RhythmRecorder {
 }
 ```
 
-- [ ] **Step 5: Add the log tag**
+- [ ] **Step 5: Check the log tag is there**
 
-In `Sources/OpenUsage/Support/AppLog.swift`, add the `rhythm` tag to `LogTag`:
+`Sources/OpenUsage/Support/AppLog.swift` already carries `case rhythm` — Task 1 added it when the
+store started logging the days it skips. Confirm it is present; add it if it is not.
 
 ```swift
     case rhythm
@@ -1234,7 +1296,10 @@ and in `init`, before the data store is built:
 
 ```swift
         let rhythmSettings = RhythmSettings(defaults: defaults)
-        let rhythm = RhythmRecorder(store: FileRhythmStore(), settings: rhythmSettings)
+        let rhythm = RhythmRecorder(
+            store: FileRhythmStore(directory: FileRhythmStore.defaultDirectory, calendar: .current),
+            settings: rhythmSettings
+        )
         self.rhythmSettings = rhythmSettings
         self.rhythm = rhythm
 ```
@@ -1345,7 +1410,7 @@ final class RhythmAnalyticsTests: XCTestCase {
 
         XCTAssertEqual(bars.count, 24)
         XCTAssertEqual(bars.filter { $0.points > 0 }.count, 4)
-        XCTAssertEqual(bars[0].points, 1, accuracy: 0.0001)
+        XCTAssertEqual(bars[8].points, 1, accuracy: 0.0001)
         XCTAssertEqual(bars[0].start, calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: 12))!)
     }
 
@@ -1647,11 +1712,11 @@ final class RhythmChartTests: XCTestCase {
     }
 
     func testABarThatWasNotReadIsLeftEmpty() throws {
-        var bars = [RhythmBar](repeating: RhythmBar(index: 0, points: 0, samples: 1, start: Date()), count: 24)
+        var bars = [RhythmBar](repeating: RhythmBar(index: 0, points: 0, samples: 0, start: Date()), count: 24)
         bars[14].points = 9
-        bars[15].samples = 0
+        bars[14].samples = 0
 
-        let image = try XCTUnwrap(render(RhythmChart(bars: bars, peak: 14...14, zoom: .day)))
+        let image = try XCTUnwrap(render(RhythmChart(bars: bars, peak: nil, zoom: .day)))
 
         XCTAssertTrue(try stronglyBluePixels(in: image).isEmpty, "an unread slice draws nothing")
     }
@@ -1728,7 +1793,8 @@ struct RhythmChart: View {
 
     private func column(_ bar: RhythmBar, maxHeight: CGFloat) -> some View {
         Group {
-            if bar.samples == 0 {
+            if bar.samples == 0 && bar.points <= 0 {
+                // Nothing was read and nothing was burned: we do not know.
                 Color.clear
             } else if bar.points <= 0 {
                 // Read, but nothing was used: a baseline, not an empty column.
@@ -1736,6 +1802,8 @@ struct RhythmChart: View {
                     .fill(Theme.severityColor(.normal).opacity(0.3))
                     .frame(height: 1)
             } else {
+                // A bucket can hold consumption without holding a reading of its own: the burn
+                // between two readings is spread over the buckets it covered.
                 Self.shape
                     .fill(fill(bar))
                     .frame(height: max(2, maxHeight * CGFloat(bar.points / scale)))
@@ -1812,7 +1880,7 @@ struct RhythmContextStrip: View {
         HStack(alignment: .bottom, spacing: 1) {
             ForEach(dayBars) { bar in
                 Group {
-                    if bar.samples == 0 {
+                    if bar.samples == 0 && bar.points <= 0 {
                         Color.clear
                     } else {
                         Self.shape.fill(Theme.severityColor(.normal).opacity(0.25))
@@ -1883,7 +1951,14 @@ struct RhythmView: View {
             chart
             summary
         }
-        .task(id: refreshKey) { load() }
+        .task(id: refreshKey) {
+            // The history grows while the tab is open, so it reloads on a timer as well as when
+            // the day, the mode or the zoom changes.
+            while !Task.isCancelled {
+                load()
+                try? await Task.sleep(for: .seconds(30))
+            }
+        }
     }
 
     /// The charts' data.
@@ -2077,9 +2152,11 @@ struct RhythmView: View {
     }
 
     private func load() {
-        let end = Date()
-        let start = Calendar.current.date(byAdding: .day, value: -(RhythmSettings.retentionDays - 1), to: end) ?? end
-        records = (try? container.rhythm.store.load(days: start...end)) ?? []
+        // The range covers whole days: the store compares days, and a range that starts in the
+        // afternoon would otherwise leave that day's record out.
+        let today = Calendar.current.startOfDay(for: Date())
+        let start = Calendar.current.date(byAdding: .day, value: -(RhythmSettings.retentionDays - 1), to: today) ?? today
+        records = (try? container.rhythm.store.load(days: start...today)) ?? []
     }
 }
 ```
@@ -2173,8 +2250,13 @@ Add the two helpers:
 
     private func deleteRhythmHistory() {
         let cutoff = Calendar.current.startOfDay(for: Date())
-        try? container.rhythm.store.delete(before: cutoff)
-        AppLog.notice(.rhythm, "the rhythm history was deleted")
+        do {
+            try container.rhythm.store.delete(before: cutoff)
+            AppLog.notice(.rhythm, "the rhythm history was deleted")
+        } catch {
+            // Say what happened rather than what was meant: the files are still there.
+            AppLog.warn(.rhythm, "the rhythm history could not be deleted: \(error.localizedDescription)")
+        }
     }
 ```
 
