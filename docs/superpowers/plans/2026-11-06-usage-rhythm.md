@@ -2584,6 +2584,7 @@ git commit -m "feat(rhythm): show the rhythm in a dashboard tab"
 - Modify: `docs/dashboard.md`
 - Modify: `docs/settings.md`
 - Modify: `docs/privacy.md`
+- Modify: `docs/README.md`
 
 **Interfaces:**
 - Consumes: `RhythmSettings`, `AppContainer.rhythm` from Tasks 2 and 3.
@@ -2708,6 +2709,22 @@ delete it.
 
 The third tab, **Rhythm**, records how fast each limit fills up and shows when your busy hours
 are. See [Usage Rhythm](rhythm.md).
+```
+
+And its opening lines change, because they count the tabs:
+
+```markdown
+The panel that opens from the menu bar icon. It has three tabs, Priority, All Usage and Rhythm.
+```
+
+```markdown
+- With no accounts, every tab shows **Add Account**.
+```
+
+`docs/README.md` names the tabs in its one-line summary:
+
+```markdown
+- [Dashboard](dashboard.md): the Priority, All Usage and Rhythm tabs, right-click menus, reordering, shortcuts
 ```
 
 `docs/settings.md` gains a section after **Usage display**:
