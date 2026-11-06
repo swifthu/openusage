@@ -374,7 +374,7 @@ enum RhythmClock {
 
 Run: `script/test_quiet.sh --filter RhythmClockTests`
 
-Expected: PASS — 7 tests, 0 failures.
+Expected: PASS — 12 tests, 0 failures.
 
 - [ ] **Step 6: Write the failing store tests**
 
@@ -637,7 +637,7 @@ struct FileRhythmStore: RhythmStore {
 
 Run: `script/test_quiet.sh --filter RhythmStoreTests`
 
-Expected: PASS — 8 tests, 0 failures.
+Expected: PASS — 13 tests, 0 failures.
 
 - [ ] **Step 10: Commit**
 
@@ -1050,6 +1050,10 @@ final class RhythmRecorder {
     @ObservationIgnored private let flushInterval: TimeInterval
     /// How many writes have failed in a row.
     @ObservationIgnored private var failures = 0
+    /// Whether a write was already attempted after the recording was turned off. The first such
+    /// write is the user's own request and is not held back by the backoff; the retries after it
+    /// are, so a disk that cannot be written does not warn on every refresh.
+    @ObservationIgnored private var wroteAfterSwitchingOff = false
 
     init(
         store: any RhythmStore,
@@ -1079,6 +1083,9 @@ final class RhythmRecorder {
         days.keys.filter { !pendingSeries(on: $0).isEmpty }.sorted()
     }
 
+    /// The days the recorder holds in memory. The tests read this; the app does not.
+    var heldDays: [Date] { days.keys.sorted() }
+
     /// The readings a snapshot carries: the session-sized metrics of one account.
     static func readings(from snapshot: ProviderSnapshot, kind: ProviderKind, at now: Date) -> [RhythmReading] {
         snapshot.lines.compactMap { line in
@@ -1106,10 +1113,18 @@ final class RhythmRecorder {
     func record(_ snapshot: ProviderSnapshot, kind: ProviderKind, at now: Date) {
         guard settings.isEnabled else {
             // Turning the recording off stops the readings, but what was already recorded is
-            // written out rather than thrown away.
-            if canWrite(at: now) { flush(at: now) }
+            // written out rather than thrown away. The first write after the switch is not held
+            // back by the backoff of a failed write — the user asked for it — but the retries
+            // after it are, so a disk that cannot be written does not warn on every refresh.
+            if !wroteAfterSwitchingOff || canWrite(at: now) {
+                wroteAfterSwitchingOff = true
+                flush(at: now)
+            }
             return
         }
+        // The recording is on, so the next time it is turned off its first write is again the
+        // user's own request.
+        wroteAfterSwitchingOff = false
         // The day's buckets are written before the new reading is folded in, so what is on disk is
         // always a whole number of readings and the newest one is still waiting to be written.
         checkpointIfDue(at: now)
@@ -1128,7 +1143,15 @@ final class RhythmRecorder {
         var failed = false
         for day in days.keys.sorted() {
             let series = days[day] ?? [:]
-            guard !pendingSeries(on: day).isEmpty else { continue }
+            guard !pendingSeries(on: day).isEmpty else {
+                if day != recordedDay {
+                    // The day is on disk and nothing is waiting to be written, so the recorder
+                    // does not need to hold it any more.
+                    days.removeValue(forKey: day)
+                    written.removeValue(forKey: day)
+                }
+                continue
+            }
             let record = RhythmDayRecord(day: day, series: series.values.sorted { $0.key < $1.key })
             do {
                 try history.save(record)
@@ -1264,7 +1287,7 @@ store started logging the days it skips. Confirm it is present; add it if it is 
 
 Run: `script/test_quiet.sh --filter RhythmRecorderTests`
 
-Expected: PASS — 13 tests, 0 failures.
+Expected: PASS — 23 tests, 0 failures.
 
 - [ ] **Step 7: Commit**
 
@@ -1277,27 +1300,69 @@ git commit -m "feat(rhythm): record how fast each window fills up"
 
 ### Task 3: Hang the recorder on the refresh
 
-The recorder now exists but nothing calls it. Wire it into `WidgetDataStore` and `AppContainer`, and add the switch that turns it off.
+The recorder now exists but nothing calls it. Wire it into `WidgetDataStore` and `AppContainer`, and
+write the history out when the app quits.
 
 **Files:**
-- Modify: `Sources/OpenUsage/Stores/WidgetDataStore.swift` (the `init` and the `refresh` method)
+- Modify: `Sources/OpenUsage/Stores/WidgetDataStore.swift` (the `init` and the private `store` method)
 - Modify: `Sources/OpenUsage/App/AppContainer.swift` (the `init`)
-- Test: `Tests/OpenUsageTests/RhythmRecorderTests.swift` (add the wiring test)
+- Modify: `Sources/OpenUsage/App/OpenUsageApp.swift` (`applicationWillTerminate`)
+- Modify: `Tests/OpenUsageTests/TestSupport.swift` (`WidgetDataStore.forTesting`)
+- Create: `Tests/OpenUsageTests/RhythmWiringTests.swift`
 
 **Interfaces:**
 - Consumes: `RhythmRecorder`, `RhythmSettings`, `FileRhythmStore` from Tasks 1 and 2.
 - Produces:
   - `WidgetDataStore.init(..., rhythm: RhythmRecorder? = nil)`
+  - `WidgetDataStore.forTesting(..., rhythm: RhythmRecorder? = nil)`
   - `AppContainer.rhythm: RhythmRecorder` and `AppContainer.rhythmSettings: RhythmSettings`
 
 - [ ] **Step 1: Write the failing wiring test**
 
-Append to `Tests/OpenUsageTests/RhythmRecorderTests.swift`:
+Create `Tests/OpenUsageTests/RhythmWiringTests.swift`:
 
 ```swift
+import Foundation
+import XCTest
+@testable import OpenUsage
+
+/// The wiring between a refresh and the rhythm recorder.
+final class RhythmWiringTests: XCTestCase {
+    private let calendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }()
+
+    private func isolatedDefaults() -> UserDefaults {
+        let suite = "rhythm-wiring-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        return defaults
+    }
+
+    private func snapshot(fraction: Double) -> ProviderSnapshot {
+        ProviderSnapshot(
+            providerID: "account-1",
+            displayName: "Claude",
+            lines: [.progress(
+                label: "Session",
+                used: fraction * 100,
+                limit: 100,
+                format: .percent,
+                resetsAt: Date().addingTimeInterval(3600),
+                periodDurationMs: MetricPeriod.sessionMs
+            )]
+        )
+    }
+
     func testASuccessfulRefreshFeedsTheRecorder() async {
-        let store = RecordingRhythmStore()
-        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(
+            store: store,
+            settings: RhythmSettings(defaults: isolatedDefaults()),
+            calendar: calendar
+        )
         let runtime = StubRuntime(
             provider: Provider(id: "account-1", kind: .claude),
             descriptors: [],
@@ -1312,8 +1377,12 @@ Append to `Tests/OpenUsageTests/RhythmRecorderTests.swift`:
     }
 
     func testAFailedRefreshFeedsTheRecorderNothing() async {
-        let store = RecordingRhythmStore()
-        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(
+            store: store,
+            settings: RhythmSettings(defaults: isolatedDefaults()),
+            calendar: calendar
+        )
         let runtime = StubRuntime(
             provider: Provider(id: "account-1", kind: .claude),
             descriptors: [],
@@ -1325,32 +1394,31 @@ Append to `Tests/OpenUsageTests/RhythmRecorderTests.swift`:
 
         XCTAssertTrue(recorder.pendingSeries.isEmpty)
     }
+}
 ```
+
+`RecordingRhythmStore` already exists in `Tests/OpenUsageTests/RhythmRecorderTests.swift` and takes a
+calendar — use it as it is, do not write a second store double.
 
 - [ ] **Step 2: Run the wiring tests to verify they fail**
 
-Run: `script/test_quiet.sh --filter RhythmRecorderTests`
+Run: `script/test_quiet.sh --filter RhythmWiringTests`
 
-Expected: FAIL — `StubRuntime` does not take a `rhythm:` parameter and `WidgetDataStore.forTesting` has no `rhythm:` argument yet.
+Expected: FAIL to compile — `WidgetDataStore.forTesting` has no `rhythm:` argument yet.
 
 - [ ] **Step 3: Take the recorder in `WidgetDataStore`**
 
-In `Sources/OpenUsage/Stores/WidgetDataStore.swift`, add the stored property next to the other collaborators:
+In `Sources/OpenUsage/Stores/WidgetDataStore.swift`, add the stored property next to the other
+collaborators:
 
 ```swift
     /// Records how fast each account's window fills up. Nil when the app does not record it.
     @ObservationIgnored private let rhythm: RhythmRecorder?
 ```
 
-Add it to `init`:
+Add it to `init` — the parameter goes last, after `providerRefreshTimeout`:
 
 ```swift
-    init(
-        registry: WidgetRegistry,
-        providers: [ProviderRuntime],
-        cache: ProviderSnapshotCache = ProviderSnapshotCache(),
-        defaults: UserDefaults = .standard,
-        now: @escaping () -> Date = Date.init,
         providerRefreshTimeout: TimeInterval = WidgetDataStore.defaultProviderRefreshTimeout,
         rhythm: RhythmRecorder? = nil
     ) {
@@ -1362,12 +1430,23 @@ and assign it:
         self.rhythm = rhythm
 ```
 
-Then, in `refresh(providerID:force:)`, right after the snapshot is stored — the line `snapshots[providerID] = snapshot` — record the reading:
+Then record the reading. The snapshot is put into `snapshots` by the private `store` method, which
+only runs on a refresh that succeeded — a failed refresh returns earlier through `recordFailure`,
+and a cache hit, a backoff skip and an in-flight skip all return before `store` is reached. Hooking
+there means only real readings are recorded, and a failed refresh leaves the hours it covered empty
+rather than showing them as no usage.
+
+In `private func store(_ snapshot: ProviderSnapshot, for providerID: String)`:
 
 ```swift
+    private func store(_ snapshot: ProviderSnapshot, for providerID: String) {
+        backoffs[providerID] = nil
         snapshots[providerID] = snapshot
-        // A refresh that failed leaves the hours it covered empty rather than showing as no usage.
-        rhythm?.record(snapshot, kind: provider.kind, at: now())
+        cache.save(snapshots)
+        if let kind = providersByID[providerID]?.provider.kind {
+            rhythm?.record(snapshot, kind: kind, at: now())
+        }
+    }
 ```
 
 - [ ] **Step 4: Let the test helper take a recorder**
@@ -1405,17 +1484,23 @@ In `Sources/OpenUsage/App/AppContainer.swift`, add the two stored properties:
     let rhythmSettings: RhythmSettings
 ```
 
-and in `init`, before the data store is built:
+The recorder has to exist before the data store is built, because the data store takes it. In
+`init`, above the `WidgetDataStore` that is built there:
 
 ```swift
         let rhythmSettings = RhythmSettings(defaults: defaults)
         let rhythm = RhythmRecorder(
             store: FileRhythmStore(directory: FileRhythmStore.defaultDirectory, calendar: .current),
-            settings: rhythmSettings
+            settings: rhythmSettings,
+            calendar: .current
         )
         self.rhythmSettings = rhythmSettings
         self.rhythm = rhythm
 ```
+
+`RhythmRecorder.init` takes an explicit calendar and has no default for it — the recorder and the
+store have to agree on which day a moment belongs to, or the file name and the bucket index drift
+apart.
 
 and pass the recorder into the data store:
 
@@ -1429,42 +1514,70 @@ and pass the recorder into the data store:
         )
 ```
 
-The recorder writes the day's buckets before it folds in the newest reading, so the newest reading
-is never on disk until the next write. The app therefore has to write it out when it shuts down,
-or a crash or a quit loses up to one refresh interval.
+- [ ] **Step 6: Write the history out when the app quits**
 
-`AppContainer` already cancels its refresh task in `deinit`; write the recorder out there too:
+The recorder writes the day's buckets before it folds in the newest reading, so the newest reading
+is never on disk until the next write. The app therefore has to write it out when it quits, or a
+quit loses up to one refresh interval — at the default five-minute interval, the last five minutes
+of the day.
+
+`AppContainer.deinit` cannot do this: `AppContainer` is a `@MainActor` class, which makes it
+`Sendable`, which makes its `deinit` nonisolated — a nonisolated `deinit` cannot call
+`RhythmRecorder.flush(at:)`, a main-actor method.
+
+The app delegate's termination handler can. In
+`Sources/OpenUsage/App/OpenUsageApp.swift`:
 
 ```swift
-    deinit {
-        refreshTask?.cancel()
-        rhythm.flush(at: Date())
+    public func applicationWillTerminate(_ notification: Notification) {
+        container?.telemetry.flush()
+        container?.rhythm.flush(at: Date())
     }
 ```
 
-`RhythmRecorder.flush(at:)` is `@MainActor`, and `AppContainer` is too, so the call is on the
-right actor. `deinit` cannot touch the actor-isolated state of a `@MainActor` class from outside
-the actor — if the compiler rejects it, move the flush into a `MainActor.assumeIsolated` block or
-flush from the app's termination path instead.
+`AppDelegate` is `@MainActor` and `applicationWillTerminate` runs on the main thread, so the call
+is on the right actor. `RhythmRecorder.flush(at:)` is `@discardableResult`, so its result can be
+ignored here — the recorder has already logged a warning if the write failed.
 
-- [ ] **Step 6: Run the recorder tests to verify they pass**
+- [ ] **Step 7: Run the wiring tests to verify they pass**
+
+Run: `script/test_quiet.sh --filter RhythmWiringTests`
+
+Expected: PASS — 2 tests, 0 failures.
 
 Run: `script/test_quiet.sh --filter RhythmRecorderTests`
 
-Expected: PASS — 15 tests, 0 failures.
+Expected: PASS — the recorder's own suite stays green.
 
-- [ ] **Step 7: Build the app**
+- [ ] **Step 8: Build the app**
 
 Run: `swift build --scratch-path "$HOME/build"`
 
 Expected: BUILD SUCCEEDED.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add Sources/OpenUsage/Stores/WidgetDataStore.swift Sources/OpenUsage/App/AppContainer.swift Tests/OpenUsageTests/TestSupport.swift Tests/OpenUsageTests/RhythmRecorderTests.swift
+git add Sources/OpenUsage/Stores/WidgetDataStore.swift Sources/OpenUsage/App/AppContainer.swift Sources/OpenUsage/App/OpenUsageApp.swift Tests/OpenUsageTests/TestSupport.swift Tests/OpenUsageTests/RhythmWiringTests.swift
 git commit -m "feat(rhythm): record the readings of every refresh"
 ```
+
+---
+
+## What Task 2 settled, so you do not have to guess
+
+- **`RhythmRecorder.init(store:settings:calendar:flushInterval:)`** — `calendar` has no default.
+  `flushInterval` defaults to five minutes.
+- **`RhythmRecorder.flush(at:) -> Bool`** — whether every day it held was written. The app ignores
+  the result; the tests use it.
+- **`RhythmRecorder.record(_:kind:at:)`** — takes the snapshot, the provider's kind and the moment.
+  A snapshot's `providerID` becomes the series key's first half, so the key of a series is
+  `"<providerID>/<metric label>"`.
+- **The recorder holds a day until that day's write actually landed**, and it can hold more than one
+  day at a time. A write that failed is taken out by the next successful write, so nothing is
+  dropped. `pendingDays` lists the days that still have something unwritten.
+- **`RecordingRhythmStore`** in `Tests/OpenUsageTests/RhythmRecorderTests.swift` — the store double
+  the recorder's own tests use. It takes a calendar and has `saved` and `saveAttempts`.
 
 ---
 
@@ -1540,8 +1653,10 @@ final class RhythmAnalyticsTests: XCTestCase {
         let bars = RhythmAnalytics.bars(for: record(6, points: points), zoom: .sixHours, offset: 12 * 3600, calendar: calendar)
 
         XCTAssertEqual(bars.count, 24)
+        // The window starts at 12:00 and each bar stands for fifteen minutes, so 14:00 is the
+        // eighth bar. That bar holds the three five-minute buckets 14:00, 14:05 and 14:10.
         XCTAssertEqual(bars.filter { $0.points > 0 }.count, 4)
-        XCTAssertEqual(bars[8].points, 1, accuracy: 0.0001)
+        XCTAssertEqual(bars[8].points, 3, accuracy: 0.0001)
         XCTAssertEqual(bars[0].start, calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: 12))!)
     }
 
@@ -1576,12 +1691,14 @@ final class RhythmAnalyticsTests: XCTestCase {
         one.series[0].points[168] = 10
         var two = quiet
         two.series[0].points[168] = 2
-        two.series[0].samples[168] = 1
 
         let bars = RhythmAnalytics.averageBars(for: [one, two], zoom: .day, offset: 0, calendar: calendar)
 
+        // Both days were read in that hour, so the average is (10 + 2) / 2.
         XCTAssertEqual(bars[14].points, 6, accuracy: 0.0001)
-        XCTAssertEqual(bars[14].samples, 2)
+        // The samples are the readings behind the average: one per bucket per day, and an hour is
+        // twelve buckets, so twelve readings on each of the two days.
+        XCTAssertEqual(bars[14].samples, 24)
     }
 
     func testTheAverageSkipsTheDaysThatWereNotRead() {
@@ -1606,7 +1723,9 @@ final class RhythmAnalyticsTests: XCTestCase {
 
         let peak = RhythmAnalytics.peakBars(in: bars)
 
-        XCTAssertEqual(peak, 13...15)
+        // The run stays above 60% of the tallest bar. The bar before it (2) is below that, so the
+        // peak is the two bars from the tallest one.
+        XCTAssertEqual(peak, 14...15)
     }
 
     func testAChartWithNothingInItHasNoPeak() {
@@ -1654,8 +1773,9 @@ struct RhythmBar: Hashable, Sendable, Identifiable {
     var index: Int
     /// The share of the window the slice burned, in points.
     var points: Double
-    /// How many samples the slice holds. Zero means nothing was read, which is not the same as
-    /// nothing being used.
+    /// How many readings the slice holds. Zero means nothing was read, which is not the same as
+    /// nothing being used. On an averaged bar it is the total number of readings behind the
+    /// average, not the number of days.
     var samples: Int
     /// When the slice starts.
     var start: Date
@@ -1696,6 +1816,9 @@ enum RhythmZoom: Int, CaseIterable, Sendable {
 /// Turns the recorded buckets into the bars the chart draws.
 enum RhythmAnalytics {
     /// The bars of one day at a zoom level, starting at an offset into the day.
+    ///
+    /// The offset is a time into the day and only makes sense for a window shorter than the day.
+    /// A whole day starts at the day's midnight and takes no offset.
     static func bars(
         for record: RhythmDayRecord,
         zoom: RhythmZoom,
@@ -1785,7 +1908,7 @@ enum RhythmAnalytics {
 
 Run: `script/test_quiet.sh --filter RhythmAnalyticsTests`
 
-Expected: PASS — 8 tests, 0 failures.
+Expected: PASS — 9 tests, 0 failures.
 
 - [ ] **Step 5: Commit**
 
@@ -1793,6 +1916,24 @@ Expected: PASS — 8 tests, 0 failures.
 git add Sources/OpenUsage/Rhythm/RhythmAnalytics.swift Tests/OpenUsageTests/RhythmAnalyticsTests.swift
 git commit -m "feat(rhythm): turn the recorded buckets into chart bars"
 ```
+
+---
+
+## Notes for the task that comes next (the chart)
+
+- **The number of bars is always 24.** Zooming shortens the time each bar stands for, it does not
+  change how many bars there are.
+- **`offset` is a time into the day** and only makes sense for a window shorter than the day. A
+  whole day starts at the day's midnight and takes no offset — a non-zero offset on `.day` would
+  silently drop the hours before the window.
+- **A bar's `samples` says whether anything was read there**, which is not the same as nothing
+  being used: `samples == 0` means "we do not know", and `samples > 0` with `points == 0` means
+  "we looked and nothing was burned".
+- **The chart shows the sum of every series** — a Claude session and a MiniMax session each burn
+  their own window, and adding their points gives the share of the window the day went through.
+  The per-series data stays in the store, so a stacked chart would not need a format change.
+- **The peak is the run of bars above 60% of the tallest one**, which is why a single spike and a
+  broad hill can both be one peak.
 
 ---
 
