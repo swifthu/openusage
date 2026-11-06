@@ -188,7 +188,7 @@ final class RhythmViewTests: QuietWindowTestCase {
         let (_, host) = show(rhythmView(container), in: .titled, size: CGSize(width: PanelMetrics.width, height: 400))
 
         try await waitUntil {
-            texts(in: host).contains("No readings were taken in this range.")
+            texts(in: host).contains("No readings were taken on this day.")
         }
     }
 

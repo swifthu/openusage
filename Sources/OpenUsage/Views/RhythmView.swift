@@ -90,7 +90,9 @@ struct RhythmView: View {
             } else if bars.isEmpty {
                 message(emptyText)
             } else if hasNoReadings {
-                message("No readings were taken in this range.")
+                message(mode == .day
+                    ? "No readings were taken on this day."
+                    : "No readings were taken in this range.")
             } else {
                 if zoom != .day {
                     RhythmContextStrip(
