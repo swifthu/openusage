@@ -2578,20 +2578,34 @@ git commit -m "feat(rhythm): show the rhythm in a dashboard tab"
 
 **Files:**
 - Modify: `Sources/OpenUsage/Views/SettingsScreen.swift`
+- Modify: `README.md`
 - Modify: `AGENTS.md`
 - Create: `docs/rhythm.md`
 - Modify: `docs/dashboard.md`
+- Modify: `docs/settings.md`
+- Modify: `docs/privacy.md`
 
 **Interfaces:**
 - Consumes: `RhythmSettings`, `AppContainer.rhythm` from Tasks 2 and 3.
-- Produces: the switch and the delete button in Settings; the fifth divergence section in `AGENTS.md`; `docs/rhythm.md`.
+- Produces: the switch and the delete button in Settings; the fifth divergence section in `AGENTS.md`;
+  `docs/rhythm.md`.
 
 - [ ] **Step 1: Add the switch and the delete button**
 
-In `Sources/OpenUsage/Views/SettingsScreen.swift`, add to the "Usage" section:
+In `Sources/OpenUsage/Views/SettingsScreen.swift`, the settings screen binds to its stores with
+`@Bindable`, not with a hand-made `Binding` — a `Binding`'s closures are not actor-isolated, so
+touching a `@MainActor` store inside them does not compile under Swift 6.
+
+At the top of `displayTab`, next to the existing `@Bindable var dataStore = dataStore`:
 
 ```swift
-            Toggle(isOn: $container.rhythmSettings.isEnabled) {
+        @Bindable var rhythmSettings = container.rhythmSettings
+```
+
+Then add the two rows to the `Section("Usage")`:
+
+```swift
+            Toggle(isOn: $rhythmSettings.isEnabled) {
                 titled("Record Usage Rhythm", info: "Keeps how fast your limits fill up, on this Mac")
             }
             Button("Delete Rhythm History") {
@@ -2600,27 +2614,24 @@ In `Sources/OpenUsage/Views/SettingsScreen.swift`, add to the "Usage" section:
             .disabled(!hasRhythmHistory)
 ```
 
-`@AppStorage` does not work for an `@Observable` store, so bind the toggle through the store:
+And the state and the two helpers on the view:
 
 ```swift
-    Toggle(isOn: Binding(
-        get: { container.rhythmSettings.isEnabled },
-        set: { container.rhythmSettings.isEnabled = $0 }
-    )) {
-        titled("Record Usage Rhythm", info: "Keeps how fast your limits fill up, on this Mac")
-    }
+    /// Whether there is any rhythm history to delete. It is state, not a computed property, so
+    /// the button can go back to being disabled after the history is gone.
+    @State private var hasRhythmHistory = false
 ```
 
-Add the two helpers:
-
 ```swift
-    /// Whether there is any rhythm history to delete.
-    private var hasRhythmHistory: Bool {
-        (try? container.rhythm.store.recordedDays())?.isEmpty == false
+    private func refreshRhythmHistoryState() {
+        hasRhythmHistory = !((try? container.rhythm.store.recordedDays()) ?? []).isEmpty
     }
 
     private func deleteRhythmHistory() {
-        let cutoff = Calendar.current.startOfDay(for: Date())
+        // The store deletes the days *before* the cutoff, so the cutoff has to be tomorrow to
+        // take today's own record with it.
+        let calendar = Calendar.current
+        let cutoff = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date())) ?? Date()
         do {
             try container.rhythm.store.delete(before: cutoff)
             AppLog.notice(.rhythm, "the rhythm history was deleted")
@@ -2628,7 +2639,18 @@ Add the two helpers:
             // Say what happened rather than what was meant: the files are still there.
             AppLog.warn(.rhythm, "the rhythm history could not be deleted: \(error.localizedDescription)")
         }
+        refreshRhythmHistoryState()
     }
+```
+
+The state has to be read when the screen appears, so the button is only enabled when there is
+something to delete. Put it on the Usage section:
+
+```swift
+        Section("Usage") {
+            ...
+        }
+        .task { refreshRhythmHistoryState() }
 ```
 
 - [ ] **Step 2: Write the user documentation**
@@ -2645,11 +2667,15 @@ your busy hours are.
 
 Every refresh, the app notes how much of each limit's window has been used and when. From those
 notes it builds a five-minute history of the last 90 days, kept in
-`~/Library/Application Support/OpenUsage/rhythm/`.
+`~/Library/Application Support/OpenUsage/rhythm/`, one file per local day.
 
-Only what a provider's own API reports is recorded, and only the share of the window that was used
-— never a token count, a price, or an account name. Nothing leaves this Mac: the history is never
-uploaded, and the app never reads the logs of other tools.
+What a file holds is the provider's own reported percentage, the provider it came from, the name of
+the metric and a local account id. It never holds a token count, a price, an account name or an
+email address. Nothing leaves this Mac: the history is never uploaded, and the app never reads the
+logs of other tools.
+
+Only windows of a day or less are recorded. A weekly limit sampled every few minutes is a slow
+drift, and its hourly rate says nothing about when you are actually working.
 
 ## The two views
 
@@ -2673,15 +2699,57 @@ Turn the recording off in **Settings → Usage → Record Usage Rhythm**. The hi
 delete it.
 ```
 
-- [ ] **Step 3: Point the dashboard page at it**
+- [ ] **Step 3: Point the other pages at it**
 
-In `docs/dashboard.md`, add a section:
+`docs/dashboard.md` gains a section:
 
 ```markdown
 ## Rhythm
 
 The third tab, **Rhythm**, records how fast each limit fills up and shows when your busy hours
 are. See [Usage Rhythm](rhythm.md).
+```
+
+`docs/settings.md` gains a section after **Usage display**:
+
+```markdown
+## Usage rhythm
+
+- **Record Usage Rhythm.** Keeps how fast your limits fill up, so the **Rhythm** tab can show when
+  your busy hours are. On by default. Turning it off stops the recording and keeps what was already
+  recorded.
+- **Delete Rhythm History.** Removes the recorded history from this Mac. Stopping the recording and
+  deleting the history are two different things, and this is the second one.
+
+See [Usage Rhythm](rhythm.md).
+```
+
+`docs/privacy.md` gains a section before **Screen sharing**:
+
+```markdown
+## Usage rhythm history
+
+- The **Rhythm** tab keeps a five-minute history of how fast each account's limits fill up, in
+  `~/Library/Application Support/OpenUsage/rhythm/`, one file per local day, for the last 90 days.
+- A file holds the provider's own reported percentage, the provider, the metric name and a local
+  account id. It holds no token count, no price, no account name and no email address.
+- The history never leaves this Mac. It is not uploaded, and it is not part of the telemetry the
+  app sends — see [Anonymous telemetry](#anonymous-telemetry).
+- **Settings → Usage → Delete Rhythm History** removes it. Turning **Record Usage Rhythm** off
+  stops the recording but keeps the history.
+```
+
+`README.md` gains a bullet in **Features**:
+
+```markdown
+- **[Usage rhythm](docs/rhythm.md).** A third tab that records how fast your limits fill up and
+  shows when your busy hours are.
+```
+
+and a link in **Documentation**:
+
+```markdown
+- [Usage rhythm](docs/rhythm.md)
 ```
 
 - [ ] **Step 4: Record the divergence in `AGENTS.md`**
@@ -2695,13 +2763,16 @@ renumber the sync-cadence section to six:
 Upstream has none of this; the fork keeps it across a sync.
 
 - The **Rhythm** tab records how fast each account's provider-reported window fills up, and shows
-  when the peak hours are. The history is the provider's own reported percentage, sampled on every
-  refresh and differenced — there is no log scanning, no spend estimate and no pricing anywhere in
-  it, so it does not contradict section 3.
+  when the peak hours are. It records the provider's own reported percentage, sampled on every
+  refresh and differenced between readings — no log scanning, no spend estimate, no pricing and no
+  token count anywhere in it, which is what section 3's body bans.
+- Section 3's heading also says "no trend". The rhythm is a time series, so this is the fork's
+  deliberate reading of that heading: the ban is on trends of *spend*, and the rhythm charts the
+  provider's own reported percentage. It is recorded here so that a sync does not quietly drop it.
 - The history lives in `~/Library/Application Support/OpenUsage/rhythm/`, one file per local day,
-  and is never uploaded. `AGENTS.md`'s section 3 forbids reading other tools' credentials, files
-  and logs; the rhythm feature reads none of them.
-- Keep the recording and the chart in `Sources/OpenUsage/Rhythm/`, and the views in
+  and is never uploaded. Section 3 also forbids reading other tools' credentials, files and logs;
+  the rhythm reads none of them.
+- Keep the recording and the analysis in `Sources/OpenUsage/Rhythm/`, and the views in
   `Sources/OpenUsage/Views/Rhythm*.swift`. A future cloud store is one more `RhythmStore`
   implementation, not a change to the recorder or the chart — and it needs its own stable identity
   for an account, because the account's card id is local to this Mac.
@@ -2711,8 +2782,7 @@ Upstream has none of this; the fork keeps it across a sync.
 
 Run: `script/test_quiet.sh`
 
-Expected: every test passes, 0 failures. The suite has around 828 tests before this feature; the
-count grows with the new ones.
+Expected: every test passes, 0 failures. The suite has 878 tests before this task.
 
 - [ ] **Step 6: Build and check the app runs**
 
@@ -2720,17 +2790,27 @@ Run: `script/build_and_run.sh verify`
 
 Expected: the build succeeds, the bundle is signed and verifies, and the app is running.
 
-- [ ] **Step 7: Look at the tab**
+This replaces the running dev build in `dist/` with the new one, which is how the app is always
+run in this repo — the app is a long-lived process, so every change needs a rebuild and a restart.
 
-Open the panel and click the **Rhythm** tab. With no history yet it shows "Nothing recorded yet.
-The rhythm builds up from today." After a few refreshes the chart shows the hours that were used.
-
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add Sources/OpenUsage/Views/SettingsScreen.swift AGENTS.md docs/rhythm.md docs/dashboard.md
+git add Sources/OpenUsage/Views/SettingsScreen.swift README.md AGENTS.md docs/rhythm.md docs/dashboard.md docs/settings.md docs/privacy.md
 git commit -m "feat(rhythm): add the settings, the docs and the divergence"
 ```
+
+---
+
+## Notes
+
+- **The switch does not delete anything.** Turning the recording off stops the readings; what was
+  already recorded is written out and kept. The button is the one that removes it.
+- **`RhythmSettings` is a `@MainActor @Observable` class**, and its `isEnabled` writes itself to
+  `UserDefaults` in a `didSet`. The recorder reads it on every refresh, so the switch takes effect
+  right away.
+- **The store's `delete(before:)` compares days**, so the cutoff is a moment that names the first
+  day to keep — tomorrow's midnight keeps nothing.
 
 ---
 
@@ -2746,8 +2826,8 @@ divergence note (Task 6).
 **Type consistency.** `RhythmReading` carries `resetsAt` from Task 2 onwards; `RhythmAnalytics`
 in Task 4 takes `RhythmDayRecord` and returns `RhythmBar`; `RhythmChart` in Task 5 takes
 `[RhythmBar]`, `ClosedRange<Int>?` and `RhythmZoom`; `RhythmView` in Task 5 uses
-`container.rhythm.store` and `container.rhythmSettings`. `RhythmStore` gains `load(days:)` in
-Task 5, which is the only change to the protocol after Task 1.
+`container.rhythm.store` and `container.rhythmSettings`. `RhythmStore` gained `load(days:)` in Task 1's fix round, and the
+protocol has not changed since.
 
 **Known gaps this plan leaves open, and why.** The chart's axis labels and the summary wording are
 written against the English locale; a Chinese or German build shows the times in its own format
