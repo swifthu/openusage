@@ -5,11 +5,13 @@ struct RhythmBar: Hashable, Sendable, Identifiable {
     var id: Int { index }
     /// The bar's place in the window, 0...23.
     var index: Int
-    /// The share of the window the slice burned, in points.
+    /// The window points the slice burned. Several series are added together, so the sum can be
+    /// more than one.
     var points: Double
-    /// How many readings the slice holds. Zero means nothing was read, which is not the same as
-    /// nothing being used. On an averaged bar it is the total number of readings behind the
-    /// average, not the number of days.
+    /// The readings that landed in the slice. Zero means no reading landed here, which is not the
+    /// same as nothing having been used: a burn spread over a bucket leaves its reading in the
+    /// next one. On an averaged bar it is the total number of readings behind the average, not
+    /// the number of days.
     var samples: Int
     /// When the slice starts.
     var start: Date
@@ -51,8 +53,16 @@ enum RhythmZoom: Int, CaseIterable, Sendable {
 enum RhythmAnalytics {
     /// The bars of one day at a zoom level, starting at an offset into the day.
     ///
-    /// The offset is a time into the day and only makes sense for a window shorter than the day.
-    /// A whole day starts at the day's midnight and takes no offset.
+    /// The offset is a time into the day and only makes sense for a window shorter than the day:
+    /// it is meaningful up to the day's length minus the window, and the caller clamps it. A whole
+    /// day starts at the day's midnight and takes no offset.
+    ///
+    /// The window is a fixed 24 hours from the day's local midnight, and the 24 bars each stand
+    /// for an hour of it. A day that is 25 hours long does not fit in that: the hour past the
+    /// window is not in the chart, and the axis shows `01:00` twice. A day that is 23 hours long
+    /// has an empty last bar, whose label is the next day's midnight. This is deliberate — the
+    /// window means the same thing every day, so the days an average is made of line up — and the
+    /// daylight-saving tests pin it.
     static func bars(
         for record: RhythmDayRecord,
         zoom: RhythmZoom,
@@ -67,8 +77,10 @@ enum RhythmAnalytics {
                 // A file written by another version can have two arrays of different lengths, so
                 // the samples are read defensively: a missing sample counts as none.
                 let sampleCount = index < series.samples.count ? series.samples[index] : 0
-                let bucketStart = RhythmClock.start(of: index, on: record.day, calendar: calendar)
-                let slice = Int((bucketStart.timeIntervalSince(windowStart) / zoom.barDuration).rounded(.down))
+                // The bucket starts at the day's midnight plus its index in five-minute steps, so
+                // the slice it falls in is arithmetic — no calendar call per bucket.
+                let seconds = Double(index) * RhythmClock.bucketSeconds - offset
+                let slice = Int((seconds / zoom.barDuration).rounded(.down))
                 guard slice >= 0, slice < 24 else { continue }
                 points[slice] += value
                 samples[slice] += sampleCount
@@ -85,7 +97,12 @@ enum RhythmAnalytics {
     }
 
     /// The bars of several days averaged, slice for slice. A slice is divided by the days that
-    /// were read in it, so a day the app was closed does not pull the average down.
+    /// were read in it, so a day the app was closed does not pull the average down. A day whose
+    /// points are in a slice but whose readings are not does not contribute at all: the numerator
+    /// and the denominator have to agree.
+    ///
+    /// An empty input returns no bars at all, where `bars(for:)` always returns 24. That is on
+    /// purpose: the view shows its "nothing recorded yet" message when there are no bars.
     static func averageBars(
         for records: [RhythmDayRecord],
         zoom: RhythmZoom,
@@ -98,8 +115,11 @@ enum RhythmAnalytics {
         var samples = [Int](repeating: 0, count: 24)
         for record in records {
             for bar in bars(for: record, zoom: zoom, offset: offset, calendar: calendar) {
+                // Only a day that was read in this slice contributes, on both sides: a day whose
+                // points are here but whose readings are not would raise the average.
+                guard bar.samples > 0 else { continue }
                 totals[bar.index] += bar.points
-                readings[bar.index] += bar.samples > 0 ? 1 : 0
+                readings[bar.index] += 1
                 samples[bar.index] += bar.samples
             }
         }
@@ -114,7 +134,8 @@ enum RhythmAnalytics {
         }
     }
 
-    /// The bars that make up the peak: the run around the tallest bar that stays above 60% of it.
+    /// The bars that make up the peak: the run around the tallest bar that stays at or above 60%
+    /// of it. A flat day — every bar the same height — makes the peak the whole chart.
     static func peakBars(in bars: [RhythmBar]) -> ClosedRange<Int>? {
         guard let tallest = bars.map(\.points).max(), tallest > 0,
               let peak = bars.firstIndex(where: { $0.points == tallest })
@@ -125,21 +146,5 @@ enum RhythmAnalytics {
         var last = peak
         while last < bars.count - 1, bars[last + 1].points >= threshold { last += 1 }
         return first...last
-    }
-
-    /// When the peak starts, for the label under the chart.
-    ///
-    /// The time is worked out from the day, the offset and the zoom, not read off the bars: the
-    /// bars carry their own start, but a caller may hold bars that were drawn for another window.
-    static func peakStart(
-        for bars: [RhythmBar],
-        zoom: RhythmZoom,
-        offset: TimeInterval,
-        day: Date,
-        calendar: Calendar = .current
-    ) -> Date? {
-        guard let peak = peakBars(in: bars) else { return nil }
-        let windowStart = calendar.startOfDay(for: day).addingTimeInterval(offset)
-        return windowStart.addingTimeInterval(Double(peak.lowerBound) * zoom.barDuration)
     }
 }

@@ -251,22 +251,6 @@ final class RhythmAnalyticsTests: XCTestCase {
         XCTAssertNil(RhythmAnalytics.peakBars(in: bars))
     }
 
-    func testThePeakStartsWhenItsFirstBarDoes() throws {
-        var bars = [RhythmBar](repeating: RhythmBar(index: 0, points: 0, samples: 1, start: Date()), count: 24)
-        bars[14].points = 9
-        let peak = try XCTUnwrap(RhythmAnalytics.peakBars(in: bars))
-
-        let start = RhythmAnalytics.peakStart(
-            for: bars,
-            zoom: .day,
-            offset: 0,
-            day: day(6),
-            calendar: calendar
-        )
-
-        XCTAssertEqual(start, calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: 14))!)
-        XCTAssertEqual(peak.lowerBound, 14)
-    }
 }
 ```
 
@@ -411,21 +395,6 @@ enum RhythmAnalytics {
         return first...last
     }
 
-    /// When the peak starts, for the label under the chart.
-    ///
-    /// The time is worked out from the day, the offset and the zoom, not read off the bars: the
-    /// bars carry their own start, but a caller may hold bars that were drawn for another window.
-    static func peakStart(
-        for bars: [RhythmBar],
-        zoom: RhythmZoom,
-        offset: TimeInterval,
-        day: Date,
-        calendar: Calendar = .current
-    ) -> Date? {
-        guard let peak = peakBars(in: bars) else { return nil }
-        let windowStart = calendar.startOfDay(for: day).addingTimeInterval(offset)
-        return windowStart.addingTimeInterval(Double(peak.lowerBound) * zoom.barDuration)
-    }
 }
 ```
 
@@ -1938,7 +1907,6 @@ The pure functions that turn a day's records into the bars the chart draws, and 
     - `static func bars(for record: RhythmDayRecord, zoom: RhythmZoom, offset: TimeInterval, calendar: Calendar) -> [RhythmBar]`
     - `static func averageBars(for records: [RhythmDayRecord], zoom: RhythmZoom, offset: TimeInterval, calendar: Calendar) -> [RhythmBar]`
     - `static func peakBars(in bars: [RhythmBar]) -> ClosedRange<Int>?`
-    - `static func peakStart(for bars: [RhythmBar], zoom: RhythmZoom, offset: TimeInterval, day: Date, calendar: Calendar) -> Date?`
 
 - [ ] **Step 1: Write the failing analytics tests**
 
@@ -2095,22 +2063,6 @@ final class RhythmAnalyticsTests: XCTestCase {
         XCTAssertNil(RhythmAnalytics.peakBars(in: bars))
     }
 
-    func testThePeakStartsWhenItsFirstBarDoes() throws {
-        var bars = [RhythmBar](repeating: RhythmBar(index: 0, points: 0, samples: 1, start: Date()), count: 24)
-        bars[14].points = 9
-        let peak = try XCTUnwrap(RhythmAnalytics.peakBars(in: bars))
-
-        let start = RhythmAnalytics.peakStart(
-            for: bars,
-            zoom: .day,
-            offset: 0,
-            day: day(6),
-            calendar: calendar
-        )
-
-        XCTAssertEqual(start, calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: 14))!)
-        XCTAssertEqual(peak.lowerBound, 14)
-    }
 }
 ```
 
@@ -2254,17 +2206,6 @@ enum RhythmAnalytics {
         return first...last
     }
 
-    /// When the peak starts, for the label under the chart.
-    static func peakStart(
-        for bars: [RhythmBar],
-        zoom: RhythmZoom,
-        offset: TimeInterval,
-        day: Date,
-        calendar: Calendar = .current
-    ) -> Date? {
-        guard let peak = peakBars(in: bars) else { return nil }
-        return bars[peak.lowerBound].start
-    }
 }
 ```
 
@@ -2272,7 +2213,7 @@ enum RhythmAnalytics {
 
 Run: `script/test_quiet.sh --filter RhythmAnalyticsTests`
 
-Expected: PASS — 10 tests, 0 failures.
+Expected: PASS — 13 tests, 0 failures.
 
 - [ ] **Step 5: Commit**
 
