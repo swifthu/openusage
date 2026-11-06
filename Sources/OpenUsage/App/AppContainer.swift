@@ -13,6 +13,8 @@ final class AppContainer {
     let menuBarSize: MenuBarSizeSetting
     let telemetry: TelemetryRecorder
     let hubs: CLIProxyHubSync
+    let rhythm: RhythmRecorder
+    let rhythmSettings: RhythmSettings
     @ObservationIgnored private var providers: [AccountProviderRuntime]
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
 
@@ -42,11 +44,20 @@ final class AppContainer {
         )
         let registry = WidgetRegistry.from(providers)
         let layout = LayoutStore(registry: registry, defaults: defaults)
+        let rhythmSettings = RhythmSettings(defaults: defaults)
+        let rhythm = RhythmRecorder(
+            store: FileRhythmStore(directory: FileRhythmStore.defaultDirectory, calendar: .current),
+            settings: rhythmSettings,
+            calendar: .current
+        )
+        self.rhythmSettings = rhythmSettings
+        self.rhythm = rhythm
         let dataStore = WidgetDataStore(
             registry: registry,
             providers: providers,
             cache: ProviderSnapshotCache(userDefaults: defaults),
-            defaults: defaults
+            defaults: defaults,
+            rhythm: rhythm
         )
         self.providers = providers
         self.layout = layout

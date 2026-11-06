@@ -143,7 +143,8 @@ extension WidgetDataStore {
         cache: ProviderSnapshotCache? = nil,
         defaults: UserDefaults,
         now: @escaping () -> Date = Date.init,
-        providerRefreshTimeout: TimeInterval = WidgetDataStore.defaultProviderRefreshTimeout
+        providerRefreshTimeout: TimeInterval = WidgetDataStore.defaultProviderRefreshTimeout,
+        rhythm: RhythmRecorder? = nil
     ) -> WidgetDataStore {
         WidgetDataStore(
             registry: registry ?? .from(runtimes),
@@ -151,7 +152,8 @@ extension WidgetDataStore {
             cache: cache ?? ProviderSnapshotCache(userDefaults: defaults, storageKey: "snapshots"),
             defaults: defaults,
             now: now,
-            providerRefreshTimeout: providerRefreshTimeout
+            providerRefreshTimeout: providerRefreshTimeout,
+            rhythm: rhythm
         )
     }
 }

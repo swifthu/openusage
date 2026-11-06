@@ -10,6 +10,8 @@ final class WidgetDataStore {
     private let defaults: UserDefaults
     private let now: () -> Date
     private let providerRefreshTimeout: TimeInterval
+    /// Records how fast each account's window fills up. Nil when the app does not record it.
+    @ObservationIgnored private let rhythm: RhythmRecorder?
 
     private static let meterStyleKey = "meterStyle"
     private static let resetDisplayModeKey = "resetDisplayMode"
@@ -80,6 +82,7 @@ final class WidgetDataStore {
         defaults: UserDefaults = .standard,
         now: @escaping () -> Date = Date.init,
         providerRefreshTimeout: TimeInterval = WidgetDataStore.defaultProviderRefreshTimeout,
+        rhythm: RhythmRecorder? = nil
     ) {
         precondition(providerRefreshTimeout > 0)
         self.registry = registry
@@ -88,6 +91,7 @@ final class WidgetDataStore {
         self.defaults = defaults
         self.now = now
         self.providerRefreshTimeout = providerRefreshTimeout
+        self.rhythm = rhythm
         self.meterStyle = defaults.enumValue(forKey: Self.meterStyleKey, default: .remaining)
         self.resetDisplayMode = defaults.enumValue(forKey: Self.resetDisplayModeKey, default: .relative)
         self.menuBarLimit = defaults.enumValue(forKey: Self.menuBarLimitKey, default: .upToThree)
@@ -253,6 +257,9 @@ final class WidgetDataStore {
         backoffs[providerID] = nil
         snapshots[providerID] = snapshot
         cache.save(snapshots)
+        if let kind = providersByID[providerID]?.provider.kind {
+            rhythm?.record(snapshot, kind: kind, at: now())
+        }
     }
 
     private func latchBurningFast() {
