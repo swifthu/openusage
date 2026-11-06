@@ -1371,6 +1371,24 @@ and pass the recorder into the data store:
         )
 ```
 
+The recorder writes the day's buckets before it folds in the newest reading, so the newest reading
+is never on disk until the next write. The app therefore has to write it out when it shuts down,
+or a crash or a quit loses up to one refresh interval.
+
+`AppContainer` already cancels its refresh task in `deinit`; write the recorder out there too:
+
+```swift
+    deinit {
+        refreshTask?.cancel()
+        rhythm.flush(at: Date())
+    }
+```
+
+`RhythmRecorder.flush(at:)` is `@MainActor`, and `AppContainer` is too, so the call is on the
+right actor. `deinit` cannot touch the actor-isolated state of a `@MainActor` class from outside
+the actor — if the compiler rejects it, move the flush into a `MainActor.assumeIsolated` block or
+flush from the app's termination path instead.
+
 - [ ] **Step 6: Run the recorder tests to verify they pass**
 
 Run: `script/test_quiet.sh --filter RhythmRecorderTests`
