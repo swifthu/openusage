@@ -1844,6 +1844,27 @@ final class RhythmAnalyticsTests: XCTestCase {
         XCTAssertEqual(bars[14].points, 5, accuracy: 0.0001)
     }
 
+    func testARecordWhoseArraysDoNotMatchStillReads() {
+        var points = [Double](repeating: 0, count: 288)
+        points[168] = 1
+        // A file written by another version can carry two arrays of different lengths.
+        let record = RhythmDayRecord(day: day(6), series: [
+            RhythmSeriesRecord(
+                key: "account-1/Session",
+                kind: .claude,
+                label: "Session",
+                windowMs: MetricPeriod.sessionMs,
+                points: points,
+                samples: [Int](repeating: 1, count: 100)
+            )
+        ])
+
+        let bars = RhythmAnalytics.bars(for: record, zoom: .day, offset: 0, calendar: calendar)
+
+        XCTAssertEqual(bars.count, 24)
+        XCTAssertEqual(bars[14].points, 1, accuracy: 0.0001)
+    }
+
     func testTheAverageDividesByTheDaysThatWereRead() {
         let busy = record(6, points: [Double](repeating: 0, count: 288))
         let quiet = record(7, points: [Double](repeating: 0, count: 288))
@@ -1990,11 +2011,14 @@ enum RhythmAnalytics {
         var samples = [Int](repeating: 0, count: 24)
         for series in record.series {
             for (index, value) in series.points.enumerated() {
+                // A file written by another version can have two arrays of different lengths, so
+                // the samples are read defensively: a missing sample counts as none.
+                let sampleCount = index < series.samples.count ? series.samples[index] : 0
                 let bucketStart = RhythmClock.start(of: index, on: record.day, calendar: calendar)
                 let slice = Int((bucketStart.timeIntervalSince(windowStart) / zoom.barDuration).rounded(.down))
                 guard slice >= 0, slice < 24 else { continue }
                 points[slice] += value
-                samples[slice] += series.samples[index]
+                samples[slice] += sampleCount
             }
         }
         return (0..<24).map { index in
@@ -2068,7 +2092,7 @@ enum RhythmAnalytics {
 
 Run: `script/test_quiet.sh --filter RhythmAnalyticsTests`
 
-Expected: PASS — 9 tests, 0 failures.
+Expected: PASS — 10 tests, 0 failures.
 
 - [ ] **Step 5: Commit**
 
