@@ -52,6 +52,28 @@ final class RhythmStoreTests: XCTestCase {
         XCTAssertEqual(directory.deletingLastPathComponent().lastPathComponent, "rhythm")
     }
 
+    func testTwoBundleIdentifiersGiveTwoDifferentFolders() {
+        let installed = FileRhythmStore.directory(forBundleIdentifier: "com.example.openusage")
+        let development = FileRhythmStore.directory(forBundleIdentifier: "com.example.openusage.dev")
+
+        // Two builds must not land in one folder, or they read each other's history.
+        XCTAssertNotEqual(installed, development)
+        XCTAssertNotEqual(installed.lastPathComponent, development.lastPathComponent)
+        // Both live in the same rhythm folder, side by side.
+        XCTAssertEqual(installed.deletingLastPathComponent().lastPathComponent, "rhythm")
+        XCTAssertEqual(development.deletingLastPathComponent().lastPathComponent, "rhythm")
+        XCTAssertEqual(installed.deletingLastPathComponent(), development.deletingLastPathComponent())
+    }
+
+    func testAnIdentifierWithASlashStaysInsideTheFolder() {
+        let rhythm = FileRhythmStore.directory(forBundleIdentifier: nil).deletingLastPathComponent()
+        let directory = FileRhythmStore.directory(forBundleIdentifier: "com.example/openusage")
+
+        // The slash makes a folder inside the rhythm folder, not a way out of it.
+        XCTAssertTrue(directory.path.hasPrefix(rhythm.path))
+        XCTAssertEqual(directory.pathComponents.count, rhythm.pathComponents.count + 2)
+    }
+
     func testASavedDayComesBack() throws {
         let store = makeStore()
         let points = [Double](repeating: 1.5, count: 288)

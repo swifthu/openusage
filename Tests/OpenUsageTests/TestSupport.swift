@@ -124,7 +124,8 @@ extension AppContainer {
         accounts: AccountStore,
         defaults: UserDefaults,
         http: any HTTPClient = URLSessionHTTPClient(),
-        telemetry: RecordingTelemetrySink = RecordingTelemetrySink()
+        telemetry: RecordingTelemetrySink = RecordingTelemetrySink(),
+        rhythmStore: (any RhythmStore)? = nil
     ) -> AppContainer {
         AppContainer(
             accounts: accounts,
@@ -134,7 +135,7 @@ extension AppContainer {
             telemetryDefaults: defaults,
             // The tests record the rhythm, so they need a store of their own: the file store would
             // read and write the developer's real history folder.
-            rhythmStore: RecordingRhythmStore(calendar: .current)
+            rhythmStore: rhythmStore ?? RecordingRhythmStore(calendar: .current)
         )
     }
 }

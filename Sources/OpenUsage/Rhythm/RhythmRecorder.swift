@@ -64,6 +64,9 @@ final class RhythmRecorder {
 
     /// The last reading of every series, so the next one can be differenced against it.
     @ObservationIgnored private var lastReading: [String: RhythmReading] = [:]
+    /// The series whose last reading came from a runtime that has since been replaced. Their next
+    /// reading may be measuring a different window.
+    @ObservationIgnored private var suspectBaselines: Set<String> = []
     /// The buckets of the days the recorder holds, by day. A day stays here until it is on disk.
     @ObservationIgnored private var days: [Date: [String: RhythmSeriesRecord]] = [:]
     /// What was written of each held day, by day.
@@ -163,14 +166,31 @@ final class RhythmRecorder {
         }
     }
 
-    /// Forgets the last reading of a provider's series, so its next reading starts a new
-    /// baseline. A runtime that was replaced may be measuring a different window now, and the
-    /// jump between the old reading and the new one is not consumption.
-    func forgetReadings(for providerID: String) {
+    /// Tells the recorder that a provider's runtime was replaced. The replacement may be measuring
+    /// a different window now — a different account behind the same key — and then the jump between
+    /// the old reading and the new one is not consumption. When it is still the same window, the
+    /// jump is real consumption and is kept, so the next reading decides.
+    func replaceRuntime(for providerID: String) {
         let prefix = "\(providerID)/"
-        let stale = lastReading.keys.filter { $0.hasPrefix(prefix) }
-        for key in stale {
-            lastReading.removeValue(forKey: key)
+        suspectBaselines.formUnion(lastReading.keys.filter { $0.hasPrefix(prefix) })
+    }
+
+    /// Whether two readings describe the same window. The window's reset instant is its identity:
+    /// a provider reports the same one every time it is asked about the same window. Some report
+    /// the time left instead, which moves by a second between readings, so the two instants are
+    /// allowed to be a minute apart.
+    static func sameWindow(_ previous: RhythmReading, _ current: RhythmReading) -> Bool {
+        guard previous.windowMs == current.windowMs else { return false }
+        switch (previous.resetsAt, current.resetsAt) {
+        case let (before?, after?):
+            return abs(before.timeIntervalSince(after)) < 60
+        case (nil, nil):
+            // Neither reading knows when the window resets, so there is nothing to compare. The
+            // same window is the likelier answer, and the differencer already treats a reading
+            // that went down as a reset.
+            return true
+        default:
+            return false
         }
     }
 
@@ -239,10 +259,19 @@ final class RhythmRecorder {
             samples: Array(repeating: 0, count: RhythmClock.bucketCount(on: day, calendar: calendar))
         )
         if let previous = lastReading[reading.key] {
-            let delta = RhythmDifferencer.delta(from: previous, to: reading, day: day, calendar: calendar)
+            let delta: RhythmDelta
+            if suspectBaselines.contains(reading.key), !Self.sameWindow(previous, reading) {
+                // A different window: the jump between the two readings is the new window's
+                // state, not consumption.
+                AppLog.info(.rhythm, "the rhythm of \(reading.key) starts a new window")
+                delta = RhythmDelta(points: 0, buckets: [])
+            } else {
+                delta = RhythmDifferencer.delta(from: previous, to: reading, day: day, calendar: calendar)
+            }
             for share in delta.buckets where share.index < record.points.count {
                 record.points[share.index] += delta.points * share.share
             }
+            suspectBaselines.remove(reading.key)
         }
         if let index = RhythmClock.bucketIndex(for: reading.at, on: day, calendar: calendar),
            index < record.samples.count {

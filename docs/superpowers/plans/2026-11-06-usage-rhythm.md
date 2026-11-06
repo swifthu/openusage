@@ -1534,26 +1534,33 @@ In `private func store(_ snapshot: ProviderSnapshot, for providerID: String)`:
     }
 ```
 
-A replaced runtime breaks the baseline. `replaceProvider` stores a snapshot taken from a **new**
+A replaced runtime may break the baseline. `replaceProvider` stores a snapshot taken from a **new**
 runtime, and the series key — `"\(cardID)/<metric label>"` — does not change when the credential
 does, so the previous reading is still there and the new window's percentage would be differenced
-against the old one. That books a jump that never happened as consumption. The recorder forgets the
-provider's last readings instead:
+against the old one. That books a jump that never happened as consumption.
+
+The recorder cannot know yet, though: a replaced runtime often measures the **same** window — the
+common case is an expired sign-in that the user renews, which keeps the same quota window. Clearing
+the baseline there throws away real consumption and leaves a gap in the chart. So the recorder only
+marks the series as suspect and lets the next reading decide. The window's reset instant is the
+window's identity: a provider reports the same one every time it is asked about the same window, so
+two readings whose reset instants are within a minute of each other describe the same window, and
+the difference between them is real consumption.
 
 ```swift
-    /// Forgets the last reading of a provider's series, so its next reading starts a new
-    /// baseline. A runtime that was replaced may be measuring a different window now, and the
-    /// jump between the old reading and the new one is not consumption.
-    func forgetReadings(for providerID: String) {
+    /// Tells the recorder that a provider's runtime was replaced. The replacement may be measuring
+    /// a different window now — a different account behind the same key — and then the jump between
+    /// the old reading and the new one is not consumption. When it is still the same window, the
+    /// jump is real consumption and is kept, so the next reading decides.
+    func replaceRuntime(for providerID: String) {
         let prefix = "\(providerID)/"
-        let stale = lastReading.keys.filter { $0.hasPrefix(prefix) }
-        for key in stale {
-            lastReading.removeValue(forKey: key)
-        }
+        suspectBaselines.formUnion(lastReading.keys.filter { $0.hasPrefix(prefix) })
     }
 ```
 
 The keys are filtered into an array first: mutating the dictionary while iterating its keys traps.
+The next reading then compares the two windows, and a window that really changed is logged rather
+than dropped in silence.
 
 And `replaceProvider` calls it before the snapshot is stored:
 
@@ -1562,15 +1569,16 @@ And `replaceProvider` calls it before the snapshot is stored:
         let id = provider.provider.id
         inFlight.removeValue(forKey: id)?.cancel()
         providersByID[id] = provider
-        // The runtime that measured this account may be measuring a different window now, so the
-        // old reading is not a baseline for the new one.
-        rhythm?.forgetReadings(for: id)
+        // The runtime that measured this account may be measuring a different window now — a
+        // different account behind the same key. The recorder decides that from the next
+        // reading, so the consumption of an unchanged window is not lost.
+        rhythm?.replaceRuntime(for: id)
         store(snapshot, for: id)
     }
 ```
 
-The replacement's own reading is still recorded — as a sample, with no burn, because it has no
-predecessor. That is right: the new window's state is worth knowing.
+The replacement's own reading is still recorded — as a sample, and with the burn of the window it
+turns out to be, because the same window's consumption is real.
 
 - [ ] **Step 4: Let the test helper take a recorder**
 

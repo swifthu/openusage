@@ -43,6 +43,10 @@ struct FileRhythmStore: RhythmStore {
     }
 
     static var defaultDirectory: URL {
+        directory(forBundleIdentifier: Bundle.main.bundleIdentifier)
+    }
+
+    static func directory(forBundleIdentifier identifier: String?) -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         return base
@@ -50,7 +54,7 @@ struct FileRhythmStore: RhythmStore {
             .appendingPathComponent("rhythm", isDirectory: true)
             // The app is not sandboxed, so Application Support is shared by every build of it.
             // The bundle identifier keeps the development build and the installed one apart.
-            .appendingPathComponent(Bundle.main.bundleIdentifier ?? "default", isDirectory: true)
+            .appendingPathComponent(identifier ?? "default", isDirectory: true)
     }
 
     private struct Payload: Codable {

@@ -250,9 +250,10 @@ final class WidgetDataStore {
         let id = provider.provider.id
         inFlight.removeValue(forKey: id)?.cancel()
         providersByID[id] = provider
-        // The runtime that measured this account may be measuring a different window now, so the
-        // old reading is not a baseline for the new one.
-        rhythm?.forgetReadings(for: id)
+        // The runtime that measured this account may be measuring a different window now — a
+        // different account behind the same key. The recorder decides that from the next
+        // reading, so the consumption of an unchanged window is not lost.
+        rhythm?.replaceRuntime(for: id)
         store(snapshot, for: id)
     }
 
