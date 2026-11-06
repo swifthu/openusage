@@ -80,6 +80,10 @@ final class RhythmRecorder {
     @ObservationIgnored private let flushInterval: TimeInterval
     /// How many writes have failed in a row.
     @ObservationIgnored private var failures = 0
+    /// Whether a write was already attempted after the recording was turned off. The first such
+    /// write is the user's own request and is not held back by the backoff; the retries after it
+    /// are, so a disk that cannot be written does not warn on every refresh.
+    @ObservationIgnored private var wroteAfterSwitchingOff = false
 
     init(
         store: any RhythmStore,
@@ -139,11 +143,18 @@ final class RhythmRecorder {
     func record(_ snapshot: ProviderSnapshot, kind: ProviderKind, at now: Date) {
         guard settings.isEnabled else {
             // Turning the recording off stops the readings, but what was already recorded is
-            // written out rather than thrown away. The write is not held back by the backoff of
-            // a failed write: turning the recording off is the user's own request.
-            flush(at: now)
+            // written out rather than thrown away. The first write after the switch is not held
+            // back by the backoff of a failed write — the user asked for it — but the retries
+            // after it are, so a disk that cannot be written does not warn on every refresh.
+            if !wroteAfterSwitchingOff || canWrite(at: now) {
+                wroteAfterSwitchingOff = true
+                flush(at: now)
+            }
             return
         }
+        // The recording is on, so the next time it is turned off its first write is again the
+        // user's own request.
+        wroteAfterSwitchingOff = false
         // The day's buckets are written before the new reading is folded in, so what is on disk is
         // always a whole number of readings and the newest one is still waiting to be written.
         checkpointIfDue(at: now)

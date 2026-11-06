@@ -363,12 +363,41 @@ final class RhythmRecorderTests: XCTestCase {
 
         // Turning the recording off writes what was already recorded, even though the last write
         // failed a moment ago.
+        XCTAssertEqual(store.saveAttempts, 2)
         let series = try XCTUnwrap(store.saved.first?.series.first)
         XCTAssertEqual(series.samples[168], 1)
         XCTAssertEqual(series.samples[169], 1)
         XCTAssertEqual(series.points[168], 0.15, accuracy: 0.0001)
         // The reading that arrived after the recording was turned off is not recorded.
         XCTAssertEqual(series.samples[170], 0)
+    }
+
+    func testADiskThatCannotBeWrittenIsNotWrittenOnEveryRefreshAfterTheRecordingIsTurnedOff() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        store.setFailing(true)
+        let settings = RhythmSettings(defaults: isolatedDefaults())
+        let recorder = RhythmRecorder(store: store, settings: settings, calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        XCTAssertEqual(store.saveAttempts, 0)
+
+        settings.isEnabled = false
+        recorder.record(snapshot(fraction: 0.35), kind: .claude, at: moment(14, 1))
+        // The first write after the switch is the user's own request, so it is tried even though
+        // the disk cannot be written.
+        XCTAssertEqual(store.saveAttempts, 1)
+
+        recorder.record(snapshot(fraction: 0.4), kind: .claude, at: moment(14, 2))
+        recorder.record(snapshot(fraction: 0.45), kind: .claude, at: moment(14, 3))
+        recorder.record(snapshot(fraction: 0.5), kind: .claude, at: moment(14, 4))
+
+        // The retries after the first one wait out the backoff, so a disk that cannot be written
+        // does not produce a warning for every refresh.
+        XCTAssertEqual(store.saveAttempts, 1)
+
+        // Once the backoff has passed, the write is tried again.
+        recorder.record(snapshot(fraction: 0.55), kind: .claude, at: moment(14, 7))
+        XCTAssertEqual(store.saveAttempts, 2)
     }
 
     func testTheStoreListsEveryDayOnce() throws {
