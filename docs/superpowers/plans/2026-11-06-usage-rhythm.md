@@ -1524,7 +1524,7 @@ final class RhythmRecorder {
         let prefix = "\(providerID)/"
         let keys = lastReading.keys.filter { $0.hasPrefix(prefix) }
         guard !keys.isEmpty else { return }
-        AppLog.info(.rhythm, "the rhythm of \(providerID) starts a new baseline: the account behind it may be a different one")
+        AppLog.info(.rhythm, "the rhythm of \(providerID) starts a new baseline: \(keys.count) readings dropped, the account behind it may be a different one")
         for key in keys {
             lastReading.removeValue(forKey: key)
         }
@@ -2017,6 +2017,40 @@ final class RhythmWiringTests: XCTestCase {
         XCTAssertEqual(recorded.samples.reduce(0, +), 1)
     }
 
+    func testAReplacedSignInThroughTheContainerDropsTheOldBaseline() async throws {
+        let defaults = isolatedDefaults()
+        let accounts = AccountStore(defaults: defaults, vault: InMemoryCredentialVault())
+        // The first read finds a nearly empty window, the second a nearly full one. The jump
+        // between them is what a baseline that was not dropped would book as consumption.
+        let reads = TestSwitch(0)
+        let http = RoutingHTTPClient { _ in
+            let remaining = reads.value == 0 ? 80 : 20
+            reads.value += 1
+            return HTTPResponse.json("""
+            {"model_remains":[{"model_name":"general","current_interval_remaining_percent":\(remaining),\
+            "current_weekly_remaining_percent":100,"remains_time":7200000}],\
+            "base_resp":{"status_code":0,"status_msg":"success"}}
+            """)
+        }
+        let account = accounts.add(kind: .minimax, label: "Work", credential: .apiKey("key"))
+        let container = AppContainer.forTesting(accounts: accounts, defaults: defaults, http: http)
+
+        await container.dataStore.refresh(providerID: account.cardID, force: true)
+
+        // Another account's key is pasted into the same slot. An API key's identity is a hash of
+        // the key, so the two identities differ and the account behind the slot may be another one.
+        try await container.replaceCredential(.apiKey("another key"), for: account.cardID)
+        container.rhythm.flush(at: Date())
+
+        let store = try XCTUnwrap(container.rhythm.store as? RecordingRhythmStore)
+        let recorded = try XCTUnwrap(store.saved.first?.series.first { $0.key == "\(account.cardID)/Session" })
+        // Both readings are samples.
+        XCTAssertEqual(recorded.samples.reduce(0, +), 2)
+        // The jump is that other account's state, not consumption: the old baseline is gone, so the
+        // new reading starts from nothing.
+        XCTAssertEqual(recorded.points.reduce(0, +), 0, accuracy: 0.0001)
+    }
+
     func testTheFileStoreKeepsTheDayTheRecorderWrote() async throws {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("rhythm-wiring-\(UUID().uuidString)", isDirectory: true)
@@ -2114,46 +2148,64 @@ runtime, and the series key — `"\(cardID)/<metric label>"` — does not change
 does, so the previous reading is still there and the new window's percentage would be differenced
 against the old one. That books a jump that never happened as consumption.
 
-The recorder cannot know yet, though: a replaced runtime often measures the **same** window — the
-common case is an expired sign-in that the user renews, which keeps the same quota window. Clearing
-the baseline there throws away real consumption and leaves a gap in the chart. So the recorder only
-marks the series as suspect and lets the next reading decide. The window's reset instant is the
-window's identity: a provider reports the same one every time it is asked about the same window, so
-two readings whose reset instants are within a minute of each other describe the same window, and
-the difference between them is real consumption.
+The app already knows whether the account behind the slot is still the same one, so it says so
+rather than the recorder guessing:
+
+- An **OAuth sign-in** carries the account's identity, and `replaceCredential` refuses one whose
+  identity differs from the saved one — so an OAuth sign-in is always the same account.
+- An **API key** carries a hash of itself, so the same key is the same account and a different key
+  may be somebody else's.
+
+`AppContainer.accountMayHaveChanged(_:saved:)` compares the two identities. It has to be worked
+out **before** the new sign-in is saved: afterwards the saved credential is the new one and the
+comparison would always say "the same account".
 
 ```swift
-    /// Tells the recorder that a provider's runtime was replaced. The replacement may be measuring
-    /// a different window now — a different account behind the same key — and then the jump between
-    /// the old reading and the new one is not consumption. When it is still the same window, the
-    /// jump is real consumption and is kept, so the next reading decides.
-    func replaceRuntime(for providerID: String) {
-        let prefix = "\(providerID)/"
-        suspectBaselines.formUnion(lastReading.keys.filter { $0.hasPrefix(prefix) })
+    static func accountMayHaveChanged(_ credential: AccountCredential, saved: AccountCredential?) -> Bool {
+        guard let fresh = credential.identity, let old = saved?.identity else {
+            AppLog.info(.rhythm, "the rhythm of a replaced sign-in could not check whether the account behind the slot is the same one")
+            return false
+        }
+        return fresh != old
     }
 ```
 
-The keys are filtered into an array first: mutating the dictionary while iterating its keys traps.
-The next reading then compares the two windows, and a window that really changed is logged rather
-than dropped in silence.
+When the two identities cannot be compared — the saved sign-in could not be read, or either of
+them carries no identity — the account is still taken for the same one, because dropping the
+baseline on every renewal would lose real consumption. The fact that it could not be checked is
+said out loud.
 
-And `replaceProvider` calls it before the snapshot is stored:
+And `replaceProvider` takes the answer. It has no default, so that every call site has to give it:
+a new one that forgot would quietly mean "the same account".
 
 ```swift
-    func replaceProvider(_ provider: ProviderRuntime, snapshot: ProviderSnapshot) {
+    func replaceProvider(_ provider: ProviderRuntime, snapshot: ProviderSnapshot, accountMayHaveChanged: Bool) {
         let id = provider.provider.id
         inFlight.removeValue(forKey: id)?.cancel()
         providersByID[id] = provider
-        // The runtime that measured this account may be measuring a different window now — a
-        // different account behind the same key. The recorder decides that from the next
-        // reading, so the consumption of an unchanged window is not lost.
-        rhythm?.replaceRuntime(for: id)
+        if accountMayHaveChanged {
+            // The account behind this slot may be a different one, so the jump between the old
+            // reading and the new one is that account's state, not consumption.
+            rhythm?.forgetReadings(for: id)
+        }
         store(snapshot, for: id)
     }
 ```
 
-The replacement's own reading is still recorded — as a sample, and with the burn of the window it
-turns out to be, because the same window's consumption is real.
+The recorder drops the old reading and says how many it dropped, so nothing is discarded in
+silence:
+
+```swift
+    func forgetReadings(for providerID: String) {
+        let prefix = "\(providerID)/"
+        let keys = lastReading.keys.filter { $0.hasPrefix(prefix) }
+        guard !keys.isEmpty else { return }
+        AppLog.info(.rhythm, "the rhythm of \(providerID) starts a new baseline: \(keys.count) readings dropped, the account behind it may be a different one")
+        for key in keys {
+            lastReading.removeValue(forKey: key)
+        }
+    }
+```
 
 - [ ] **Step 4: Let the test helper take a recorder**
 
@@ -2286,7 +2338,7 @@ ignored here — the recorder has already logged a warning if the write failed.
 
 Run: `script/test_quiet.sh --filter RhythmWiringTests`
 
-Expected: PASS — 12 tests, 0 failures.
+Expected: PASS — 13 tests, 0 failures.
 
 Run: `script/test_quiet.sh --filter RhythmRecorderTests`
 
