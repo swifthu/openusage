@@ -262,7 +262,9 @@ launch_app() {
 # to one already running from another folder and quits.
 confirm_launch() {
   sleep 1
-  pgrep -f "^$APP_BINARY" >/dev/null && return
+  # The app runs from dist/, not from the staging bundle it was assembled in, so the running
+  # binary is the one to look for.
+  pgrep -f "^$RUNNING_BINARY" >/dev/null && return
   for pid in $(pgrep -x "$TARGET_NAME"); do
     running="$(ps -o comm= -p "$pid")"
     running="${running%/Contents/MacOS/$TARGET_NAME}"
