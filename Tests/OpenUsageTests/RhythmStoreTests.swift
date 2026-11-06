@@ -106,6 +106,19 @@ final class RhythmStoreTests: XCTestCase {
         XCTAssertEqual(loaded.map(\.day), [day(11, 6), day(11, 8)])
     }
 
+    func testARangeThatDoesNotStartAtMidnightStillIncludesItsBoundaryDays() throws {
+        let store = makeStore()
+        try store.save(record(day(11, 1), points: []))
+        try store.save(record(day(11, 6), points: []))
+        try store.save(record(day(11, 8), points: []))
+
+        let start = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: 15))!
+        let end = calendar.date(from: DateComponents(year: 2026, month: 11, day: 8, hour: 15))!
+        let loaded = try store.load(days: start...end)
+
+        XCTAssertEqual(loaded.map(\.day), [day(11, 6), day(11, 8)])
+    }
+
     func testAFileThatIsNotOursIsRefused() throws {
         let store = makeStore()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

@@ -73,8 +73,12 @@ struct FileRhythmStore: RhythmStore {
 
     /// A day that cannot be read is skipped: one broken file must not take the whole range with it.
     func load(days: ClosedRange<Date>) throws -> [RhythmDayRecord] {
-        try recordedDays()
-            .filter { days.contains($0) }
+        // The range names days, so it is compared as days: a range that starts in the afternoon
+        // still includes the record of that same day.
+        let firstDay = calendar.startOfDay(for: days.lowerBound)
+        let lastDay = calendar.startOfDay(for: days.upperBound)
+        return try recordedDays()
+            .filter { $0 >= firstDay && $0 <= lastDay }
             .compactMap { day in
                 do {
                     return try load(day: day)

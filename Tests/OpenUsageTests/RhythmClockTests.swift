@@ -81,6 +81,38 @@ final class RhythmClockTests: XCTestCase {
         XCTAssertEqual(shares.reduce(0) { $0 + $1.share }, 0.5, accuracy: 0.001)
     }
 
+    func testABucketStartsWhereTheGridSaysItDoes() {
+        let day = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6))!
+        let midnight = calendar.startOfDay(for: day)
+
+        XCTAssertEqual(RhythmClock.start(of: 0, on: day, calendar: calendar), midnight)
+        XCTAssertEqual(
+            RhythmClock.start(of: 1, on: day, calendar: calendar),
+            midnight.addingTimeInterval(RhythmClock.bucketSeconds)
+        )
+    }
+
+    func testTheBucketsTileTheDayWithoutGapsOrOverlap() {
+        let day = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6))!
+        let count = RhythmClock.bucketCount(on: day, calendar: calendar)
+        let midnight = calendar.startOfDay(for: day)
+        let nextMidnight = calendar.date(byAdding: .day, value: 1, to: midnight)!
+
+        for index in 0..<(count - 1) {
+            let start = RhythmClock.start(of: index, on: day, calendar: calendar)
+            let next = RhythmClock.start(of: index + 1, on: day, calendar: calendar)
+            XCTAssertEqual(next.timeIntervalSince(start), RhythmClock.bucketSeconds)
+        }
+
+        let lastStart = RhythmClock.start(of: count - 1, on: day, calendar: calendar)
+        XCTAssertEqual(lastStart.addingTimeInterval(RhythmClock.bucketSeconds), nextMidnight)
+    }
+
+    func testAFileNameThatIsNotOursHasNoDay() {
+        XCTAssertNil(RhythmClock.day(fromFileName: "notes.txt", calendar: calendar))
+        XCTAssertNil(RhythmClock.day(fromFileName: "2026-13-45.json", calendar: calendar))
+    }
+
     func testADayFileNameCarriesItsDate() {
         let day = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6))!
 
