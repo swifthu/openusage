@@ -36,6 +36,7 @@
 | `Sources/OpenUsage/Rhythm/RhythmStore.swift` | The `RhythmStore` protocol, `FileRhythmStore`, and `RhythmStoreError` |
 | `Sources/OpenUsage/Rhythm/RhythmRecorder.swift` | `RhythmDifferencer` (pure) and `RhythmRecorder` (the state machine that accumulates buckets and flushes them) |
 | `Sources/OpenUsage/Rhythm/RhythmAnalytics.swift` | `RhythmBar`, `RhythmZoom`, and the pure functions that turn records into bars, averages and peak ranges |
+| `Sources/OpenUsage/Rhythm/RhythmRetention.swift` | How many days of history are kept — the one constant the store and the settings share |
 | `Sources/OpenUsage/Views/RhythmChart.swift` | The bar chart |
 | `Sources/OpenUsage/Views/RhythmContextStrip.swift` | The whole-day overview with the draggable window |
 | `Sources/OpenUsage/Views/RhythmView.swift` | The tab: mode switch, day picker, zoom slider, summary line |
@@ -51,6 +52,9 @@
 - `Tests/OpenUsageTests/RhythmRecorderTests.swift`
 - `Tests/OpenUsageTests/RhythmAnalyticsTests.swift`
 - `Tests/OpenUsageTests/RhythmChartTests.swift`
+- `Tests/OpenUsageTests/RhythmViewTests.swift`
+- `Tests/OpenUsageTests/RhythmSettingsTests.swift`
+- `Tests/OpenUsageTests/RhythmWiringTests.swift`
 
 **Modified files**
 
@@ -459,8 +463,20 @@ final class RhythmStoreTests: XCTestCase {
         calendar.date(from: DateComponents(year: 2026, month: month, day: dayNumber))!
     }
 
+    /// Today's midnight in the store's calendar.
+    private var today: Date { calendar.startOfDay(for: Date()) }
+
+    /// A day that is this many days away from today.
+    private func daysFromToday(_ offset: Int) -> Date {
+        calendar.date(byAdding: .day, value: offset, to: today)!
+    }
+
     private func makeStore() -> FileRhythmStore {
         FileRhythmStore(directory: directory, calendar: calendar)
+    }
+
+    private func makeStore(retentionDays: Int) -> FileRhythmStore {
+        FileRhythmStore(directory: directory, calendar: calendar, retentionDays: retentionDays)
     }
 
     private func fileName(_ month: Int, _ dayNumber: Int) -> String {
@@ -561,6 +577,55 @@ final class RhythmStoreTests: XCTestCase {
         }
 
         XCTAssertThrowsError(try store.delete(before: day(11, 7)))
+    }
+
+    func testTheDaysOlderThanTheRetentionAreRemovedWhenADayIsWritten() throws {
+        let store = makeStore(retentionDays: 3)
+
+        // The days are counted from today rather than written out, so the test does not depend on
+        // what today's date is.
+        try store.save(record(daysFromToday(-3), points: []))
+        try store.save(record(daysFromToday(-2), points: []))
+        try store.save(record(daysFromToday(-1), points: []))
+        try store.save(record(today, points: []))
+
+        // Three days are kept, the day that was written and the two before it.
+        XCTAssertEqual(try store.recordedDays(), [daysFromToday(-2), daysFromToday(-1), today])
+    }
+
+    func testWritingADayInThePastRemovesNothingThatIsInsideTheWindow() throws {
+        let store = makeStore(retentionDays: 3)
+
+        try store.save(record(daysFromToday(-2), points: []))
+        try store.save(record(daysFromToday(-1), points: []))
+        try store.save(record(today, points: []))
+        // An old day is written after the days around today.
+        try store.save(record(daysFromToday(-3), points: []))
+
+        // The days that are still inside the window are all there.
+        XCTAssertEqual(try store.recordedDays(), [daysFromToday(-3), daysFromToday(-2), daysFromToday(-1), today])
+    }
+
+    func testWritingADayInTheFutureRemovesNothing() throws {
+        let store = makeStore(retentionDays: 3)
+
+        try store.save(record(daysFromToday(-2), points: []))
+        try store.save(record(daysFromToday(-1), points: []))
+        try store.save(record(today, points: []))
+        // The clock was set forward, so the day that was written is in the future.
+        try store.save(record(daysFromToday(10), points: []))
+
+        // A clock that is wrong must not cost the user the history that is still inside the
+        // window.
+        XCTAssertEqual(try store.recordedDays(), [daysFromToday(-2), daysFromToday(-1), today, daysFromToday(10)])
+    }
+
+    func testTheHistoryIsKeptForNinetyDays() {
+        XCTAssertEqual(RhythmRetention.retentionDays, 90)
+        XCTAssertEqual(
+            FileRhythmStore(directory: directory, calendar: calendar).retentionDays,
+            RhythmRetention.retentionDays
+        )
     }
 
     func testTheRecordsBeforeADateAreDeleted() throws {
@@ -687,6 +752,17 @@ protocol RhythmStore: Sendable {
     func delete(before date: Date) throws
 }
 
+extension RhythmStore {
+    /// Removes every recorded day, today's own record included.
+    ///
+    /// The store deletes the days *before* the cutoff, so the cutoff has to be tomorrow's
+    /// midnight to take today's record with it.
+    func deleteAll(now: Date = Date(), calendar: Calendar = .current) throws {
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now)) ?? now
+        try delete(before: tomorrow)
+    }
+}
+
 /// The rhythm history as one file per day under Application Support.
 struct FileRhythmStore: RhythmStore {
     /// The folder the day files live in.
@@ -694,10 +770,14 @@ struct FileRhythmStore: RhythmStore {
     /// The calendar the days are measured in. It decides which file a moment belongs to, so it has
     /// to be the same one the recorder writes with.
     let calendar: Calendar
+    /// How many days of history are kept. The days older than that are removed when a day is
+    /// written, so the history does not grow without end.
+    let retentionDays: Int
 
-    init(directory: URL = FileRhythmStore.defaultDirectory, calendar: Calendar) {
+    init(directory: URL = FileRhythmStore.defaultDirectory, calendar: Calendar, retentionDays: Int = RhythmRetention.retentionDays) {
         self.directory = directory
         self.calendar = calendar
+        self.retentionDays = retentionDays
     }
 
     static var defaultDirectory: URL {
@@ -726,6 +806,39 @@ struct FileRhythmStore: RhythmStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         try encoder.encode(payload).write(to: url(for: record.day), options: .atomic)
+        trimOldDays(around: record.day)
+    }
+
+    /// Removes the days that are older than the retention length, so the history does not grow
+    /// without end. The days are counted from today and not from the day that was just written:
+    /// the retention is a promise about today, so a clock that was set forward must not delete a
+    /// history that is still inside the window.
+    ///
+    /// A day that cannot be removed is left in place and warned about: the history that is there
+    /// is better than a history that is gone.
+    private func trimOldDays(around day: Date) {
+        // A day that was written is normally today, but it can be in the past (a day the app
+        // writes after the clock was turned back) or in the future (a clock that was set
+        // forward). The cutoff follows the earlier of the two, so the future never pulls it up.
+        let today = calendar.startOfDay(for: min(day, Date()))
+        guard let cutoffDate = calendar.date(byAdding: .day, value: -(retentionDays - 1), to: today) else { return }
+        // Adding a day to a midnight that falls on a daylight-saving transition gives 01:00 and
+        // not 00:00, which would take the boundary day with it and lose a day for nothing.
+        let cutoff = calendar.startOfDay(for: cutoffDate)
+        let days: [Date]
+        do {
+            days = try recordedDays()
+        } catch {
+            AppLog.warn(.rhythm, "could not list the rhythm history to trim it: \(error.localizedDescription)")
+            return
+        }
+        for old in days where old < cutoff {
+            do {
+                try FileManager.default.removeItem(at: url(for: old))
+            } catch {
+                AppLog.warn(.rhythm, "could not remove the rhythm history of \(RhythmClock.fileName(for: old, calendar: calendar)): \(error.localizedDescription)")
+            }
+        }
     }
 
     func load(day: Date) throws -> RhythmDayRecord? {
@@ -1312,14 +1425,12 @@ Create `Sources/OpenUsage/Stores/RhythmSettings.swift`:
 import Foundation
 import Observation
 
-/// Whether the app records how fast each account's window fills up, and how long it keeps the
-/// history. The history never leaves this Mac.
+/// Whether the app records how fast each account's window fills up. The history never leaves this
+/// Mac, and how long it is kept is `RhythmRetention`'s business.
 @MainActor
 @Observable
 final class RhythmSettings {
     static let key = "recordsUsageRhythm"
-    /// How many days of history are kept.
-    static let retentionDays = 90
     /// The longest window the rhythm history records: a day. A longer window sampled every few
     /// minutes is a slow drift, and its hourly rate says nothing about when the account is used.
     static let shortWindowMs = MetricPeriod.dayMs
