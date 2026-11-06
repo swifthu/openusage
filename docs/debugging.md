@@ -46,3 +46,7 @@ script/test_quiet.sh --filter CursorTokenRefreshTests
 
 The script runs the suite niced, keeps it from taking the keyboard or the screen, and fails the run if
 a test process came to the front.
+
+It builds in the same local-disk scratch directory as the app build, so it does not hit the
+corrupted-module-cache failures a network volume causes. Pass `--scratch-path` yourself to put the
+build somewhere else.
