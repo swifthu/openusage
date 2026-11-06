@@ -300,10 +300,12 @@ enum RhythmClock {
     /// The buckets an interval touches, and the share of it that falls in each.
     ///
     /// The shares are fractions of the **whole** interval, and they cover only the part of it
-    /// that falls inside `day`. An interval that crosses midnight therefore leaves the part in
-    /// the next day in no bucket, and the shares for one day sum to less than one. That loss is
-    /// bounded by one refresh interval (at most five minutes) once per day, the same order as
-    /// the use before a provider's window resets that the recorder also does not see.
+    /// that falls inside `day`. The interval's **start** has to be inside `day` as well: an
+    /// interval that began before the day's midnight covers nothing in that day and returns
+    /// nothing. A caller that differences two readings across midnight therefore loses that
+    /// whole interval's consumption — at most one refresh interval (five minutes) once per day,
+    /// the same order as the use before a provider's window resets that the recorder also does
+    /// not see.
     static func shares(
         from start: Date,
         to end: Date,
