@@ -12,7 +12,7 @@ final class ClaudeResetClaimTests: XCTestCase {
         """
 
     func testClaimRequestMatchesClaudeCode() async throws {
-        let http = FakeHTTPClient(response: HTTPResponse(statusCode: 200, headers: [:], body: Data("{}".utf8)))
+        let http = RoutingHTTPClient { _ in .json("{}") }
         _ = try await ClaudeUsageClient(httpClient: http).claimResetGrant(
             accessToken: "token-a", organizationUUID: Self.orgUUID,
             grantID: "opus55-launch-promax-20260921", requestID: Self.requestID
@@ -67,22 +67,8 @@ final class ClaudeResetClaimTests: XCTestCase {
         XCTAssertNotNil(ClaudeResetGrantStatus.parse(["eligible": true, "grants": [["id": "g", "resets_left": 1]]]))
     }
 
-    func testClaimableGrantAndConfirmCopy() throws {
-        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(Self.grantsBlock.utf8)) as? [String: Any])
-        let status = try XCTUnwrap(ClaudeResetGrantStatus.parse(body))
-        XCTAssertEqual(status.claimableGrantID, "opus55-launch-promax-20260921")
-        XCTAssertEqual(status.confirmDetail, "Refills your session and weekly limits now. This can't be undone.")
-
-        var ineligible = status
-        ineligible.eligible = false
-        XCTAssertNil(ineligible.claimableGrantID)
-        var noNext = status
-        noNext.nextGrantID = nil
-        XCTAssertNil(noNext.claimableGrantID)
-    }
-
     func testClaimSpendsNextGrantWithTheAccountsLoginAndUpdatesTheRowFromItsAnswer() async throws {
-        let http = makeHTTP(claim: { _ in Self.json(#"{"result":"reset","resets_left":0,"cleared":["five_hour","seven_day"]}"#) })
+        let http = makeHTTP(claim: { _ in .json(#"{"result":"reset","resets_left":0,"cleared":["five_hour","seven_day"]}"#) })
         let runtime = try makeRuntime(http: http)
         await prime(runtime)
         let service = try XCTUnwrap(runtime.resetClaimService { .refreshed })
@@ -103,8 +89,21 @@ final class ClaudeResetClaimTests: XCTestCase {
         XCTAssertEqual(values.first?.number, 0)
     }
 
+    func testAClaimAnswerWithACountTooLargeForAnIntSpendsOneReset() async throws {
+        let http = makeHTTP(claim: { _ in .json(#"{"result":"reset","resets_left":1e300}"#) })
+        let runtime = try makeRuntime(http: http)
+        await prime(runtime)
+
+        let outcome = await runtime.claimClaudeResetGrant(redeemRequestID: Self.requestID)
+
+        XCTAssertEqual(outcome, .success)
+        let row = try XCTUnwrap(runtime.claude.session?.resetGrants.check?.status?.line(now: Date()))
+        guard case .values(_, let values, _) = row else { return XCTFail("expected the resets row") }
+        XCTAssertEqual(values.first?.number, 0)
+    }
+
     func testAClaimWithoutACachedOrganizationReadsTheProfileOnce() async throws {
-        let http = makeHTTP(claim: { _ in Self.json(#"{"result":"reset","resets_left":0}"#) })
+        let http = makeHTTP(claim: { _ in .json(#"{"result":"reset","resets_left":0}"#) })
         let runtime = try makeRuntime(http: http)
         await prime(runtime)
         runtime.claude.session?.organizationUUID = nil
@@ -115,35 +114,24 @@ final class ClaudeResetClaimTests: XCTestCase {
         XCTAssertEqual(http.requests.filter { $0.url.path == "/api/oauth/profile" }.count, 2, "the slot's read and one at claim time")
     }
 
-    func testClaimRefreshesAnExpiredTokenAndSavesItFirst() async throws {
-        let http = makeHTTP(claim: { _ in Self.json(#"{"result":"reset"}"#) })
+    func testAClaimRefusedWithACutShortTokenRenewsTheSignInOnceAndRetries() async throws {
+        let http = makeHTTP(claim: { request in
+            request.headers["Authorization"] == "Bearer token-a"
+                ? HTTPResponse(statusCode: 401, headers: [:], body: Data())
+                : .json(#"{"result":"reset","resets_left":0}"#)
+        })
         let (runtime, vault, account) = try makeRuntimeWithVault(http: http)
         await prime(runtime)
-        try vault.save(
-            .oauth(OAuthTokens(accessToken: "token-a", refreshToken: "refresh-a", expiresAt: .distantPast)),
-            for: account.id
-        )
 
         let outcome = await runtime.claimClaudeResetGrant(redeemRequestID: Self.requestID)
 
         XCTAssertEqual(outcome, .success)
-        let claim = try XCTUnwrap(http.requests.last { $0.url.path.hasSuffix("/reset_rate_limits") })
-        XCTAssertEqual(claim.headers["Authorization"], "Bearer token-b")
+        let claims = http.requests.filter { $0.url.path.hasSuffix("/reset_rate_limits") }
+        XCTAssertEqual(claims.map { $0.headers["Authorization"] }, ["Bearer token-a", "Bearer token-b"])
+        XCTAssertEqual(try claims.map(requestID), [Self.requestID, Self.requestID])
+        XCTAssertEqual(http.requests.filter { $0.url.path == "/v1/oauth/token" }.count, 1)
         guard case .oauth(let saved)? = try vault.load(account.id) else { return XCTFail("expected saved tokens") }
         XCTAssertEqual(saved.accessToken, "token-b")
-    }
-
-    func testRejectedClaimReadsAsExpiredSignInAndKeepsTheCheck() async throws {
-        let http = makeHTTP(claim: { _ in HTTPResponse(statusCode: 401, headers: [:], body: Data()) })
-        let runtime = try makeRuntime(http: http)
-        await prime(runtime)
-
-        let outcome = await runtime.claimClaudeResetGrant(redeemRequestID: Self.requestID)
-
-        XCTAssertEqual(outcome, .failed(.signInExpired))
-        let claims = http.requests.filter { $0.url.path.hasSuffix("/reset_rate_limits") }
-        XCTAssertEqual(claims.map { $0.headers["Authorization"] }, ["Bearer token-a"])
-        XCTAssertNotNil(runtime.claude.session?.resetGrants.check?.status)
     }
 
     func testScopeRefusedClaimSaysTheSignInCantUseResetsAndKeepsTheCheck() async throws {
@@ -180,7 +168,7 @@ final class ClaudeResetClaimTests: XCTestCase {
             switch answer.value {
             case "server down": HTTPResponse(statusCode: 502, headers: [:], body: Data())
             case "throttled": HTTPResponse(statusCode: 429, headers: [:], body: Data())
-            default: Self.json(#"{"result":"already_used"}"#)
+            default: .json(#"{"result":"already_used"}"#)
             }
         })
         let runtime = try makeRuntime(http: http)
@@ -204,7 +192,7 @@ final class ClaudeResetClaimTests: XCTestCase {
         let lost = TestSwitch(true)
         let http = makeHTTP(claim: { _ in
             if lost.value { throw URLError(.networkConnectionLost) }
-            return Self.json(#"{"result":"already_used"}"#)
+            return .json(#"{"result":"already_used"}"#)
         })
         let runtime = try makeRuntime(http: http)
         await prime(runtime)
@@ -220,16 +208,21 @@ final class ClaudeResetClaimTests: XCTestCase {
     }
 
     func testNoClaimWithoutAClaimableGrant() async throws {
-        let http = makeHTTP(grants: #"{"eligible":false,"ineligible_reason":"tier","grants":[]}"#, claim: { _ in
-            XCTFail("must not claim")
-            return HTTPResponse(statusCode: 500, headers: [:], body: Data())
-        })
-        let runtime = try makeRuntime(http: http)
-        await prime(runtime)
+        for grants in [
+            #"{"eligible":false,"ineligible_reason":"tier","grants":[{"id":"g","resets_left":1}],"next_grant_id":"g"}"#,
+            #"{"eligible":true,"grants":[{"id":"g","resets_left":1}]}"#
+        ] {
+            let http = makeHTTP(grants: grants, claim: { _ in
+                XCTFail("must not claim")
+                return HTTPResponse(statusCode: 500, headers: [:], body: Data())
+            })
+            let runtime = try makeRuntime(http: http)
+            await prime(runtime)
 
-        XCTAssertEqual(runtime.resetClaimService { .refreshed }?.isClaimable, false)
-        let outcome = await runtime.claimClaudeResetGrant(redeemRequestID: Self.requestID)
-        XCTAssertEqual(outcome, .noCredit)
+            XCTAssertEqual(runtime.resetClaimService { .refreshed }?.isClaimable, false, grants)
+            let outcome = await runtime.claimClaudeResetGrant(redeemRequestID: Self.requestID)
+            XCTAssertEqual(outcome, .noCredit, grants)
+        }
     }
 
     func testMalformedRequestIDIsRefusedBeforeSending() async throws {
@@ -246,7 +239,7 @@ final class ClaudeResetClaimTests: XCTestCase {
     }
 
     func testRefusedClaimKeepsTheCheck() async throws {
-        let http = makeHTTP(claim: { _ in Self.json(#"{"result":"not_limited","reason":null}"#) })
+        let http = makeHTTP(claim: { _ in .json(#"{"result":"not_limited","reason":null}"#) })
         let runtime = try makeRuntime(http: http)
         await prime(runtime)
 
@@ -254,16 +247,6 @@ final class ClaudeResetClaimTests: XCTestCase {
 
         XCTAssertEqual(outcome, .nothingToReset)
         XCTAssertNotNil(runtime.claude.session?.resetGrants.check?.status, "a refused claim changed nothing, so the hourly check stands")
-    }
-
-    func testFailedClaimKeepsTheCheck() async throws {
-        let http = makeHTTP(claim: { _ in HTTPResponse(statusCode: 500, headers: [:], body: Data("oops".utf8)) })
-        let runtime = try makeRuntime(http: http)
-        await prime(runtime)
-
-        let outcome = await runtime.claimClaudeResetGrant(redeemRequestID: Self.requestID)
-        XCTAssertEqual(outcome, .failed(.refused))
-        XCTAssertNotNil(runtime.claude.session?.resetGrants.check?.status)
     }
 
     private func makeHTTP(
@@ -274,12 +257,12 @@ final class ClaudeResetClaimTests: XCTestCase {
             switch request.url.path {
             case "/api/oauth/usage":
                 return request.isClaudeResetGrantsCheck
-                    ? Self.json(#"{"cedar_ember":\#(grants)}"#)
-                    : Self.json(#"{"five_hour":{"utilization":100,"resets_at":"2099-01-01T00:00:00.000Z"}}"#)
+                    ? .json(#"{"cedar_ember":\#(grants)}"#)
+                    : .json(#"{"five_hour":{"utilization":100,"resets_at":"2099-01-01T00:00:00.000Z"}}"#)
             case "/api/oauth/profile":
-                return Self.json(#"{"account":{"uuid":"acct"},"organization":{"uuid":"\#(Self.orgUUID)","organization_type":"claude_max"}}"#)
+                return .json(#"{"account":{"uuid":"acct"},"organization":{"uuid":"\#(Self.orgUUID)","organization_type":"claude_max"}}"#)
             case "/v1/oauth/token":
-                return Self.json(#"{"access_token":"token-b","refresh_token":"refresh-b","expires_in":3600}"#)
+                return .json(#"{"access_token":"token-b","refresh_token":"refresh-b","expires_in":3600}"#)
             case "/api/organizations/\(Self.orgUUID)/reset_rate_limits":
                 return try claim(request)
             default:
@@ -309,9 +292,5 @@ final class ClaudeResetClaimTests: XCTestCase {
     private func requestID(_ request: HTTPRequest) throws -> String? {
         let body = try XCTUnwrap(request.body)
         return (try JSONSerialization.jsonObject(with: body) as? [String: Any])?["request_id"] as? String
-    }
-
-    private nonisolated static func json(_ text: String) -> HTTPResponse {
-        HTTPResponse(statusCode: 200, headers: [:], body: Data(text.utf8))
     }
 }

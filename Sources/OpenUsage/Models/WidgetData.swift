@@ -4,11 +4,13 @@ struct WidgetData: Hashable {
     static let noDataValue = "—"
     static let noDataDetail = "No data"
 
-    let title: String
+    var title: String
     let kind: MetricKind
+    var currencyCode: String?
     let used: Double
     var limit: Double?
     var displayMode: WidgetDisplayMode = .used
+    var priorityLimits: PriorityLimits = .standard
     var resetDisplayMode: ResetDisplayMode = .relative
     var resetsAt: Date?
     var expiriesAt: [Date] = []
@@ -18,8 +20,8 @@ struct WidgetData: Hashable {
     var unboundedValueWord: String?
     var hasData: Bool = true
     var values: [MetricValue] = []
-    var traySuffix: String?
     var sessionStartSignal: SessionStartSignal?
+    var showsPaceMarks = true
     /// How much of a countdown window is still to run, 1 (just started) to 0 (about to reset). Set
     /// only for a badge that counts down to a reset: the menu bar draws it as a draining bar.
     var progressFraction: Double?
@@ -74,23 +76,21 @@ struct WidgetData: Hashable {
         case normal, warning, critical
     }
 
+    /// A limit's color, and whether Priority lists it as running low, from what's left alone. Time plays no part.
+    var severity: MeterSeverity {
+        guard hasData, let limit, limit > 0 else { return .normal }
+        let percentLeft = Int((remainingFraction * 100).rounded())
+        if percentLeft <= priorityLimits.critical { return .critical }
+        return percentLeft <= priorityLimits.warning ? .warning : .normal
+    }
+
     enum MeterState: Hashable {
         case noData
         case spent
         case runningOut
         case closeToLimit
         case healthy
-        case level(MeterSeverity)
-
-        var severity: MeterSeverity? {
-            switch self {
-            case .noData: return nil
-            case .spent, .runningOut: return .critical
-            case .closeToLimit: return .warning
-            case .healthy: return .normal
-            case .level(let severity): return severity
-            }
-        }
+        case unpaced
     }
 
     private var roundedDisplayValue: Double {
@@ -109,44 +109,33 @@ struct WidgetData: Hashable {
         guard hasData else { return Self.noDataValue }
         if let valueTextOverride { return valueTextOverride }
         if let first = values.first {
-            return MetricFormatter.number(first.number, kind: first.kind, style: .row)
+            return MetricFormatter.number(first.number, kind: first.kind, style: .row, currencyCode: first.currencyCode)
         }
         return format(displayedValue)
     }
 
     var menuBarValue: String {
-        guard hasData else { return valueText }
-        if let limit, limit > 0 {
-            if kind == .percent {
-                let percent = min(100, max(0, Int((displayedValue / limit * 100).rounded())))
-                return "\(percent)%"
-            }
-            return MetricFormatter.number(displayedValue, kind: kind, style: .tray)
+        if kind == .percent, let limit, limit > 0 {
+            return MetricFormatter.number(displayedValue / limit * 100, kind: .percent, style: .tray)
         }
-        if let first = values.first {
-            if let traySuffix, first.kind == .count {
-                return "\(MetricFormatter.number(first.number, kind: .count, style: .tray)) \(traySuffix)"
-            }
-            return MetricFormatter.string(for: first, style: .tray)
-        }
-        if let valueTextOverride { return valueTextOverride }
-        return MetricFormatter.number(displayedValue, kind: kind, style: .tray)
+        return MetricFormatter.number(displayedValue, kind: kind, style: .tray, currencyCode: currencyCode)
     }
 
     var unboundedDetail: String {
-        guard hasData else { return Self.noDataDetail }
-        if let valueTextOverride { return valueTextOverride }
-        if !values.isEmpty {
-            if values.count == 1 {
-                let value = values[0]
-                if value.kind == .dollars, let word = unboundedValueWord {
-                    return "\(MetricFormatter.number(value.number, kind: .dollars, style: .row)) \(word)"
-                }
-                return MetricFormatter.string(for: value, style: .row)
-            }
-            return values.map { MetricFormatter.string(for: $0, style: .row) }.joined(separator: " · ")
+        unboundedFigures.joined(separator: " · ")
+    }
+
+    var unboundedFigures: [String] {
+        guard hasData else { return [Self.noDataDetail] }
+        if let valueTextOverride { return [valueTextOverride] }
+        if values.count == 1, values[0].kind == .dollars, let word = unboundedValueWord {
+            return ["\(MetricFormatter.number(values[0].number, kind: .dollars, style: .row, currencyCode: values[0].currencyCode)) \(word)"]
         }
-        return "\(valueText) \(unboundedValueWord ?? displayMode.label.lowercased())"
+        if !values.isEmpty {
+            let hasDollars = values.contains { $0.kind == .dollars }
+            return values.filter { !hasDollars || $0.label != "credits" }.map { MetricFormatter.string(for: $0, style: .row) }
+        }
+        return ["\(valueText) \(unboundedValueWord ?? displayMode.label.lowercased())"]
     }
 
     static let expiryWarningWindow: TimeInterval = 7 * 24 * 60 * 60
@@ -170,7 +159,7 @@ struct WidgetData: Hashable {
     }
 
     private func format(_ value: Double) -> String {
-        MetricFormatter.number(value, kind: kind, style: .row)
+        MetricFormatter.number(value, kind: kind, style: .row, currencyCode: currencyCode)
     }
 }
 
@@ -182,9 +171,9 @@ extension WidgetData {
     }
 
     func meterState(now: Date = Date()) -> MeterState {
-        guard hasData, let limit, limit > 0 else { return hasData ? .level(.normal) : .noData }
+        guard hasData, let limit, limit > 0 else { return hasData ? .unpaced : .noData }
         if roundedAtDisplayPrecision(limit - used) <= 0 { return .spent }
-        guard let pace = pace(now: now) else { return levelState(used: used, limit: limit) }
+        guard let pace = pace(now: now) else { return .unpaced }
         switch pace.status {
         case .ahead:
             return .healthy
@@ -216,11 +205,17 @@ extension WidgetData {
         return (result.status, result.projectedUsage / ctx.limit)
     }
 
-    private func levelState(used: Double, limit: Double) -> MeterState {
-        let percentUsed = (min(max(used / limit, 0), 1) * 100).rounded()
-        if percentUsed >= 90 { return .level(.critical) }
-        if percentUsed >= 75 { return .level(.warning) }
-        return .level(.normal)
+    /// Where the bar or ring would reach by now at an even pace through the window, measured the way it fills.
+    func paceMark(now: Date = Date()) -> Double? {
+        guard showsPaceMarks, let ctx = paceContext, roundedAtDisplayPrecision(ctx.limit - used) > 0, !isFreshSessionWindow(now: now),
+              let share = Pace.elapsedShare(resetsAt: ctx.resetsAt, periodDuration: ctx.period, now: now) else { return nil }
+        return displayMode == .remaining ? 1 - share : share
+    }
+
+    /// How long until the limit at the current pace, or nil when there's no pace to project from.
+    func runway(now: Date = Date()) -> TimeInterval? {
+        guard let pace = pace(now: now), let ctx = paceContext else { return nil }
+        return max(0, 1 - used / ctx.limit) * ctx.period / pace.projectedFraction
     }
 
     func isFreshSessionWindow(now: Date = Date()) -> Bool {

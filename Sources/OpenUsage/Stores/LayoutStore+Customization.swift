@@ -1,14 +1,10 @@
 extension LayoutStore {
     func provider(id: String) -> Provider? { registry.provider(id: id) }
 
-    func isMetricEnabled(_ descriptorID: String) -> Bool {
-        !hiddenMetricIDs.contains(descriptorID)
-    }
-
     var visibleDescriptors: [WidgetDescriptor] { displayGroups.flatMap(\.metrics) }
 
     func orderedProviderIDs() -> [String] {
-        registry.orderedProviderIDs(savedOrder: providerOrder)
+        registry.orderedProviderIDs(savedOrder: state.providerOrder)
     }
 
     func orderedProviders() -> [Provider] {
@@ -17,35 +13,24 @@ extension LayoutStore {
 
     var displayGroups: [ProviderMetrics] {
         orderedProviders().compactMap { provider in
-            let metrics = orderedSupportedMetrics(for: provider.id).filter { !hiddenMetricIDs.contains($0.id) }
+            let metrics = orderedSupportedMetrics(for: provider.id).filter { isMetricShown($0.id) }
             return metrics.isEmpty ? nil : ProviderMetrics(provider: provider, metrics: metrics)
         }
-    }
-
-    func customizeDetail(for providerID: String) -> ProviderMetrics? {
-        guard let provider = registry.provider(id: providerID) else { return nil }
-        let metrics = orderedSupportedMetrics(for: providerID)
-        return metrics.isEmpty ? nil : ProviderMetrics(provider: provider, metrics: metrics)
     }
 
     func orderedSupportedMetrics(for providerID: String) -> [WidgetDescriptor] {
         metricOrder(for: providerID).compactMap { registry.descriptor(id: $0) }
     }
 
-    var pinnedGroups: [ProviderMetrics] {
-        orderedProviders().compactMap { provider in
-            let metrics = orderedSupportedMetrics(for: provider.id).filter { pinnedMetricIDs.contains($0.id) }
-            return metrics.isEmpty ? nil : ProviderMetrics(provider: provider, metrics: metrics)
-        }
-    }
-
     @discardableResult
     func reorderProvider(dragged: String, target: String) -> Bool {
-        recordingUndoStep {
+        guard let from = provider(id: dragged)?.kind, let to = provider(id: target)?.kind,
+              from == to || registry.providers.count(where: { $0.kind == from || $0.kind == to }) == 2
+        else { return false }
+        return recordingUndoStep {
             let ordered = orderedProviderIDs()
             guard let next = Self.reordered(ordered, dragged: dragged, target: target) else { return false }
-            providerOrder = next
-            persistProviderOrder()
+            state.providerOrder = next
             return true
         }
     }
@@ -61,8 +46,7 @@ extension LayoutStore {
                 members[family, default: []].append(provider.id)
             }
             guard let next = Self.reordered(families, dragged: dragged, target: target) else { return false }
-            providerOrder = next.flatMap { members[$0] ?? [] }
-            persistProviderOrder()
+            state.providerOrder = next.flatMap { members[$0] ?? [] }
             return true
         }
     }
@@ -73,8 +57,7 @@ extension LayoutStore {
             guard let next = Self.reordered(metricOrder(for: providerID), dragged: dragged, target: target) else {
                 return false
             }
-            metricOrderByProvider[providerID] = next
-            persistMetricOrder()
+            state.metricOrderByProvider[providerID] = next
             return true
         }
     }

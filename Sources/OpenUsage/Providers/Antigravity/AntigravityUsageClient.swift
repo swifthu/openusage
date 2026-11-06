@@ -2,7 +2,6 @@ import Foundation
 
 extension AntigravityLogin {
     static func refresh(_ refreshToken: String, http: any HTTPClient, now: Date) async throws -> OAuthGrant {
-        let unavailable = ProviderError.unavailable(AntigravityUsageClient.unavailableMessage)
         let form = [
             "client_id=\(clientID.urlFormEncoded)",
             "client_secret=\(clientSecret.urlFormEncoded)",
@@ -16,22 +15,8 @@ extension AntigravityLogin {
             body: Data(form.utf8),
             timeout: 15
         )
-        guard let response = try? await http.send(request) else { throw unavailable }
-        switch response.statusCode {
-        case 200..<300:
-            guard let token = try? JSONDecoder().decode(OAuthTokenResponse.self, from: response.body),
-                  !token.accessToken.isEmpty
-            else {
-                throw unavailable
-            }
-            return OAuthGrant(accessToken: token.accessToken, expiresAt: now.addingTimeInterval(token.expiresIn ?? 3600))
-        case 408, 429:
-            throw unavailable
-        case 400..<500:
-            throw ProviderError.signInExpired(.antigravity)
-        default:
-            throw unavailable
-        }
+        let token = try await OAuthTokenResponse(renewal: http.send(request), kind: .antigravity)
+        return OAuthGrant(accessToken: token.accessToken, expiresAt: now.addingTimeInterval(token.expiresIn ?? 3600))
     }
 }
 
@@ -46,6 +31,9 @@ struct AntigravityUsageClient: Sendable {
     static let quotaSummaryPath = "/v1internal:retrieveUserQuotaSummary"
 
     var http: HTTPClient
+
+    /// The quota read answered 401: the access token was refused, so a renewed sign-in may read it.
+    struct TokenRefused: Error {}
 
     /// `loadCodeAssist` with Antigravity's client metadata. Without it the response carries only
     /// `allowedTiers` — no `currentTier`/`paidTier` — so the plan can't be read. Each base URL is tried in
@@ -81,17 +69,35 @@ struct AntigravityUsageClient: Sendable {
         let body = project.map { ["project": $0] } ?? [:]
         let payload = (try? JSONSerialization.data(withJSONObject: body)) ?? Data("{}".utf8)
         var responses: [HTTPResponse] = []
+        var transportError: Error?
         for (index, base) in Self.cloudCodeURLs.enumerated() {
             guard let url = URL(string: base + Self.quotaSummaryPath) else { continue }
             let request = Self.cloudCodeRequest(url: url, token: token, payload: payload)
-            guard let response = try? await http.send(request) else { continue }
+            let response: HTTPResponse
+            do { response = try await http.send(request) } catch { transportError = error; continue }
             responses.append(response)
             if index == 0, (200..<300).contains(response.statusCode), AntigravityUsageMapper.isCompleteSummary(response.body) { break }
         }
+        if responses.isEmpty, let transportError { throw transportError }
         let bodies = responses.filter { (200..<300).contains($0.statusCode) }.map(\.body)
         if !bodies.isEmpty { return bodies }
+        if responses.contains(where: { $0.statusCode == 401 }) { throw TokenRefused() }
+        if responses.contains(where: Self.requiresSubscription) {
+            let message = project == nil
+                ? "Antigravity couldn't find a project with quota access for this account. Try again shortly."
+                : "Google reports no Antigravity quota subscription for this project."
+            throw ProviderError.unavailable(message)
+        }
         if responses.contains(where: ProviderError.isAuthFailure) { throw ProviderError.signInExpired(.antigravity) }
+        if let limited = responses.first(where: { $0.statusCode == 429 }) { throw ProviderError.failed(limited) }
         throw ProviderError.unavailable(Self.unavailableMessage)
+    }
+
+    private static func requiresSubscription(_ response: HTTPResponse) -> Bool {
+        guard response.statusCode == 403,
+              let error = ProviderParse.jsonObject(response.body)?["error"] as? [String: Any],
+              let details = error["details"] as? [[String: Any]] else { return false }
+        return details.contains { $0["reason"] as? String == "SUBSCRIPTION_REQUIRED" }
     }
 
     private static func cloudCodeRequest(url: URL, token: String, payload: Data) -> HTTPRequest {

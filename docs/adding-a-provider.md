@@ -1,53 +1,56 @@
 # Adding a provider
 
-A provider is a `ProviderKind` case plus a sign-in, a usage client, and a mapper. Every value it shows
-must come from the provider's API. Do not read another tool's credentials, files, or logs, and do not
-compute spend from logs or model pricing.
+A provider is a `ProviderKind` case, a sign-in, a usage client, and a mapper. Every value it shows
+must come from the provider's API. Never read another tool's credentials, files, or logs, and never
+compute spend from logs or pricing.
 
 ## 1. Declare the kind
 
-In `Sources/OpenUsage/Models/Account.swift`, add a case to `ProviderKind` with its `displayName`,
-`links` (Status Page, Usage Dashboard), and `authMethod`: `.oauth`, or `.apiKey(keyPage:)` with the
-page where the user creates the key.
+- Add a `ProviderKind` case in `Sources/OpenUsage/Models/Account.swift` with its `displayName`,
+  `links`, and `authMethods` (`[.oauth]` or `[.apiKey(keyPage:)]`).
+- Add its icon at `Sources/OpenUsage/Resources/ProviderIcons/<kind>.svg`.
 
-Add the provider's mark as `Sources/OpenUsage/Resources/ProviderIcons/<kind>.svg`.
+## 2. Add the sign-in
 
-## 2. Implement the sign-in
+- API key: `APIKeyLogin` covers it.
+- Browser OAuth: add a `ProviderLogin` in `Services/BrowserProviderLogins.swift`. Send
+  `UUID().uuidString` as the `state`, never the PKCE verifier.
+- Device code: add it in `Services/DeviceProviderLogins.swift` with `DeviceCodePoller`.
+- Pasted token: prompt `.browserToken`, as `DevinLogin` does.
 
-For an API-key provider, `APIKeyLogin` already covers it; map the kind in `ProviderLoginCatalog`.
-
-For OAuth, write a `ProviderLogin` in `Services/BrowserProviderLogins.swift` (a browser flow with
-`LoopbackCallbackServer` and `PKCE`) or `Services/DeviceProviderLogins.swift` (a device-code flow
-with `DeviceCodePoller`). Return the account's label (an email or the provider's account name) and its
-`AccountCredential`. Map the kind in `ProviderLoginCatalog`.
+Map the kind in `ProviderLoginCatalog`.
 
 ## 3. Fetch and map usage
 
 Create `Sources/OpenUsage/Providers/<Name>/` with:
 
-- `<Name>UsageClient`: the HTTP calls, through the injected `HTTPClient`. Throw a `ProviderError`
-  (`signInExpired`, `connectionFailed`, `invalidResponse`, `requestFailed`, or `unavailable` with the
-  account-specific reason); `ProviderError.requireSuccess` triages a non-2xx for you. Never log a
-  credential or a response body.
-- `<Name>UsageMapper`: a pure function from the response to `(plan: String?, lines: [MetricLine])`.
-  Validate the response here.
+- `<Name>UsageClient`: HTTP calls through the injected `HTTPClient`, which applies the user's
+  [proxy](proxy.md). Throw a `ProviderError`; `ProviderError.requireSuccess` handles non-2xx
+  responses. Never log a credential or a response body.
+- `<Name>UsageMapper`: a pure function from the response to `ProviderUsage`. Validate the response
+  here.
 
-In `AccountProviderRuntime`, add the kind's `widgetDescriptors` (the card's metrics, each named
-by a key such as `"session"`) and a `refresh<Name>` case. If the provider needs a token
-refresh, add it as an extension in the provider folder, as `AccountProviderRuntime+CursorAuth` does.
+Then wire up the runtime:
+
+- Add the kind's `widgetDescriptors` in `AccountProviderRuntime+Descriptors.swift`. Chain
+  `.exportingLimit(...)` on each metric the [command line](cli.md) exports.
+- Add a `refresh<Name>` function and its case in `AccountProviderRuntime.swift`, and add the kind
+  to the `nil` case of `resetClaimService`.
+- Put any token refresh in an extension in the provider folder.
 
 ## 4. Defaults
 
-Every metric starts shown. Chain `.pinnedByDefault()` on the one or two descriptors that should start in
-the menu bar, and confirm them with the owner.
+- Every metric with data shows. Confirm the metric order with the owner before you choose it.
+- A balance with no limit needs `.exportingLimit(_, kind: .balance, ...)` to count as used up at
+  zero. Use it only for money or credits the user holds.
 
 ## 5. Test
 
-Add focused tests under `Tests/OpenUsageTests/`: the mapper against recorded response bodies (success,
-an empty plan, an error body), and the login's response parsing. Run `script/test_quiet.sh --filter <Name>`.
+Test the mapper against recorded responses (success, empty plan, error) and the login's parsing,
+under `Tests/OpenUsageTests/`. Run `script/test_quiet.sh --filter <Name>`.
 
 ## 6. Document
 
-Add the provider to the table and a section in `docs/providers.md`: sign-in method, what the card
-shows, where the plan comes from, and what its errors mean. Add it to the provider list in
-`README.md`.
+- `docs/providers.md`: a table row and a section.
+- `docs/cli.md`: the kind and its resource keys.
+- `README.md` and `AGENTS.md`: the provider lists.

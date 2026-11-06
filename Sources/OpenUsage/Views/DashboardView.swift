@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct DashboardView: View {
+    @State private var hasVisitedSettings = false
     @Environment(AppContainer.self) private var container
     @Environment(LayoutStore.self) private var layout
     @Environment(PopoverState.self) private var popover
@@ -8,7 +9,8 @@ struct DashboardView: View {
     @State private var reorderLift: ReorderLift?
     @State private var animatedHeight: CGFloat = 0
     @State private var didEstablishHeight = false
-    @State private var measuredIdeal: [PopoverScreen: CGFloat] = [:]
+    @State private var measuredIdeal = MeasuredPanelHeights()
+    @State private var isOpening = false
     @State private var slideProgress: CGFloat = 1
     @State private var animatedSlideID = 0
     /// The `popover.screenSlideID` whose slide has ended. Until the store's id lands here the pager keeps
@@ -19,25 +21,28 @@ struct DashboardView: View {
     @State private var dashboardScrollPosition = ScrollPosition(edge: .top)
     /// Settings is expensive to mount because each menu picker creates an `NSPopUpButton`. Keep its
     /// view tree alive after the first visit so later screen switches don't rebuild those controls.
-    @State private var hasVisitedSettings = false
     private static let reorderSpace = "popoverReorderSpace"
-    private static let topBarHeight: CGFloat = 44
 
     var body: some View {
         @Bindable var popover = popover
         return modeBody
             .frame(width: PanelMetrics.width)
             .frame(maxHeight: .infinity, alignment: .top)
-            .background(PopoverSurface())
-            .drivesPanelHeight(animatedHeight)
+            .background(Theme.panelBody)
+            .modifier(PanelHeightModifier(height: animatedHeight))
             .overlay(alignment: .topLeading) {
                 if let reorderLift {
                     ReorderLiftPreview(lift: reorderLift)
                 }
             }
             .coordinateSpace(name: Self.reorderSpace)
-            .sheet(isPresented: $popover.isAddingAccount) {
-                AddAccountSheet(flow: AddAccountFlow(store: container.accounts))
+            .sheet(isPresented: $popover.isAddingAccount, onDismiss: { popover.signingInAgainProviderID = nil }) {
+                AddAccountSheet(flow: AddAccountFlow(
+                    store: container.accounts,
+                    connectHub: { url, key in try await container.hubs.connect(url: url, key: key) },
+                    replaceCredential: { credential, id in try await container.signInAgain(credential, for: id) },
+                    signingInAgainTo: popover.signingInAgainProviderID.flatMap(container.accounts.account(cardID:))
+                ))
             }
             .background(
                 PopoverKeyReader { key in
@@ -61,6 +66,11 @@ struct DashboardView: View {
                         didEstablishHeight = true
                         animatedHeight = target
                     }
+                    isOpening = true
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(300))
+                        isOpening = false
+                    }
                 } else {
                     resetTransientState()
                 }
@@ -71,7 +81,9 @@ struct DashboardView: View {
             .onChange(of: popover.screen) { _, screen in
                 reorderLift = nil
                 if screen == .settings { hasVisitedSettings = true }
+                if screen == .accounts { Task { await container.hubs.syncDue(maxAge: 60) } }
             }
+            .onChange(of: popover.customizeProviderID) { reorderLift = nil }
             // Each screen switch: pin to the outgoing screen for one render (`slideProgress = 0`),
             // then spring to the incoming one on the next runloop tick. Deferring the animation one
             // tick is what makes it animate — setting 0 then 1 in the same closure collapses to a
@@ -96,7 +108,7 @@ struct DashboardView: View {
                     let coTarget: CGFloat? = heightTarget(for: destination)
                         ?? (animatedHeight > 0 ? animatedHeight : nil)
                     if coTarget != nil { didEstablishHeight = true }
-                    withAnimation(Motion.spring, completionCriteria: .removed) {
+                    withAnimation(Motion.navigation, completionCriteria: .removed) {
                         slideProgress = 1
                         if let coTarget { animatedHeight = coTarget }
                     } completion: {
@@ -106,25 +118,28 @@ struct DashboardView: View {
                             didEstablishHeight = true
                             animatedHeight = target
                         } else if abs(target - animatedHeight) > 1 {
-                            withAnimation(Motion.spring) { animatedHeight = target }
+                            withAnimation(Motion.navigation) { animatedHeight = target }
                         }
                     }
                 }
             }
-            .onChange(of: measuredIdeal[popover.screen]) { _, _ in
+            // A screen mounted by the slide can measure before its bars are inset (macOS 15 does), so the
+            // slide's co-target may be short: follow the corrected height mid-slide, not after it.
+            .onChange(of: measuredIdeal[popover.screen, popover.dashboardTab]) { _, _ in
                 guard let target = heightTarget(for: popover.screen) else { return }
                 if !didEstablishHeight {
                     didEstablishHeight = true
                     animatedHeight = target
-                } else if !isSliding, abs(target - animatedHeight) > 1 {
-                    withAnimation(Motion.spring) { animatedHeight = target }
+                } else if isOpening || !isSliding {
+                    // Outside a screen slide the panel takes its new size in one step, like a native window.
+                    animatedHeight = target
+                } else if abs(target - animatedHeight) > 1 {
+                    withAnimation(Motion.navigation) { animatedHeight = target }
                 }
             }
     }
 
     private func resetTransientState() {
-        HoverTooltips.dismissAll()
-        HoverPopoverState.dismissAll()
         container.renaming.commit()
         popover.reset()
         reorderLift = nil
@@ -244,27 +259,21 @@ struct DashboardView: View {
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
                 geometry.contentSize.height + geometry.contentInsets.top + geometry.contentInsets.bottom
             } action: { _, height in
-                if includeChrome, height > 0 { measuredIdeal[screen] = height }
+                if includeChrome, height > 0 { measuredIdeal[screen, popover.dashboardTab] = height }
             }
-            .softScrollEdges()
-            .pinnedBar(.top, spacing: 0) {
+            .panelBars {
                 if includeChrome {
-                    PopoverTopBar(
-                        screen: screen,
-                        height: Self.topBarHeight,
-                        horizontalPadding: PanelMetrics.margin
-                    )
+                    PopoverTopBar(screen: screen)
                 }
-            }
-            .pinnedBar(.bottom, spacing: 0) {
+            } bottom: {
                 if includeChrome {
-                    PopoverFooter(screen: screen, horizontalPadding: PanelMetrics.margin)
+                    PopoverFooter(screen: screen)
                 }
             }
     }
 
     private func heightTarget(for screen: PopoverScreen) -> CGFloat? {
-        measuredIdeal[screen].map { MenuBarPopover.clampHeight?($0) ?? $0 }
+        measuredIdeal[screen, popover.dashboardTab].map { MenuBarPopover.clampHeight?($0) ?? $0 }
     }
 
     @ViewBuilder
@@ -284,11 +293,5 @@ struct DashboardView: View {
         case .settings:
             SettingsScreen()
         }
-    }
-}
-
-private struct PopoverSurface: View {
-    var body: some View {
-        Theme.traySurface.allowsHitTesting(false)
     }
 }

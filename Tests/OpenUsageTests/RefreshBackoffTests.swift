@@ -29,9 +29,27 @@ final class RefreshBackoffTests: XCTestCase {
         XCTAssertEqual(runtime.refreshCount, 2, "neither the loop nor a manual refresh asks before Retry-After")
 
         clock.set(retryAt)
+        XCTAssertEqual(store.stalenessHint(for: "test"), "Last updated 40m ago")
         await store.refreshAll()
         XCTAssertEqual(runtime.refreshCount, 3)
         XCTAssertNil(store.backoffs["test"])
+    }
+
+    func testPriorityStaysUnavailableAfterRetryAfterUntilTheNextSuccessfulRead() async {
+        let clock = TestClock(start)
+        let retryAt = start.addingTimeInterval(60)
+        let store = makeStore(makeRuntime([ok(at: start), rateLimited(retryAfter: 60), ok(at: retryAt)]), clock: clock)
+        let group = ProviderMetrics(provider: provider, metrics: [descriptor])
+        await store.refreshAll()
+        await store.refreshAll(force: true)
+
+        clock.set(retryAt)
+        XCTAssertEqual(store.priorityBoard(in: [group], now: clock.now).summary, .unavailable)
+        XCTAssertEqual(store.stalenessHint(for: provider.id), "Waiting to retry after a rate limit.")
+
+        await store.refreshAll(force: true)
+        XCTAssertEqual(store.priorityBoard(in: [group], now: clock.now).summary, .allClear)
+        XCTAssertNil(store.stalenessHint(for: provider.id))
     }
 
     func testTheBackoffCarriesTheFailureMessageAndShowsItUnlessTheProviderAsked() async {
@@ -44,6 +62,7 @@ final class RefreshBackoffTests: XCTestCase {
         XCTAssertNil(store.errorMessage(for: "test"), "the provider's wait keeps its message for the log, not the row")
 
         clock.set(start.addingTimeInterval(60))
+        XCTAssertNotNil(store.stalenessHint(for: "test"), "a rate-limited first read is still pending")
         await store.refreshAll()
         XCTAssertEqual(store.backoffs["test"]?.message, "Refused")
         XCTAssertEqual(store.errorMessage(for: "test"), "Refused")
@@ -120,6 +139,7 @@ final class RefreshBackoffTests: XCTestCase {
         XCTAssertNil(response(nil).retryAfter(now: start))
         XCTAssertNil(response("0").retryAfter(now: start), "a zero wait names no wait, so the doubling applies")
         XCTAssertNil(response("soon").retryAfter(now: start))
+        XCTAssertEqual(response("18446744073709551615").retryAfter(now: start), RefreshSetting.failureBackoffCap)
     }
 
     func testA429ReadsAsARateLimitEverywhereRequireSuccessRuns() {
@@ -128,6 +148,15 @@ final class RefreshBackoffTests: XCTestCase {
             XCTAssertEqual(error as? ProviderError, .rateLimited(retryAfter: 60))
         }
         XCTAssertEqual(RefreshFailure(error: ProviderError.rateLimited(retryAfter: 60)).kind, .rateLimited(retryAfter: 60))
+    }
+
+    func testAForbiddenThatNamesARateLimitThrowsRateLimited() {
+        for (headers, retryAfter) in [(["x-ratelimit-remaining": "0"], nil), (["retry-after": "60"], 60.0)] as [([String: String], TimeInterval?)] {
+            let response = HTTPResponse(statusCode: 403, headers: headers, body: Data())
+            XCTAssertThrowsError(try ProviderError.requireSuccess(response, kind: .copilot)) { error in
+                XCTAssertEqual(error as? ProviderError, .rateLimited(retryAfter: retryAfter), "\(headers)")
+            }
+        }
     }
 
     private let provider = Provider(id: "test", kind: .claude)

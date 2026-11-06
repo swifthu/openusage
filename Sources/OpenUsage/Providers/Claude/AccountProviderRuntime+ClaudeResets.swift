@@ -16,12 +16,10 @@ struct ClaudeResetGrantsState {
 
     mutating func settleClaim(grantID: String, outcome: ResetClaimOutcome, resetsLeft: Int?) {
         claimEpoch += 1
+        check?.checkedAt = .distantPast
         guard outcome == .success, var status = check?.status,
               let index = status.grants.firstIndex(where: { $0.id == grantID })
-        else {
-            check?.checkedAt = .distantPast
-            return
-        }
+        else { return }
         status.grants[index].resetsLeft = max(0, resetsLeft ?? status.grants[index].resetsLeft - 1)
         check?.status = status
     }
@@ -82,10 +80,12 @@ extension AccountProviderRuntime {
 
         let response: HTTPResponse
         do {
-            response = try await ClaudeUsageClient(httpClient: http).claimResetGrant(
-                accessToken: tokens.accessToken, organizationUUID: organizationUUID,
-                grantID: grantID, requestID: requestID
-            )
+            response = try await authorizedRead(.oauth(tokens), grant: ClaudeLogin.refresh) { tokens in
+                try await ClaudeUsageClient(httpClient: http).claimResetGrant(
+                    accessToken: tokens.accessToken, organizationUUID: organizationUUID,
+                    grantID: grantID, requestID: requestID
+                )
+            }.response
         } catch {
             AppLog.error(tag, "\(cardID) reset claim: request failed: \(error.localizedDescription)")
             session.resetGrants.unsettledClaim = (grantID, requestID)
@@ -106,7 +106,7 @@ extension AccountProviderRuntime {
         }
         switch outcome {
         case .success, .unconfirmed, .noCredit:
-            let resetsLeft = ProviderParse.number(body?["resets_left"]).map { Int($0.rounded(.down)) }
+            let resetsLeft = ProviderParse.number(body?["resets_left"]).flatMap { ProviderParse.int($0.rounded(.down)) }
             session.resetGrants.settleClaim(grantID: grantID, outcome: outcome, resetsLeft: resetsLeft)
         case .nothingToReset, .unavailableNow, .failed:
             break

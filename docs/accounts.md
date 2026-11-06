@@ -1,55 +1,66 @@
 # Accounts
 
-The Accounts screen lists every account you have added, or reads **No Accounts** until you add one.
-Open it from the panel's **Options** menu or press Return on the dashboard.
+The Accounts screen lists your accounts. Open it from the panel's **⋯** menu or press Return
+on the dashboard.
 
 ## Add an account
 
-1. Click **+** at the top of the Accounts screen.
-2. Click a provider, or select it with the arrow keys and press Return. The sign-in starts at once.
+1. Click **Add New Account**.
+2. Pick a provider. Copilot first asks for **Sign In with GitHub** (your own seat) or
+   **Organization Billing** (an organization's credits and spend). **Sign In with GitHub** then asks
+   for a domain: leave it blank for github.com, or enter your company's GHE.com address.
 3. Finish the sign-in:
-   - **Browser** (Claude, ChatGPT, Cursor, Antigravity): your browser opens on its own. **Open Browser**
-     opens it again, and **Copy Link** lets you open the link in another browser. The sheet closes
-     when you are signed in. If your browser shows a code instead, paste it into the sheet and click
-     **Continue**.
-   - **Device code** (Copilot, Grok): the sheet shows a code. **Copy Code**, click **Open Browser**,
-     and enter the code. The sheet closes when the provider confirms.
-   - **API key** (Ollama, OpenCode, OpenRouter, Z.ai): create a key on the page the sheet links to,
-     paste it, and click **Add Account**.
 
-If a sign-in fails, **Try Again** starts it over. The close button in a sign-in step's corner (or Esc)
-goes back to the provider list; **Cancel** on the list closes the sheet.
+| Sign-in | Providers | What to do |
+|---|---|---|
+| Browser | Claude, ChatGPT, Cursor, Antigravity | Sign in in the browser that opens. If it shows a code, paste it and click **Continue**. |
+| Browser and token | Devin | Sign in to Windsurf, paste the token it shows (valid for 5 minutes) or a Windsurf API key, and click **Continue**. |
+| Device code | Copilot, Grok, Muse Code | Copy the code, click **Open Browser**, and enter it if the page doesn't fill it in. |
+| API key | Ollama, OpenCode, OpenRouter, Z.ai | Create a key on the linked page, paste it, and click **Add Account**. |
+| Organization billing | Copilot | Enter the organization and a token from an owner or billing manager, and click **Add Account**. |
 
-You can add several accounts for the same provider. A new account goes to the bottom of its
-provider's accounts and starts refreshing right away. Signing in to an account that's already added
-(the same provider account, or the same API key) adds no second copy; the sheet says "This account is
-already added as <name>." A Claude account in two organizations counts as two accounts.
+If a sign-in fails, click **Try Again**.
+
+To add the logins of a CLIProxyAPI server, click **CLIProxyAPI** at the bottom of the list. See
+[CLIProxyAPI hubs](cliproxyapi.md).
+
+- You can add several accounts per provider. A new account goes to the bottom of its provider's
+  accounts.
+- An account takes the email or name the provider reports. API-key accounts other than Ollama
+  are named after the provider, such as "OpenRouter Account".
+- A sign-in or key you already use isn't added twice.
+- A Claude account or Devin email in two organizations counts as two accounts, and so does a GitHub
+  user on github.com and on a GHE.com domain.
 
 ## Rename an account
 
-Click the name at the top of the account's page, double-click it on the dashboard, or choose
-**Rename** from its right-click menu. The field opens with the whole name selected. Return or a click
-elsewhere saves; Esc cancels.
+Click the name on the account's page, double-click it on the dashboard, or choose **Rename** from
+its right-click menu. Return saves and Esc cancels.
+
+## Hide, pin, and order metrics
+
+An account's page has a switch, a pin, and a drag handle for each metric. See
+[Hiding, pinning, and ordering metrics](dashboard.md#hiding-pinning-and-ordering-metrics).
 
 ## Replace an API key
 
-**Replace API Key…** on an API-key account's page takes a new key and checks it with one usage read
-before saving it. The account keeps its name, place, and stars; if the provider refuses the key, the
-old key stays and the page shows why.
-
-## Hide and star metrics
-
-An account's page lists its metrics with a switch and a star each. Turn a metric off to hide it from
-the dashboard and the menu bar; hiding it also removes its star. Star a metric to show it in the menu
-bar; see [Menu bar](menu-bar.md).
+**Replace API Key…** on the account's page checks the new key with one usage read before saving
+it. If the provider refuses it, the old key stays. Copilot organization accounts have
+**Replace Token…** instead.
 
 ## Remove an account
 
-**Remove Account…** sits at the bottom of the account's page. Removing an account deletes its sign-in
-from this Mac. You can add the account again at any time.
+**Remove Account…** at the bottom of the account's page deletes its sign-in from this Mac. For an
+account from a CLIProxyAPI hub, remove the login on the hub or remove the whole hub.
 
 ## Where things are stored
 
-Account names and the dashboard layout live in the app's own preferences. OAuth tokens and API keys
-live in the app's own Keychain service. OpenUsage never reads credentials, files, Keychain items,
-databases, or environment variables that belong to other tools.
+Account names and the dashboard layout live in the app's preferences. Tokens and keys live in the
+app's own Keychain services. OpenUsage never reads other tools' credentials, files, Keychain items,
+databases, or environment variables.
+
+## Sign in again
+
+When a sign-in expires, click **Sign In Again…** on the account's page. The account keeps its
+name, place, and settings. A Copilot account on GHE.com signs in again at its own domain. In Priority, **Fix** on an account under **Needs Attention** opens
+that page.

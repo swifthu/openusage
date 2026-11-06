@@ -31,13 +31,24 @@ final class MenuBarStripGateTests: XCTestCase {
         XCTAssertEqual(shown.map(\.1), [1, 1.2])
     }
 
+    func testAChangedOverflowIsShown() {
+        var shown: [MenuBarContent] = []
+        var gate = StatusItemController.StripGate()
+        var more = makeContent(value: "42%")
+        more.overflow = 2
+        gate.show(makeContent(value: "42%"), scale: 1) { content, _ in shown.append(content) }
+        gate.show(more, scale: 1) { content, _ in shown.append(content) }
+        gate.show(more, scale: 1) { content, _ in shown.append(content) }
+        XCTAssertEqual(shown, [makeContent(value: "42%"), more])
+    }
+
     private func makeContent(value: String) -> MenuBarContent {
-        let metric = MenuBarContent.Metric(id: "claude.session", label: "Session", value: value)
-        return MenuBarContent(
-            groups: [MenuBarContent.Group(
-                provider: Provider(id: "claude", kind: .claude),
-                metrics: [metric]
-            )]
-        )
+        MenuBarContent(items: [MenuBarContent.Item(
+            id: "claude.session",
+            provider: Provider(id: "claude", kind: .claude),
+            label: "Session",
+            shortLabel: "Session",
+            value: value
+        )])
     }
 }

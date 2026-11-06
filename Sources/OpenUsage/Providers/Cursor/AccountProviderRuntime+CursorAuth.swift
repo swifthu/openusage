@@ -10,10 +10,11 @@ extension AccountProviderRuntime {
         let hadExpiry = tokens.expiresAt != nil
         tokens.expiresAt = tokens.expiresAt ?? ProviderParse.jwtExpiry(tokens.accessToken)
         guard let expiresAt = tokens.expiresAt else { return tokens }
-        if expiresAt.addingTimeInterval(-Self.cursorRefreshLead) <= now() {
+        if expiresAt.addingTimeInterval(-Self.cursorRefreshLead) <= now(), !earlyRenewalIsHeld(expiresAt: expiresAt) {
             do {
                 return try await refreshCursorTokens(tokens)
             } catch let error where expiresAt > now() {
+                holdEarlyRenewal(after: error)
                 AppLog.warn(
                     LogTag.plugin("cursor"),
                     "\(account.cardID) early token refresh failed; keeping the current token: \(error.localizedDescription)"
@@ -30,17 +31,13 @@ extension AccountProviderRuntime {
     func refreshCursorTokens(_ tokens: OAuthTokens) async throws -> OAuthTokens {
         guard let refreshToken = tokens.refreshToken else { throw ProviderError.signInExpired(.cursor) }
         let response = try await CursorUsageClient(http: http).refreshToken(refreshToken)
-        let body = ProviderParse.jsonObject(response.body)
-        if body?["shouldLogout"] as? Bool == true { throw ProviderError.signInExpired(.cursor) }
-        guard (200..<300).contains(response.statusCode),
-              let accessToken = body?["access_token"] as? String,
-              !accessToken.isEmpty
-        else { throw ProviderError.signInExpired(.cursor) }
+        if ProviderParse.jsonObject(response.body)?["shouldLogout"] as? Bool == true { throw ProviderError.signInExpired(.cursor) }
+        let token = try OAuthTokenResponse(renewal: response, kind: .cursor)
         var refreshed = tokens
-        refreshed.accessToken = accessToken
-        refreshed.refreshToken = body?["refresh_token"] as? String ?? accessToken
-        refreshed.expiresAt = ProviderParse.jwtExpiry(accessToken)
-        try await replaceCredential(.oauth(refreshed))
+        refreshed.accessToken = token.accessToken
+        refreshed.refreshToken = token.refreshToken ?? token.accessToken
+        refreshed.expiresAt = ProviderParse.jwtExpiry(token.accessToken)
+        await saveRenewal(refreshed)
         return refreshed
     }
 }

@@ -1,9 +1,8 @@
 # Command line
 
-OpenUsage ships a one-shot `openusage` command for scripts and agents. It prints the usage the app last
-fetched, as JSON, and exits. It never refreshes, signs in, or reads a credential: the app fetches on
-its own schedule (every 5 minutes while it runs, see [Refreshing](refreshing.md)) and saves each
-successful fetch, and the command reads that saved copy. Running it does not launch the app.
+`openusage` prints the usage the app last fetched, as JSON, and exits. It never refreshes, signs in,
+reads a credential, or launches the app. The app fetches every 5 minutes while it runs (see
+[Refreshing](refreshing.md)).
 
 ```sh
 openusage                  # every account
@@ -11,19 +10,18 @@ openusage codex            # every ChatGPT account (the provider id stays codex)
 openusage codex@1a2b3c4d   # one account, by its id
 ```
 
-The provider argument names accounts by plain string matching. An account id (the `providers` key in
-the output, `codex@1a2b3c4d`) names that account. A provider kind (`claude`, `codex`, `cursor`,
-`antigravity`, `copilot`, `grok`, `ollama`, `opencode`, `openrouter`, `zai`) names every account of
-that kind. Anything else is an error. There is no aliasing or account-picking logic.
+- The argument is an account id (the `providers` key in the output) or a provider kind: `claude`,
+  `codex`, `cursor`, `antigravity`, `copilot`, `devin`, `grok`, `muse`, `ollama`, `opencode`,
+  `openrouter`, `zai`. Anything else is an error.
+- `--force` from 0.7.x is accepted and does nothing. The command says so on stderr.
 
 ## Install on `PATH`
 
-In OpenUsage, open **Settings → Command Line** and click **Install…**. After the standard macOS
-administrator prompt, `openusage` is available in new terminal sessions as `/usr/local/bin/openusage`.
-The installed symlink points to the signed helper inside OpenUsage, so in-place app updates also update
-the command. A symlink left by another copy of OpenUsage, such as the one 0.7.x installed or a build
-in another folder, is replaced on Install. **Uninstall** removes the symlink; a file or link at that
-path that OpenUsage did not install is left alone and the setting reads **Unavailable**.
+- **Settings → Command Line → Install…** asks for an administrator password, then links
+  `/usr/local/bin/openusage` to the helper inside OpenUsage. App updates update the command too.
+- Install replaces a link left by another copy of OpenUsage, such as the one 0.7.x installed.
+- **Uninstall** removes the link. A file at that path that OpenUsage didn't install is left alone, and
+  the setting reads **Unavailable**.
 
 ## Exit codes
 
@@ -31,20 +29,20 @@ path that OpenUsage did not install is left alone and the setting reads **Unavai
 |---|---|
 | 0 | Printed. |
 | 2 | Invalid arguments, or a provider argument that names no account. |
-| 4 | Nothing fetched yet for the named accounts: open OpenUsage and add or refresh an account. The empty envelope is still printed. |
+| 4 | Nothing fetched yet for the named accounts. Open OpenUsage and add or refresh an account. The empty envelope still prints. |
 
 ## Output
 
 ```json
 {
-  "schema": "openusage.limits.v1",
+  "schema": "openusage.limits.v2",
   "generatedAt": "2026-07-13T01:40:00.000Z",
   "providers": {
     "codex@1a2b3c4d": {
-      "displayName": "ChatGPT",
+      "displayName": "ChatGPT · Work",
       "plan": "Pro 200",
       "fetchedAt": "2026-07-13T01:39:30.000Z",
-      "expiresAt": "2026-07-13T01:44:30.000Z",
+      "expiresAt": "2026-07-13T01:49:30.000Z",
       "stale": false,
       "resources": {
         "session": {
@@ -68,25 +66,29 @@ path that OpenUsage did not install is left alone and the setting reads **Unavai
 }
 ```
 
-`providers` has one entry per account, keyed by account id (`jq '.providers["codex@1a2b3c4d"]'`;
-`openusage codex | jq '.providers[]'` for every ChatGPT account). An account the app has not fetched
-yet has no entry.
-`displayName` is the provider's name and `plan` the plan the provider reports.
-`fetchedAt` is when the app last fetched the account, `expiresAt` is when it expects to fetch it
-again (5 minutes after `fetchedAt`), and `stale` says whether that instant has passed at `generatedAt`: a stale
-entry means the app is not running or its refreshes are failing.
+| Field | Meaning |
+| --- | --- |
+| `providers` | One entry per account, keyed by account id. An account not fetched yet, or for a provider this version lacks, has no entry. |
+| `displayName` | The provider and account name as the app shows them. |
+| `plan` | The plan the provider reports. |
+| `fetchedAt` | When the app last fetched the account successfully. |
+| `expiresAt` | 10 minutes after `fetchedAt`, two refresh intervals. |
+| `stale` | `expiresAt` has passed. The app isn't running, or its refreshes of that account are failing. |
 
-Each resource is one scalar with an explicit `unit`. `kind` is `consumption` (`used`) or `balance`
-(`available`). Bounded consumption also carries `limit`, `remaining`, and a 0–1 `utilization`.
-`resetsAt`, `windowSeconds`, and `expiresAt` (a list of instants for a balance of resets) appear only
-when the provider supplies that meaning. A resource with no current value is omitted rather than
-invented as zero. For bounded resources `unit` follows the provider's live format: Cursor `totalUsage`
-is `percent` on percentage-based plans and `requests` on request-based Enterprise plans; Copilot
-`premiumCredits` is `percent` on paid plans and a `credits` count on org-managed seats that only report
-personal usage.
+Each resource is one value with a `unit`:
 
-The command reads the last successful fetch; a failed refresh shows in the app, with its reason in
-the account's right-click menu.
+- `kind` is `consumption` (`used`) or `balance` (`available`).
+- Bounded consumption adds `limit`, `remaining`, and a 0–1 `utilization`.
+- `resetsAt`, `windowSeconds`, and `expiresAt` (a list of instants for a balance of resets) appear
+  only when the provider supplies them.
+- A resource with no current value is left out, not shown as zero.
+- `unit` follows the provider's live format. Cursor `totalUsage` is `percent`, or `requests` on
+  request-based Enterprise plans. Copilot `premiumCredits` is `percent` on paid plans, or a
+  `credits` count on org-managed seats that only report personal usage. Claude `extraUsage` is the
+  account's billing currency, such as `usd` or `eur`.
+
+A failed refresh doesn't change the output. The app shows the failure, with its reason in the
+account's right-click menu.
 
 ### Resources
 
@@ -96,13 +98,16 @@ the account's right-click menu.
 | ChatGPT (`codex`) | `session`, `weekly`, `spark`, `sparkWeekly`, `credits`, `rateLimitResets` |
 | Cursor | `totalUsage`, `grokBot`, `autoUsage`, `apiUsage`, `onDemand`, `requests`, `credits` |
 | Antigravity | `geminiSession`, `geminiWeekly`, `argonWeekly`, `nonGeminiSession`, `nonGeminiWeekly` |
-| Copilot | `premiumCredits`, `extraUsage`, `chat`, `completions` |
+| Copilot | `premiumCredits`, `extraUsage`, `chat`, `completions`; an organization account: `orgCredits`, `orgSpend` |
+| Devin | `daily`, `weekly`, `extraUsageBalance` |
 | Grok | `weekly` |
+| Muse Code | `session`, `weekly` |
 | Ollama | `session`, `weekly`, `monthly`, `purchasedCredits` |
 | OpenCode | `session`, `weekly`, `monthly` |
-| OpenRouter | `balance` |
-| Z.ai | `session`, `weekly`, `webSearches` |
+| OpenRouter | `balance`, `keyLimit` |
+| Z.ai | `session`, `weekly`, `webSearches`, `rateLimitResets` |
 
-Antigravity's `argonWeekly` is the separate Gemini 4 Argon weekly quota and is omitted when the account has none.
-Charts, colours, subtitles, badges, layout state, and spend periods (OpenRouter's today, week, and
-month) stay out of this output.
+- ChatGPT `credits` is `0` when the balance is empty, and absent when ChatGPT reports no balance.
+- Antigravity `argonWeekly` is the Gemini 4 Argon weekly quota, absent when the account has none.
+- Charts, subtitles, badges, layout, and spend periods (such as OpenRouter's today, week, and month)
+  aren't in the output.

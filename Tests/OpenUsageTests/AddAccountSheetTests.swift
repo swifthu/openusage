@@ -1,48 +1,17 @@
 import AppKit
 import Observation
 import SwiftUI
+import Vision
 import XCTest
 @testable import OpenUsage
 
 @MainActor
 final class AddAccountSheetTests: QuietWindowTestCase {
-    func testCancelOnAProviderStepReturnsToTheListAndCancelOnTheListCloses() async throws {
+    func testKeyboardSelectionOpensSignInAndEscapeReturnsToTheListThenCloses() async throws {
         let defaults = isolatedDefaults()
         let url = try XCTUnwrap(URL(string: "https://example.com/authorize"))
         var opened: [URL] = []
-        let flow = AddAccountFlow(store: AccountStore(defaults: defaults, vault: InMemoryCredentialVault()), openURL: { opened.append($0) }) { _ in
-            SlowLogin(prompt: .browser(url, acceptsPastedCode: false))
-        }
-        let presentation = SheetPresentation()
-        let window = show(SheetHost(presentation: presentation, flow: flow), in: .titled, size: CGSize(width: 400, height: 500)).window
-        let sheet = try await waitForSheet(on: window)
-
-        flow.choose(.codex)
-        try await waitUntil { flow.prompt != nil }
-        XCTAssertEqual(opened, [url], "the browser didn't open on its own")
-        try await Task.sleep(for: .milliseconds(300))
-        press(keyCode: 36, character: "\r", in: sheet)
-        try await waitUntil { opened.count == 2 }
-        XCTAssertEqual(opened, [url, url], "Return didn't press Open Browser")
-
-        pressEscape(in: sheet)
-        try await waitUntil { flow.provider == nil }
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(flow.selection, .codex)
-        XCTAssertNil(flow.prompt)
-        XCTAssertFalse(flow.isWorking)
-        XCTAssertTrue(presentation.isPresented)
-        XCTAssertNotNil(window.attachedSheet, "Cancel on the sign-in step closed the sheet")
-
-        pressEscape(in: sheet)
-        try await waitUntil { !presentation.isPresented }
-        XCTAssertFalse(presentation.isPresented, "Cancel on the provider list didn't close the sheet")
-    }
-
-    func testArrowKeysAndReturnChooseAProvider() async throws {
-        let defaults = isolatedDefaults()
-        let url = try XCTUnwrap(URL(string: "https://example.com/authorize"))
-        let flow = AddAccountFlow(store: AccountStore(defaults: defaults, vault: InMemoryCredentialVault()), openURL: { _ in }) { _ in
+        let flow = AddAccountFlow(store: AccountStore(defaults: defaults, vault: InMemoryCredentialVault()), openURL: { opened.append($0) }) { _, _, _, _ in
             SlowLogin(prompt: .browser(url, acceptsPastedCode: false))
         }
         let presentation = SheetPresentation()
@@ -52,64 +21,82 @@ final class AddAccountSheetTests: QuietWindowTestCase {
 
         press(keyCode: 125, character: "\u{F701}", in: sheet)
         press(keyCode: 125, character: "\u{F701}", in: sheet)
-        try await waitUntil { flow.selection == .codex }
-        XCTAssertNil(flow.provider, "Moving the selection must not choose the provider")
+        try await waitUntil { flow.selection == .provider(.codex) }
+        XCTAssertNil(flow.provider, "Moving the selection must not start sign-in")
 
         press(keyCode: 36, character: "\r", in: sheet)
-        try await waitUntil { flow.provider == .codex }
-        XCTAssertEqual(flow.provider, .codex)
+        try await waitUntil { flow.prompt != nil }
+        XCTAssertEqual(opened, [url], "the browser didn't open on its own")
+        try await Task.sleep(for: .milliseconds(300))
+        press(keyCode: 36, character: "\r", in: sheet)
+        try await waitUntil { opened.count == 2 }
+        XCTAssertEqual(opened, [url, url], "Return didn't press Open Browser")
+
+        press(keyCode: 53, character: "\u{1b}", in: sheet)
+        try await waitUntil { flow.provider == nil }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(flow.selection, .provider(.codex))
+        XCTAssertNil(flow.prompt)
+        XCTAssertFalse(flow.isWorking)
+        XCTAssertTrue(presentation.isPresented)
+        XCTAssertNotNil(window.attachedSheet, "Cancel on the sign-in step closed the sheet")
+
+        press(keyCode: 53, character: "\u{1b}", in: sheet)
+        try await waitUntil { !presentation.isPresented }
+        XCTAssertFalse(presentation.isPresented, "Cancel on the provider list didn't close the sheet")
     }
 
-    func testSignInStepsPutTheCloseButtonTopRightAndTheStatusCentredUnderTheButtons() async throws {
-        let defaults = isolatedDefaults()
-        let store = AccountStore(defaults: defaults, vault: InMemoryCredentialVault())
+    func testAPastedTokenIsMaskedAndAPastedCodeIsNot() async throws {
+        let store = AccountStore(defaults: isolatedDefaults(), vault: InMemoryCredentialVault())
         let url = try XCTUnwrap(URL(string: "https://example.com/authorize"))
-        let steps: [(name: String, provider: ProviderKind, prompt: LoginPrompt)] = [
-            ("browser", .claude, .browser(url, acceptsPastedCode: true)),
-            ("device-code", .copilot, .deviceCode(userCode: "ABCD-1234", verificationURL: url)),
+        let steps: [(provider: ProviderKind, prompt: LoginPrompt, masked: Bool)] = [
+            (.devin, .browserToken(url), true),
+            (.claude, .browser(url, acceptsPastedCode: true), false),
         ]
-        let renderDirectory = ProcessInfo.processInfo.environment["OPENUSAGE_RENDER_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
-        for step in steps {
-            for (scheme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-                let flow = AddAccountFlow(store: store, openURL: { _ in }) { _ in SlowLogin(prompt: step.prompt) }
-                addTeardownBlock { flow.cancel() }
-                flow.choose(step.provider)
-                try await waitUntil { flow.prompt != nil }
-                let host = show(
-                    AddAccountSheet(flow: flow).background(Color(nsColor: .windowBackgroundColor)), in: .titled, appearance: appearance
-                ).host
-                try await Task.sleep(for: .milliseconds(300))
-                host.layoutSubtreeIfNeeded()
-                let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-                host.cacheDisplay(in: host.bounds, to: rep)
-                if let renderDirectory {
-                    try XCTUnwrap(rep.representation(using: .png, properties: [:]))
-                        .write(to: renderDirectory.appendingPathComponent("signin-\(step.name)-\(scheme).png"))
-                }
-                let label = "\(step.name) \(scheme)"
-                let size = host.bounds.size
-                XCTAssertEqual(size.width, 300, label)
-                let ink = InkMap(rep, size: size)
-                XCTAssertGreaterThan(ink.count(x: size.width - 40..<size.width - 10, y: 10..<40), 20, "\(label): no close button in the top-right corner")
-                let status = try XCTUnwrap(ink.bounds(y: size.height - 40..<size.height - 18), "\(label): nothing under the buttons")
-                XCTAssertEqual(status.midX, size.width / 2, accuracy: 3, "\(label): the status line isn't centred")
-                let buttons = (size.height - 80)..<(size.height - 44)
-                XCTAssertGreaterThan(accent(rep, size: size, x: size.width / 2..<size.width - 20, y: buttons), 400, "\(label): the primary button isn't accent-filled")
-                XCTAssertEqual(accent(rep, size: size, x: 20..<size.width / 2, y: buttons), 0, "\(label): the secondary button is accent-filled")
-            }
+        for (provider, prompt, masked) in steps {
+            let flow = AddAccountFlow(store: store, openURL: { _ in }) { _, _, _, _ in SlowLogin(prompt: prompt) }
+            addTeardownBlock { flow.cancel() }
+            flow.choose(provider)
+            try await waitUntil { flow.prompt != nil }
+            flow.pastedCode = "pasted-secret"
+            let host = show(AddAccountSheet(flow: flow), in: .titled).host
+            try await waitUntil { textFields(in: host).contains { $0.stringValue == "pasted-secret" } }
+            let field = try XCTUnwrap(textFields(in: host).first { $0.stringValue == "pasted-secret" }, "\(provider): no field shows the pasted value")
+            XCTAssertEqual(field is NSSecureTextField, masked, "\(provider): the pasted value is \(masked ? "shown in plain text" : "masked")")
         }
     }
 
-    private func accent(_ rep: NSBitmapImageRep, size: CGSize, x: Range<CGFloat>, y: Range<CGFloat>) -> Int {
-        let scale = CGFloat(rep.pixelsWide) / size.width
-        var count = 0
-        for row in Int(y.lowerBound * scale)..<Int(y.upperBound * scale) {
-            for column in Int(x.lowerBound * scale)..<Int(x.upperBound * scale) {
-                guard let color = rep.colorAt(x: column, y: row) else { continue }
-                if color.blueComponent > 0.6, color.blueComponent > color.redComponent + 0.3 { count += 1 }
-            }
-        }
-        return count
+    func testTheHubSheetShowsTheHintOrTheErrorButNeverBoth() async throws {
+        let hint = "The hub needs remote management turned on. OpenUsage uses https unless you type http://, which works only for this Mac, your local network, or Tailscale."
+        let error = "Use https for hub.example.com. OpenUsage uses http only for a hub on this Mac, your local network, or Tailscale."
+        let flow = AddAccountFlow(
+            store: AccountStore(defaults: isolatedDefaults(), vault: InMemoryCredentialVault()), connectHub: { _, _ in throw ProviderError.unavailable(error) }
+        )
+        flow.chooseHub()
+        flow.hubURL = "http://hub.example.com"
+        flow.apiKey = "mgmt-key"
+        let host = show(AddAccountSheet(flow: flow), in: .titled, appearance: .darkAqua, size: CGSize(width: 420, height: 560)).host
+        let messages = { try ["needs remote management", "unencrypted", "Use https for"].filter(self.readText(in: host).contains) }
+
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(try messages(), ["needs remote management"], "an http address shows only the hint")
+        flow.connect()
+        try await waitUntil { flow.errorMessage != nil }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(try messages(), ["Use https for"], "the error replaces the hint")
+    }
+
+    private func readText(in host: NSView) throws -> String {
+        let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: rep)
+        let request = VNRecognizeTextRequest()
+        try VNImageRequestHandler(cgImage: XCTUnwrap(rep.cgImage)).perform([request])
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+    }
+
+    private func textFields(in view: NSView) -> [NSTextField] {
+        if let field = view as? NSTextField { return [field] }
+        return view.subviews.flatMap(textFields(in:))
     }
 
     private func press(keyCode: UInt16, character: String, in sheet: NSWindow) {
@@ -128,23 +115,6 @@ final class AddAccountSheetTests: QuietWindowTestCase {
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertFalse(QuietTestProcess.onAScreen(sheet), "the sheet shows on a screen")
         return sheet
-    }
-
-    private func pressEscape(in sheet: NSWindow) {
-        for type in [NSEvent.EventType.keyDown, .keyUp] {
-            sheet.sendEvent(NSEvent.keyEvent(
-                with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                windowNumber: sheet.windowNumber, context: nil, characters: "\u{1b}",
-                charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53
-            )!)
-        }
-    }
-
-    private func waitUntil(_ condition: () -> Bool) async throws {
-        for _ in 0..<300 where !condition() {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertTrue(condition(), "Timed out waiting for the Add Account sheet")
     }
 }
 

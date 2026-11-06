@@ -4,6 +4,7 @@ struct AccountDetailView: View {
     @Environment(AppContainer.self) private var container
     @Environment(LayoutStore.self) private var layout
     @Environment(PopoverState.self) private var popover
+    @Environment(WidgetDataStore.self) private var dataStore
     let providerID: String
     let reorderSpaceName: String
     @Binding var reorderLift: ReorderLift?
@@ -11,20 +12,36 @@ struct AccountDetailView: View {
 
     @State private var activeMetricID: String?
     @State private var isConfirmingRemoval = false
+    @State private var removalError: String?
 
     var body: some View {
-        if let group = layout.customizeDetail(for: providerID) {
+        if let provider = layout.provider(id: providerID) {
             VStack(alignment: .leading, spacing: PanelMetrics.sectionSpacing) {
-                VStack(spacing: 0) {
-                    ForEach(group.metrics, id: \.id) { metric in
-                        metricRow(metric)
+                if let host = provider.hubHost {
+                    metricsCard
+                    infoRow(icon: CLIProxyHub.markID, "Managed by \(host)")
+                } else {
+                    if let problem = dataStore.problem(for: providerID) {
+                        ProblemCard(message: problem)
+                        if container.accounts.account(cardID: providerID)?.authMethod == .oauth {
+                            signInAgainRow
+                        }
+                    }
+                    metricsCard
+                    if let domain = provider.domain {
+                        infoRow(icon: provider.icon, "Signed in at \(domain)")
+                    }
+                    VStack(spacing: 0) {
+                        if let field = container.accounts.account(cardID: providerID).flatMap(Self.replacedField) {
+                            ReplaceKeyRow(field: field) { try await container.replaceKey($0, for: providerID) }
+                        }
+                        removeAccountRow(provider)
+                    }
+                    .cardSurface()
+                    if let removalError {
+                        ErrorText(removalError)
                     }
                 }
-                .cardSurface()
-                if case .apiKey = group.provider.kind.authMethod {
-                    ReplaceKeyRow(providerID: providerID)
-                }
-                removeAccountRow(group.provider)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
@@ -32,52 +49,32 @@ struct AccountDetailView: View {
         }
     }
 
-    private func removeAccountRow(_ provider: Provider) -> some View {
-        Button(role: .destructive) {
-            isConfirmingRemoval = true
-        } label: {
-            Text("Remove Account…")
-                .foregroundStyle(Color(nsColor: .systemRed))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, PanelMetrics.controlRowPadding)
-                .contentShape(Rectangle())
+    @ViewBuilder
+    private var metricsCard: some View {
+        let metrics = layout.orderedSupportedMetrics(for: providerID)
+        if !metrics.isEmpty {
+            VStack(spacing: 0) {
+                ForEach(metrics, id: \.id) { metric in
+                    metricRow(metric)
+                }
+            }
+            .cardSurface()
         }
-        .buttonStyle(.plain)
-        .cardSurface()
-        .confirmationDialog(
-            "Remove \(provider.fullName)?",
-            isPresented: $isConfirmingRemoval,
-            titleVisibility: .visible
-        ) {
-            Button("Remove Account", role: .destructive) { removeAccount() }
-        } message: {
-            Text("Its sign-in is deleted from this Mac. You can add the account again at any time.")
-        }
-    }
-
-    private func removeAccount() {
-        guard let account = container.accounts.account(cardID: providerID) else { return }
-        withAnimation(Motion.spring) { popover.customizeProviderID = nil }
-        container.accounts.remove(account.id)
     }
 
     private func metricRow(_ metric: WidgetDescriptor) -> some View {
-        CustomizeMetricRow(
+        AccountMetricRow(
             title: metric.title,
-            grip: { ReorderGrip().highPriorityGesture(metricDragGesture(for: metric)) },
-            trailing: {
-                StarButton(metric: metric)
-                Toggle("", isOn: Binding(
-                    get: { layout.isMetricEnabled(metric.id) },
-                    set: { layout.setMetricEnabled(metric.id, $0) }
-                ))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
-            }
+            isShown: Binding(
+                get: { layout.isMetricShown(metric.id) },
+                set: { layout.setMetric(metric.id, shown: $0) }
+            ),
+            isPinned: Binding(
+                get: { layout.isMetricPinned(metric.id) },
+                set: { layout.setMetric(metric.id, pinned: $0) }
+            ),
+            grip: { ReorderGrip().highPriorityGesture(metricDragGesture(for: metric)) }
         )
-        .contentShape(Rectangle())
         .opacity(activeMetricID == metric.id ? 0 : 1)
         .reorderFrame(id: metric.id, in: .named(reorderSpaceName))
     }
@@ -93,11 +90,12 @@ struct AccountDetailView: View {
                 ReorderLift.make(
                     id: metric.id,
                     preview: AnyView(
-                        CustomizeMetricRow(title: metric.title, grip: { ReorderGrip() }) {
-                            CustomizeStarPlaceholder()
-                            CustomizeSwitchPlaceholder()
-                        }
-                        .liftedRowSurface()
+                        AccountMetricRow(
+                            title: metric.title,
+                            isShown: .constant(layout.isMetricShown(metric.id)),
+                            isPinned: .constant(layout.isMetricPinned(metric.id))
+                        ) { ReorderGrip() }
+                            .liftedRowSurface()
                     ),
                     value: value,
                     frames: frameStore.frames
@@ -107,11 +105,135 @@ struct AccountDetailView: View {
             reorder: { layout.reorderMetric(dragged: metric.id, target: $0, in: providerID) }
         )
     }
+
+    private static func replacedField(_ account: Account) -> String? {
+        switch account.authMethod {
+        case .apiKey: "API Key"
+        case .organizationToken: "Token"
+        case .oauth: nil
+        }
+    }
+
+    /// Where the account lives: a hub's login is added, signed in, and removed on the hub, so its page
+    /// offers none of that here, and a Copilot enterprise account names the GHE.com domain it signs in at.
+    private func infoRow(icon: String, _ text: String) -> some View {
+        HStack(spacing: 8) {
+            ProviderIcon(id: icon, side: 16, inset: 0)
+            Text(text)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, PanelMetrics.controlRowPadding)
+        .cardSurface()
+    }
+
+    private var signInAgainRow: some View {
+        Button {
+            popover.signingInAgainProviderID = providerID
+            popover.isAddingAccount = true
+        } label: {
+            Text("Sign In Again…")
+                .foregroundStyle(.tint)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, PanelMetrics.controlRowPadding)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .cardSurface()
+    }
+
+    private func removeAccountRow(_ provider: Provider) -> some View {
+        Button(role: .destructive) {
+            isConfirmingRemoval = true
+        } label: {
+            Text("Remove Account…")
+                .foregroundStyle(Color(nsColor: .systemRed))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, PanelMetrics.controlRowPadding)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .confirmationDialog(
+            "Remove \(provider.fullName)?",
+            isPresented: $isConfirmingRemoval,
+            titleVisibility: .visible
+        ) {
+            Button("Remove Account", role: .destructive) { removeAccount() }
+        } message: {
+            Text("Its sign-in is deleted from this Mac. You can add the account again at any time.")
+        }
+    }
+
+    private func removeAccount() {
+        guard let account = container.accounts.account(cardID: providerID) else { return }
+        container.accounts.remove(account.id)
+        if container.accounts.account(cardID: providerID) != nil {
+            removalError = container.accounts.lastError ?? "The account could not be removed."
+        } else {
+            withAnimation(Motion.navigation) { popover.customizeProviderID = nil }
+        }
+    }
 }
 
-private struct ReplaceKeyRow: View {
-    let providerID: String
-    @Environment(AppContainer.self) private var container
+/// Why an account or a hub needs the user, at the top of its page.
+struct ProblemCard: View {
+    let message: String
+
+    var body: some View {
+        Label {
+            Text(message)
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Theme.notice)
+        }
+        .font(.system(size: 13))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .cardSurface()
+    }
+}
+
+struct AccountMetricRow<Grip: View>: View {
+    let title: String
+    @Binding var isShown: Bool
+    @Binding var isPinned: Bool
+    @ViewBuilder var grip: Grip
+
+    var body: some View {
+        HStack(spacing: 10) {
+            grip
+            Text(title)
+            Spacer(minLength: 8)
+            Button { isPinned.toggle() } label: {
+                Image(systemName: isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(isPinned ? .secondary : .tertiary)
+                    .frame(width: 16, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!isShown)
+            .accessibilityLabel(isPinned ? "Unpin \(title)" : "Pin \(title)")
+            Toggle(title, isOn: $isShown)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, PanelMetrics.controlRowPadding)
+    }
+}
+
+/// Replaces a key in place: the new key is kept only once `commit` accepts it.
+struct ReplaceKeyRow: View {
+    let field: String
+    let commit: @MainActor (String) async throws -> Void
     @State private var isEditing = false
     @State private var key = ""
     @State private var isSaving = false
@@ -119,17 +241,14 @@ private struct ReplaceKeyRow: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        Group {
-            if isEditing { editor } else { replaceButton }
-        }
-        .cardSurface()
+        if isEditing { editor } else { replaceButton }
     }
 
     private var replaceButton: some View {
         Button {
             isEditing = true
         } label: {
-            Text("Replace API Key…")
+            Text("Replace \(field)…")
                 .foregroundStyle(.tint)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12)
@@ -141,7 +260,7 @@ private struct ReplaceKeyRow: View {
 
     private var editor: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SecureField("API Key", text: $key, prompt: Text("New API Key"))
+            SecureField(field, text: $key, prompt: Text("New \(field)"))
                 .textFieldStyle(.roundedBorder)
                 .focused($isFocused)
                 .onSubmit(save)
@@ -176,7 +295,7 @@ private struct ReplaceKeyRow: View {
         errorMessage = nil
         Task {
             do {
-                try await container.replaceKey(key, for: providerID)
+                try await commit(key)
                 close()
             } catch {
                 errorMessage = error.localizedDescription
@@ -189,34 +308,5 @@ private struct ReplaceKeyRow: View {
         isEditing = false
         key = ""
         errorMessage = nil
-    }
-}
-
-private struct StarButton: View {
-    let metric: WidgetDescriptor
-    @Environment(LayoutStore.self) private var layout
-    @Environment(PopoverState.self) private var popover
-    @State private var shakeTrigger = 0
-
-    var body: some View {
-        let pinned = layout.isPinned(metric.id)
-        Button {
-            if layout.canPin(metric.id) {
-                layout.togglePin(metric.id)
-                popover.accountsNotice.present(CustomizationNoticeContent(message: pinned ? "Removed from menu bar" : "Starred for menu bar", tone: .positive))
-            } else {
-                shakeTrigger += 1
-                popover.accountsNotice.present(CustomizationNoticeContent(message: layout.pinDenialReason(metric.id) ?? "Up to 2 stars per provider", tone: .notice))
-            }
-        } label: {
-            Image(systemName: pinned ? "star.fill" : "star")
-                .font(.system(size: 11, weight: .semibold))
-                .frame(width: 18, height: 18)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(pinned ? Color.accentColor : Color.secondary)
-        .denyShake(trigger: shakeTrigger)
-        .animation(Motion.spring, value: pinned)
     }
 }

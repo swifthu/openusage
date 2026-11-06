@@ -25,7 +25,7 @@ struct HTTPResponse: Sendable {
         guard let value = header("Retry-After")?.trimmingCharacters(in: .whitespaces) else { return nil }
         let seconds = TimeInterval(value) ?? Self.httpDateFormatter.date(from: value).map { $0.timeIntervalSince(now) }
         guard let seconds, seconds.isFinite, seconds > 0 else { return nil }
-        return seconds
+        return min(seconds, RefreshSetting.failureBackoffCap)
     }
 
     private static let httpDateFormatter: DateFormatter = {
@@ -42,15 +42,21 @@ protocol HTTPClient: Sendable {
 }
 
 struct URLSessionHTTPClient: HTTPClient {
-    private static let session = URLSession(configuration: .default)
+    private static let session = URLSession(configuration: sessionConfiguration(proxy: ProxyConfig.load()))
+
+    static func sessionConfiguration(proxy: ProxyConfig?) -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.proxyConfigurations = proxy.map { [$0.proxyConfiguration] } ?? []
+        return configuration
+    }
 
     func send(_ request: HTTPRequest) async throws -> HTTPResponse {
         var urlRequest = URLRequest(url: request.url, timeoutInterval: request.timeout)
         urlRequest.httpMethod = request.method
         urlRequest.httpBody = request.body
-        for (key, value) in request.headers {
-            urlRequest.setValue(value, forHTTPHeaderField: key)
-        }
+        urlRequest.allHTTPHeaderFields = request.headers
 
         let start = ContinuousClock.now
         let (data, response) = try await Self.session.data(for: urlRequest)

@@ -14,14 +14,14 @@ struct AccountListRow<Grip: View>: View {
                 Text(provider.displayName)
                     .foregroundStyle(.primary)
                     .layoutPriority(1)
-                if let accountLabel = provider.accountLabel {
+                if let accountLabel = provider.labelBesideName {
                     Text(accountLabel)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
             }
             .lineLimit(1)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
             .contentShape(Rectangle())
             .onTapGesture { onOpen() }
 
@@ -37,5 +37,15 @@ struct AccountListRow<Grip: View>: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, PanelMetrics.controlRowPadding)
+    }
+}
+
+struct ReorderGrip: View {
+    var body: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.tertiary)
+            .frame(width: 16, height: 22)
+            .contentShape(Rectangle())
     }
 }

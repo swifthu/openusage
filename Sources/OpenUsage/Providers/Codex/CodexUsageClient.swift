@@ -14,38 +14,11 @@ extension CodexLogin {
             body: Data(body.utf8),
             timeout: 15
         ))
-
-        if response.statusCode == 400 || response.statusCode == 401 {
-            let errorBody = ProviderParse.jsonObject(response.body)
-            let code = errorBody?["error"].flatMap { errorValue -> String? in
-                if let error = errorValue as? [String: Any] {
-                    return error["code"] as? String ?? error["error"] as? String
-                }
-                return errorValue as? String
-            } ?? errorBody?["code"] as? String
-
-            switch code {
-            case "refresh_token_expired", "refresh_token_reused", "refresh_token_invalidated":
-                throw ProviderError.signInExpired(.codex)
-            default:
-                throw ProviderError.requestFailed(response.statusCode)
-            }
-        }
-
-        guard (200..<300).contains(response.statusCode) else {
-            throw ProviderError.failed(response)
-        }
-        guard let body = ProviderParse.jsonObject(response.body),
-              let accessToken = body["access_token"] as? String,
-              !accessToken.isEmpty
-        else {
-            throw ProviderError.signInExpired(.codex)
-        }
-
+        let token = try OAuthTokenResponse(renewal: response, kind: .codex)
         return OAuthGrant(
-            accessToken: accessToken,
-            refreshToken: body["refresh_token"] as? String,
-            expiresAt: ProviderParse.jwtExpiry(accessToken)
+            accessToken: token.accessToken,
+            refreshToken: token.refreshToken,
+            expiresAt: ProviderParse.jwtExpiry(token.accessToken)
         )
     }
 }
@@ -54,28 +27,25 @@ struct CodexUsageClient: Sendable {
     static let usageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
     static let resetCreditsURL = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
     static let consumeResetCreditURL = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume")!
+    static let reportsURL = URL(string: "https://chatgpt.com/backend-api/wham/")!
 
     var http: any HTTPClient
 
-    init(http: any HTTPClient = URLSessionHTTPClient()) {
-        self.http = http
-    }
-
     func fetchUsage(accessToken: String, accountID: String?) async throws -> HTTPResponse {
-        var headers = [
-            "Authorization": "Bearer \(accessToken)",
-            "Accept": "application/json",
-            "User-Agent": "OpenUsage"
-        ]
-        if let accountID, !accountID.isEmpty {
-            headers["ChatGPT-Account-Id"] = accountID
-        }
-
-        return try await http.send(HTTPRequest(
+        try await http.send(HTTPRequest(
             method: "GET",
             url: Self.usageURL,
-            headers: headers,
+            headers: Self.usageHeaders(accessToken: accessToken, accountID: accountID),
             timeout: 10
+        ))
+    }
+
+    /// One of the daily usage reports the Codex client's Analytics view reads, at `path` under `wham/`.
+    func fetchReport(_ path: String, query: [URLQueryItem], accessToken: String, accountID: String?) async throws -> HTTPResponse {
+        var url = Self.reportsURL.appending(path: path)
+        if !query.isEmpty { url.append(queryItems: query) }
+        return try await http.send(HTTPRequest(
+            method: "GET", url: url, headers: Self.usageHeaders(accessToken: accessToken, accountID: accountID), timeout: 15
         ))
     }
 
@@ -110,12 +80,14 @@ struct CodexUsageClient: Sendable {
     }
 
     private static func resetCreditHeaders(accessToken: String, accountID: String?) -> [String: String] {
+        usageHeaders(accessToken: accessToken, accountID: accountID).merging(["OpenAI-Beta": "codex-1", "originator": "Codex Desktop"]) { $1 }
+    }
+
+    private static func usageHeaders(accessToken: String, accountID: String?) -> [String: String] {
         var headers = [
             "Authorization": "Bearer \(accessToken)",
             "Accept": "application/json",
-            "User-Agent": "OpenUsage",
-            "OpenAI-Beta": "codex-1",
-            "originator": "Codex Desktop"
+            "User-Agent": "OpenUsage"
         ]
         if let accountID, !accountID.isEmpty {
             headers["ChatGPT-Account-Id"] = accountID

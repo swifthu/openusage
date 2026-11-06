@@ -22,17 +22,20 @@ final class MenuBarStripSizeTests: XCTestCase {
     }
 
     func testTheAppIconIsDrawnLargerAtAScaleAboveOne() {
-        let small = MenuBarStripRenderer.appIcon(for: content, scale: 0.7)
-        let large = MenuBarStripRenderer.appIcon(for: content, scale: 1.3)
+        let small = MenuBarStripRenderer.appIcon(scale: 0.7)
+        let large = MenuBarStripRenderer.appIcon(scale: 1.3)
 
         XCTAssertGreaterThan(large.size.height, small.size.height)
         XCTAssertGreaterThan(large.size.width, small.size.width)
     }
 
     private var content: MenuBarContent {
-        MenuBarContent(groups: [MenuBarContent.Group(
+        MenuBarContent(items: [MenuBarContent.Item(
+            id: "minimax.session",
             provider: Provider(id: "minimax", kind: .minimax),
-            metrics: [MenuBarContent.Metric(id: "minimax.session", label: "Session", value: "89%")]
+            label: "Session",
+            shortLabel: "Session",
+            value: "89%"
         )])
     }
 }

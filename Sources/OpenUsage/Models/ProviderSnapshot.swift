@@ -5,6 +5,11 @@ struct ProviderSnapshot: Hashable, Sendable, Codable {
     let displayName: String
     var plan: String?
     var lines: [MetricLine]
+    /// Range details read with these lines, keyed by descriptor key. Older snapshots carry only lines.
+    var usageBreakdowns: [String: UsageBreakdown]?
+    /// Row titles this reading renames, keyed by line label. Older snapshots carry none.
+    var lineTitles: [String: String]?
+    var notice: String?
     var refreshedAt: Date
 
     init(
@@ -12,12 +17,14 @@ struct ProviderSnapshot: Hashable, Sendable, Codable {
         displayName: String,
         plan: String? = nil,
         lines: [MetricLine],
+        notice: String? = nil,
         refreshedAt: Date = Date()
     ) {
         self.providerID = providerID
         self.displayName = displayName
         self.plan = plan
         self.lines = lines
+        self.notice = notice
         self.refreshedAt = refreshedAt
     }
 
@@ -25,8 +32,13 @@ struct ProviderSnapshot: Hashable, Sendable, Codable {
         lines.first { $0.label == label }
     }
 
-    init(provider: Provider, plan: String?, lines: [MetricLine], refreshedAt: Date = Date()) {
-        self.init(providerID: provider.id, displayName: provider.displayName, plan: plan, lines: lines, refreshedAt: refreshedAt)
+    var staleAt: Date { refreshedAt.addingTimeInterval(RefreshSetting.stalenessThreshold) }
+
+    func isStale(at date: Date) -> Bool { date >= staleAt }
+
+    init(provider: Provider, plan: String?, lines: [MetricLine], notice: String? = nil, refreshedAt: Date = Date()) {
+        self.init(providerID: provider.id, displayName: provider.displayName, plan: plan, lines: lines, notice: notice,
+                  refreshedAt: refreshedAt)
     }
 }
 
@@ -45,7 +57,7 @@ extension RefreshFailure {
     init(error: Error) {
         let kind: Kind = switch error {
         case ProviderError.rateLimited(let retryAfter): .rateLimited(retryAfter: retryAfter)
-        case is URLError, ProviderError.connectionFailed: .unreachable
+        case is URLError, ProviderError.connectionFailed, ProviderError.unreachable: .unreachable
         default: .refused
         }
         self.init(message: error.localizedDescription, kind: kind)

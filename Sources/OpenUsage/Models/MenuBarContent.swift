@@ -1,69 +1,58 @@
 import Foundation
 
 struct MenuBarContent: Equatable {
-    struct Metric: Equatable {
+    struct Item: Equatable, Identifiable {
         let id: String
+        let provider: Provider
         let label: String
+        let shortLabel: String
         let value: String
-        /// How much of the metric's window is still to run, for a reset countdown the strip draws as
-        /// a draining bar. Nil for every other metric.
+        /// How much of the limit's window is still to run, 1 (just started) to 0 (about to reset). Set
+        /// only for a limit that counts down to a reset: the menu bar draws it as a draining bar.
         var progressFraction: Double? = nil
         /// How urgent that countdown is, which is the bar's color. Nil with no fraction.
         var progressLevel: WidgetData.ProgressLevel? = nil
     }
 
-    struct Group: Equatable {
-        let provider: Provider
-        let metrics: [Metric]
-        var badge: String? = nil
-    }
+    let items: [Item]
+    var overflow = 0
+    var updateAvailable = false
 
-    let groups: [Group]
-    var isStale = false
-
-    var isEmpty: Bool { groups.isEmpty }
+    var isEmpty: Bool { items.isEmpty }
 
     var accessibilityText: String {
-        let summary = groups.map { group in
-            let metrics = group.metrics.map { "\($0.label) \($0.value)" }.joined(separator: ", ")
-            return "\(group.provider.fullName) \(metrics)"
-        }
-        .joined(separator: "; ")
-        return isStale ? summary + ", waiting for a provider" : summary
+        let shown = items.map { "\($0.provider.fullName) \($0.label) \($0.value)" }
+        let more = overflow > 0 ? ["\(overflow) more"] : []
+        let update = updateAvailable ? ["Update available"] : []
+        return (shown + more + update).joined(separator: "; ")
     }
 }
 
 @MainActor
 enum MenuBarContentBuilder {
-    static func build(groups: [ProviderMetrics], isStale: Bool = false, data: (WidgetDescriptor) -> WidgetData) -> MenuBarContent {
-        let resolvedGroups = groups.compactMap { group -> MenuBarContent.Group? in
-            let metrics = group.metrics.compactMap { descriptor -> MenuBarContent.Metric? in
-                let data = data(descriptor)
-                guard data.hasData else { return nil }
-                return MenuBarContent.Metric(
-                    id: descriptor.id,
-                    label: trayLabel(descriptor.metricLabel),
-                    value: data.menuBarValue,
-                    progressFraction: data.progressFraction,
-                    progressLevel: data.progressLevel
-                )
-            }
-            guard !metrics.isEmpty else { return nil }
-            return MenuBarContent.Group(provider: group.provider, metrics: metrics)
+    private static let genericWords: Set<String> = ["models", "bot", "usage"]
+
+    static func build(board: PriorityBoard, limit: MenuBarLimit) -> MenuBarContent {
+        guard limit != .iconOnly else { return MenuBarContent(items: []) }
+        let shown = board.attention.prefix(limit.count).map { item in
+            let label = item.data.title
+            return MenuBarContent.Item(
+                id: item.id,
+                provider: item.provider,
+                label: label,
+                shortLabel: shortLabel(label),
+                value: item.data.menuBarValue,
+                progressFraction: item.data.progressFraction,
+                progressLevel: item.data.progressLevel
+            )
         }
-        return MenuBarContent(groups: badged(resolvedGroups), isStale: isStale)
+        return MenuBarContent(items: shown, overflow: board.attention.count - shown.count)
     }
 
-    private static func badged(_ groups: [MenuBarContent.Group]) -> [MenuBarContent.Group] {
-        let families = Dictionary(grouping: groups.indices) { groups[$0].provider.kind }
-        var result = groups
-        for index in families.values.filter({ $0.count > 1 }).joined() {
-            result[index].badge = AccountInitials.tag(for: groups[index].provider.accountName)
-        }
-        return result
-    }
-
-    private static func trayLabel(_ metricLabel: String) -> String {
-        metricLabel.lowercased() == "today" ? "T" : metricLabel
+    static func shortLabel(_ label: String) -> String {
+        var words = label.split(separator: " ")
+        guard words.count > 1, let last = words.last, genericWords.contains(last.lowercased()) else { return label }
+        words.removeLast()
+        return words.joined(separator: " ")
     }
 }

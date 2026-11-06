@@ -19,6 +19,9 @@ struct OpenUsageCLI {
                 return
             }
 
+            if arguments.force {
+                FileHandle.standardError.write(Data("openusage: --force does nothing; the command prints what the app last fetched\n".utf8))
+            }
             guard let defaults = UserDefaults(suiteName: app.bundleIdentifier) else {
                 fail("Could not open the OpenUsage settings domain.", code: 4)
             }
@@ -45,7 +48,7 @@ struct OpenUsageCLI {
     private static let help = """
     Usage: openusage [provider]
 
-    Print the usage OpenUsage last fetched, as openusage.limits.v1 JSON, and exit. The app refreshes
+    Print the usage OpenUsage last fetched, as openusage.limits.v2 JSON, and exit. The app refreshes
     on its own schedule; this command never refreshes or signs in.
 
     provider      An account id (codex@1a2b3c4d) or a provider kind (claude, codex) for every

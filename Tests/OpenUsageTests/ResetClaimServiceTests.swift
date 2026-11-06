@@ -6,7 +6,6 @@ final class ResetClaimServiceTests: XCTestCase {
     @MainActor
     private final class Recorder {
         var refreshes = 0
-        var pauses: [Duration] = []
     }
 
     private func makeService(
@@ -23,13 +22,11 @@ final class ResetClaimServiceTests: XCTestCase {
             refreshAccount: {
                 defer { recorder.refreshes += 1; refreshed.fulfill() }
                 return refreshOutcomes[min(recorder.refreshes, refreshOutcomes.count - 1)]
-            },
-            refreshDelay: .seconds(5),
-            pause: { recorder.pauses.append($0) }
+            }
         )
     }
 
-    func testClaimRefreshesTheAccountAfterTheDelayUnlessItFailed() async {
+    func testClaimRefreshesTheAccountUnlessItFailed() async {
         let outcomes: [ResetClaimOutcome] = [
             .success, .nothingToReset, .noCredit, .unconfirmed, .unavailableNow(until: nil), .failed(.connection)
         ]
@@ -45,7 +42,6 @@ final class ResetClaimServiceTests: XCTestCase {
             XCTAssertEqual(result, outcome)
             await fulfillment(of: [refreshed], timeout: failed ? 0.1 : 5)
             XCTAssertEqual(recorder.refreshes, failed ? 0 : 1, "\(outcome)")
-            XCTAssertEqual(recorder.pauses, failed ? [] : [.seconds(5)], "\(outcome)")
         }
     }
 
@@ -62,7 +58,7 @@ final class ResetClaimServiceTests: XCTestCase {
         }
     }
 
-    func testOnlyClaudeAndCodexAccountsGetAClaimService() {
+    func testOnlyClaudeCodexAndZAIAccountsGetAClaimService() {
         for kind in ProviderKind.allCases {
             let runtime = AccountProviderRuntime(account: Account(kind: kind, label: "Work"), vault: InMemoryCredentialVault())
             let service = runtime.resetClaimService { .refreshed }
@@ -73,7 +69,10 @@ final class ResetClaimServiceTests: XCTestCase {
             case .codex:
                 XCTAssertEqual(service?.accountID, runtime.account.cardID)
                 XCTAssertEqual(service?.isClaimable, true)
-            case .cursor, .antigravity, .copilot, .grok, .ollama, .opencodeGo, .openrouter, .zai, .minimax:
+            case .zai:
+                XCTAssertEqual(service?.accountID, runtime.account.cardID)
+                XCTAssertEqual(service?.windowResets, [], "nothing to claim before the first reset-list read")
+            case .cursor, .antigravity, .copilot, .devin, .grok, .muse, .ollama, .opencodeGo, .openrouter, .minimax:
                 XCTAssertNil(service, kind.rawValue)
             }
         }
@@ -116,7 +115,7 @@ final class ResetClaimServiceTests: XCTestCase {
             (.unconfirmed, "Your reset may still be going through. Check again in a minute."),
             (.unavailableNow(until: nil), "Resets can't be used right now."),
             (.unavailableNow(until: now.addingTimeInterval(90 * 60)), "Resets can't be used right now. Try again in 1h 30m."),
-            (.failed(.signInExpired), "Your sign-in expired. Remove the account and add it again."),
+            (.failed(.signInExpired), "Your sign-in expired. Sign in again from the account's page."),
             (.failed(.notPermitted), "This sign-in can't use resets. Use the reset in Claude Code instead."),
             (.failed(.connection), "Couldn't connect. Check your internet connection and try again."),
             (.failed(.refused), "Couldn't reset usage. Please try again.")
@@ -126,9 +125,10 @@ final class ResetClaimServiceTests: XCTestCase {
         }
     }
 
-    func testCodexClaimRefreshesTheDashboardPastItsCache() async throws {
+    func testCodexClaimRereadsTheUsageAndTheResetCountAtOnce() async throws {
         let expiry = Date(timeIntervalSince1970: 1_800_000_000)
-        let runtime = try makeCodexRuntime(http: Self.codexHTTP(expiry: expiry, claimed: TestSwitch(false)))
+        let http = Self.codexHTTP(expiry: expiry, claimed: TestSwitch(false))
+        let runtime = try makeCodexRuntime(http: http)
         let defaults = isolatedDefaults()
         let store = WidgetDataStore.forTesting([runtime], defaults: defaults)
         let descriptor = try XCTUnwrap(runtime.widgetDescriptors.first { $0.sample.showsResetExpiries })
@@ -137,15 +137,19 @@ final class ResetClaimServiceTests: XCTestCase {
         XCTAssertEqual(store.data(for: descriptor).expiriesAt, [expiry])
 
         let refreshed = expectation(description: "the post-claim refresh")
-        var service = try XCTUnwrap(runtime.resetClaimService {
+        let service = try XCTUnwrap(runtime.resetClaimService {
             defer { refreshed.fulfill() }
             return await store.refresh(providerID: runtime.provider.id, force: true)
         })
-        service.pause = { _ in }
+        let sentBefore = http.requests.count
         let outcome = await service.claim(creditExpiringAt: expiry, redeemRequestID: "redeem-1")
-        await fulfillment(of: [refreshed], timeout: 5)
+        await fulfillment(of: [refreshed], timeout: 1)
 
         XCTAssertEqual(outcome, .success)
+        XCTAssertEqual(
+            http.requests.dropFirst(sentBefore).map(\.url),
+            [CodexUsageClient.resetCreditsURL, CodexUsageClient.consumeResetCreditURL, CodexUsageClient.usageURL, CodexUsageClient.resetCreditsURL]
+        )
         XCTAssertEqual(store.data(for: descriptor).unboundedDetail, "0 available")
         XCTAssertEqual(store.data(for: descriptor).expiriesAt, [])
     }
@@ -156,15 +160,12 @@ final class ResetClaimServiceTests: XCTestCase {
         let recorder = Recorder()
         let gate = Gate()
         let refreshed = expectation(description: "the post-claim refresh")
-        var service = try XCTUnwrap(runtime.resetClaimService {
+        let service = try XCTUnwrap(runtime.resetClaimService {
+            await gate.wait()
             recorder.refreshes += 1
             refreshed.fulfill()
             return .refreshed
         })
-        service.pause = { delay in
-            recorder.pauses.append(delay)
-            await gate.wait()
-        }
 
         let outcome = await service.claim(creditExpiringAt: expiry, redeemRequestID: "redeem-1")
 
@@ -172,7 +173,6 @@ final class ResetClaimServiceTests: XCTestCase {
         XCTAssertEqual(recorder.refreshes, 0, "the claim's result shows before the refresh drops the spent row")
         gate.open()
         await fulfillment(of: [refreshed], timeout: 5)
-        XCTAssertEqual(recorder.pauses, [.seconds(5)])
         XCTAssertEqual(recorder.refreshes, 1)
     }
 

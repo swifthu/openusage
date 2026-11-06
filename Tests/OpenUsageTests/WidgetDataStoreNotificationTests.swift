@@ -115,17 +115,17 @@ final class WidgetDataStoreNotificationTests: XCTestCase {
             )
         }
         let runtimes = zip(providers, descriptors).map {
-            StubRuntime(provider: $0, descriptors: [$1], snapshot: snapshot($0, used: 80))
+            StubRuntime(provider: $0, descriptors: [$1], snapshot: snapshot($0, used: 40))
         }
         let defaults = isolatedDefaults()
         let store = WidgetDataStore.forTesting(runtimes, defaults: defaults)
         notify = notifier(store, descriptors: descriptors, providers: providers, settings: settings, recorder: recorder)
         await store.refreshAll(force: true)
         await notify(base)
-        XCTAssertTrue(recorder.posts.isEmpty, "healthy should not fire")
+        XCTAssertTrue(recorder.posts.isEmpty, "more than half left should not fire")
 
         for (runtime, provider) in zip(runtimes, providers) {
-            let next = snapshot(provider, used: 87)
+            let next = snapshot(provider, used: 75)
             runtime.answer = { _ in .success(next) }
         }
         await store.refreshAll(force: true)
@@ -134,18 +134,19 @@ final class WidgetDataStoreNotificationTests: XCTestCase {
         XCTAssertEqual(recorder.posts.map(\.2), ["Claude · Personal Session", "Claude · Work Session"])
     }
 
-    func testHealthyToCloseFiresOnceThroughTheStore() async {
+    func testUnderThirtyPercentFiresOnceThroughTheStore() async {
         let settings = isolatedDefaults()
         allOn(settings)
         let recorder = Recorder()
-        let (store, runtime, _) = makeStore(used: 80, settings: settings, recorder: recorder)
+        let (store, runtime, _) = makeStore(used: 40, settings: settings, recorder: recorder)
         await evaluate(store, runtime: runtime)
-        XCTAssertTrue(recorder.posts.isEmpty, "healthy should not fire")
+        XCTAssertTrue(recorder.posts.isEmpty, "more than half left should not fire")
 
-        await evaluate(store, runtime: runtime, used: 87)
+        await evaluate(store, runtime: runtime, used: 75)
         XCTAssertEqual(recorder.posts.count, 1)
         XCTAssertEqual(recorder.posts.first?.0, "test.healthyToClose")
-        XCTAssertEqual(recorder.posts.first?.1, "Cutting It Close")
+        XCTAssertEqual(recorder.posts.first?.1, "Warning")
+        XCTAssertEqual(recorder.posts.first?.3, "30% or less left for this window.")
 
         await notify(base)
         XCTAssertEqual(recorder.posts.count, 1)
@@ -161,7 +162,7 @@ final class WidgetDataStoreNotificationTests: XCTestCase {
 
         await evaluate(store, runtime: runtime, used: 95)
         XCTAssertTrue(recorder.posts.contains { $0.0 == "test.closeToRunningOut" })
-        XCTAssertTrue(recorder.posts.contains { $0.3 == "Projected to finish before the limit resets." })
+        XCTAssertTrue(recorder.posts.contains { $0.3 == "May run out before the limit resets." })
         XCTAssertTrue(recorder.posts.contains { $0.2 == "Cursor Session" })
     }
 
@@ -182,8 +183,8 @@ final class WidgetDataStoreNotificationTests: XCTestCase {
 
     func testAllTogglesOffSuppressesAllPosts() async {
         let settings = isolatedDefaults()
-        settings.set(false, forKey: PaceMilestone.underTenPercent.settingKey)
-        settings.set(false, forKey: PaceMilestone.healthyToClose.settingKey)
+        settings.set(false, forKey: PaceMilestone.critical.settingKey)
+        settings.set(false, forKey: PaceMilestone.warning.settingKey)
         settings.set(false, forKey: PaceMilestone.closeToRunningOut.settingKey)
         let recorder = Recorder()
         let (store, runtime, _) = makeStore(used: 80, settings: settings, recorder: recorder)
@@ -196,12 +197,12 @@ final class WidgetDataStoreNotificationTests: XCTestCase {
         let settings = isolatedDefaults()
         settings.set(true, forKey: PaceMilestone.closeToRunningOut.settingKey)
         let recorder = Recorder()
-        let (store, runtime, _) = makeStore(used: 80, settings: settings, recorder: recorder)
+        let (store, runtime, _) = makeStore(used: 40, settings: settings, recorder: recorder)
         await evaluate(store, runtime: runtime)
-        await evaluate(store, runtime: runtime, used: 87)
+        await evaluate(store, runtime: runtime, used: 75)
         XCTAssertTrue(recorder.posts.isEmpty)
 
-        settings.set(true, forKey: PaceMilestone.healthyToClose.settingKey)
+        settings.set(true, forKey: PaceMilestone.warning.settingKey)
         await notify(base)
         XCTAssertEqual(recorder.posts.map(\.0), ["test.healthyToClose"])
     }
@@ -209,11 +210,11 @@ final class WidgetDataStoreNotificationTests: XCTestCase {
     func testPerTriggerOffSuppressesThatMilestoneOnly() async {
         let settings = isolatedDefaults()
         allOn(settings)
-        settings.set(false, forKey: PaceMilestone.healthyToClose.settingKey)
+        settings.set(false, forKey: PaceMilestone.warning.settingKey)
         let recorder = Recorder()
-        let (store, runtime, _) = makeStore(used: 80, settings: settings, recorder: recorder)
+        let (store, runtime, _) = makeStore(used: 40, settings: settings, recorder: recorder)
         await evaluate(store, runtime: runtime)
-        await evaluate(store, runtime: runtime, used: 87)
+        await evaluate(store, runtime: runtime, used: 75)
         XCTAssertFalse(recorder.posts.contains { $0.0 == "test.healthyToClose" })
         await evaluate(store, runtime: runtime, used: 95)
         XCTAssertTrue(recorder.posts.contains { $0.0 == "test.closeToRunningOut" })
@@ -229,7 +230,7 @@ final class WidgetDataStoreNotificationTests: XCTestCase {
         await evaluate(store, runtime: runtime, used: 95)
         XCTAssertTrue(
             recorder.posts.contains { $0.0 == "test.underTenPercent" },
-            "Almost Out must fire on <10% remaining even when the meter displays 'used'"
+            "Critical must fire on 10% or less remaining even when the meter displays 'used'"
         )
     }
 
@@ -237,11 +238,11 @@ final class WidgetDataStoreNotificationTests: XCTestCase {
         let settings = isolatedDefaults()
         allOn(settings)
         let recorder = Recorder()
-        let (store, runtime, _) = makeStore(used: 80, settings: settings, recorder: recorder,
+        let (store, runtime, _) = makeStore(used: 40, settings: settings, recorder: recorder,
                                             delivered: { false })
         await evaluate(store, runtime: runtime)
-        await evaluate(store, runtime: runtime, used: 87)
-        await evaluate(store, runtime: runtime)
+        await evaluate(store, runtime: runtime, used: 75)
+        await evaluate(store, runtime: runtime, used: 75)
         XCTAssertEqual(recorder.posts.count, 2, "failed delivery should retry on the next tick")
     }
 }

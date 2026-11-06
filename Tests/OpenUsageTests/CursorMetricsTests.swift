@@ -41,6 +41,13 @@ final class CursorMetricsTests: XCTestCase {
     {"billingCycleStart":"2026-10-01T00:00:00Z","billingCycleEnd":"2026-11-01T00:00:00Z","membershipType":"enterprise",
      "individualUsage":{"onDemand":{"enabled":true,"used":2500,"limit":10000}}}
     """#
+    nonisolated private static let enterprisePoolUsage = #"""
+    {"billingCycleEnd":"1764547200000","billingCycleStart":"1761955200000","enabled":true,
+     "planUsage":{"apiPercentUsed":100,"autoPercentUsed":75,"limit":2000,"totalSpend":1500,"totalPercentUsed":76}}
+    """#
+    nonisolated private static let personalSummary = #"""
+    {"billingCycleStart":"2026-10-01T00:00:00Z","billingCycleEnd":"2026-11-01T00:00:00Z","membershipType":"pro"}
+    """#
 
     nonisolated private static let teamUsage = #"""
     {"billingCycleEnd":"1764547200000","billingCycleStart":"1761955200000","enabled":true,
@@ -56,7 +63,8 @@ final class CursorMetricsTests: XCTestCase {
         usage: String,
         planName: String,
         summary: String? = nil,
-        requests: String? = nil
+        requests: String? = nil,
+        events: String? = nil
     ) async throws -> (plan: String?, data: [String: WidgetData], paths: [String]) {
         let account = Account(kind: .cursor, label: "Cursor")
         let vault = InMemoryCredentialVault()
@@ -71,6 +79,7 @@ final class CursorMetricsTests: XCTestCase {
             case CursorUsageClient.grokBotUsageURL.path: Self.grokBot
             case CursorUsageClient.usageSummaryURL.path: summary
             case CursorUsageClient.restUsageURL.path: requests
+            case CursorUsageClient.usageEventsURL.path: events
             default: nil
             }
             guard let body else { return HTTPResponse(statusCode: 404, headers: [:], body: Data()) }
@@ -93,7 +102,8 @@ final class CursorMetricsTests: XCTestCase {
         let account = Account(kind: .cursor, label: "Cursor")
         let runtime = AccountProviderRuntime(account: account, vault: InMemoryCredentialVault())
         XCTAssertEqual(runtime.widgetDescriptors.map(\.sample.title), [
-            "Total Usage", "Cursor Models", "Other Models", "Extra Usage", "Grok Bot", "Requests", "Credits"
+            "Total Usage", "Cursor Models", "Other Models", "Extra Usage", "Grok Bot", "Requests", "Credits",
+            "Today", "Yesterday", "Last 30 Days"
         ])
     }
 
@@ -101,44 +111,90 @@ final class CursorMetricsTests: XCTestCase {
         let (plan, data, paths) = try await refresh(usage: Self.individualUsage, planName: "Ultra")
 
         XCTAssertEqual(plan, "Ultra")
-        XCTAssertEqual(Set(data.keys), ["Total Usage", "Cursor Models", "Other Models", "Extra Usage", "Grok Bot", "Credits"])
+        XCTAssertEqual(Set(data.keys), ["Total Usage", "Cursor Models", "Other Models", "Extra Usage", "Grok Bot", "Credits",
+                                        "Today", "Yesterday", "Last 30 Days"])
         XCTAssertEqual(data["Total Usage"]?.used, 25)
         XCTAssertEqual(data["Cursor Models"]?.used, 20)
         XCTAssertEqual(data["Other Models"]?.used, 40)
         XCTAssertEqual(data["Extra Usage"]?.kind, .dollars)
         XCTAssertEqual(data["Extra Usage"]?.used, 120)
         XCTAssertEqual(data["Extra Usage"]?.limit, 500)
+        XCTAssertNotNil(data["Extra Usage"]?.resetsAt)
+        XCTAssertEqual(data["Extra Usage"]?.resetsAt, data["Total Usage"]?.resetsAt, "Extra Usage resets with the billing cycle")
         XCTAssertEqual(data["Grok Bot"]?.used, 30)
         XCTAssertEqual(data["Grok Bot"]?.resetsAt, OpenUsageISO8601.date(from: "2026-10-27T00:00:00Z"))
         XCTAssertNil(data["Credits"]?.limit)
         XCTAssertEqual(data["Credits"]?.values.first?.number, 85, "grants $100 - $40 used + $25 prepaid")
-        XCTAssertFalse(paths.contains(CursorUsageClient.usageSummaryURL.path), "a personal seat never asks usage-summary")
+        XCTAssertEqual(paths.filter { $0 == CursorUsageClient.usageSummaryURL.path }.count, 1, "only the hourly membership read")
         XCTAssertFalse(paths.contains(CursorUsageClient.restUsageURL.path))
     }
 
     func testARequestBasedEnterpriseSeatShowsRequestsAndExtraUsageFromTheRestEndpoints() async throws {
-        let (plan, data, _) = try await refresh(
-            usage: Self.enterpriseUsage, planName: "Enterprise",
-            summary: Self.enterpriseSummary, requests: Self.requestUsage
-        )
+        for planName in ["Enterprise", "Pro"] {
+            let (plan, data, _) = try await refresh(
+                usage: Self.enterpriseUsage, planName: planName,
+                summary: Self.enterpriseSummary, requests: Self.requestUsage
+            )
 
-        XCTAssertEqual(plan, "Enterprise")
-        XCTAssertEqual(Set(data.keys), ["Total Usage", "Requests", "Extra Usage", "Grok Bot"])
-        XCTAssertEqual(data["Requests"]?.kind, .count)
-        XCTAssertEqual(data["Requests"]?.used, 120)
-        XCTAssertEqual(data["Requests"]?.limit, 500)
-        XCTAssertEqual(data["Total Usage"]?.used, 120)
-        XCTAssertEqual(data["Extra Usage"]?.used, 25)
-        XCTAssertEqual(data["Extra Usage"]?.limit, 100)
+            XCTAssertEqual(plan, "Enterprise", "GetPlanInfo says \(planName)")
+            XCTAssertEqual(Set(data.keys), ["Total Usage", "Requests", "Extra Usage", "Grok Bot", "Today", "Yesterday", "Last 30 Days"],
+                           planName)
+            XCTAssertEqual(data["Requests"]?.kind, .count)
+            XCTAssertEqual(data["Requests"]?.used, 120)
+            XCTAssertEqual(data["Requests"]?.limit, 500)
+            XCTAssertEqual(data["Total Usage"]?.used, 120)
+            XCTAssertEqual(data["Extra Usage"]?.used, 25, planName)
+            XCTAssertEqual(data["Extra Usage"]?.limit, 100, planName)
+        }
     }
 
-    func testASeatOnTheGenericRequestFallbackShowsItsRequestsAsTotalUsage() async throws {
-        let (plan, data, _) = try await refresh(usage: Self.enterpriseUsage, planName: "Pro", requests: Self.requestUsage)
+    func testAPersonalSeatOnTheGenericRequestFallbackShowsItsRequestsAsTotalUsage() async throws {
+        let (plan, data, _) = try await refresh(
+            usage: Self.enterpriseUsage, planName: "Pro", summary: Self.personalSummary, requests: Self.requestUsage
+        )
 
         XCTAssertEqual(plan, "Pro")
         XCTAssertEqual(data["Requests"]?.used, 120)
         XCTAssertEqual(data["Total Usage"]?.used, 120)
         XCTAssertEqual(data["Total Usage"]?.limit, 500)
+    }
+
+    func testAProReportedEnterpriseSeatShowsEnterpriseAndTakesExtraUsageFromUsageSummary() async throws {
+        let (plan, data, _) = try await refresh(usage: Self.enterprisePoolUsage, planName: "Pro", summary: Self.enterpriseSummary)
+
+        XCTAssertEqual(plan, "Enterprise", "GetPlanInfo still says Pro for this Enterprise seat")
+        XCTAssertEqual(data["Total Usage"]?.used, 76)
+        XCTAssertEqual(data["Cursor Models"]?.used, 75)
+        XCTAssertEqual(data["Other Models"]?.used, 100)
+        XCTAssertEqual(data["Extra Usage"]?.used, 25)
+        XCTAssertEqual(data["Extra Usage"]?.limit, 100)
+    }
+
+    func testATeamMembershipRelabelsAProSeatWithoutChangingItsTotalUsage() async throws {
+        for planUsage in [
+            #"{"limit":2000,"totalSpend":400,"totalPercentUsed":20}"#,
+            #"{"totalPercentUsed":20}"#,
+            #"{"totalPercentUsed":20,"autoPercentUsed":10,"apiPercentUsed":30}"#,
+            #"{"limit":2000,"totalSpend":400,"autoPercentUsed":10,"apiPercentUsed":30}"#
+        ] {
+            let (plan, data, _) = try await refresh(
+                usage: #"{"enabled":true,"planUsage":\#(planUsage)}"#, planName: " Pro ", summary: Self.teamSummary
+            )
+
+            XCTAssertEqual(plan, "Team", planUsage)
+            XCTAssertEqual(data["Total Usage"]?.kind, .percent, planUsage)
+            XCTAssertEqual(data["Total Usage"]?.used, 20, planUsage)
+        }
+    }
+
+    func testOnlyAMissingOrProPlanNameGivesWayToAnOrgMembership() {
+        for plan in ["Ultra", "Business", "Enterprise", "Pro Plus"] {
+            XCTAssertEqual(CursorUsageMapper.resolvedPlanLabel(planInfoName: plan, membershipType: "team"), plan)
+        }
+        for plan: String? in [nil, "", "  ", "Pro", " pro plan "] {
+            XCTAssertEqual(CursorUsageMapper.resolvedPlanLabel(planInfoName: plan, membershipType: "enterprise"), "Enterprise")
+        }
+        XCTAssertEqual(CursorUsageMapper.resolvedPlanLabel(planInfoName: "Ultra", membershipType: "pro"), "Ultra")
     }
 
     func testATeamSeatTakesExtraUsageAndMembershipFromUsageSummary() async throws {
@@ -151,7 +207,7 @@ final class CursorMetricsTests: XCTestCase {
     }
 
     func testTheTwoAccountShapesTogetherFillEveryCursorMetric() async throws {
-        let individual = try await refresh(usage: Self.individualUsage, planName: "Ultra")
+        let individual = try await refresh(usage: Self.individualUsage, planName: "Ultra", events: #"{"totalUsageEventsCount":0}"#)
         let enterprise = try await refresh(
             usage: Self.enterpriseUsage, planName: "Enterprise",
             summary: Self.enterpriseSummary, requests: Self.requestUsage

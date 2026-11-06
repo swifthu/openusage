@@ -2,11 +2,7 @@ import Foundation
 
 enum ClaudeUsageMapper {
     static func mapUsageResponse(_ response: HTTPResponse) throws -> [MetricLine] {
-        try ProviderError.requireSuccess(response, kind: .claude)
-
-        guard let body = ProviderParse.jsonObject(response.body) else {
-            throw ProviderError.invalidResponse
-        }
+        let body = try ProviderError.requireSuccessJSON(response, kind: .claude)
 
         var lines: [MetricLine] = []
         appendUsageWindow(body["five_hour"], label: "Session", periodDurationMs: MetricPeriod.sessionMs, to: &lines)
@@ -18,10 +14,7 @@ enum ClaudeUsageMapper {
     }
 
     static func mapResetGrantStatus(_ response: HTTPResponse) throws -> ClaudeResetGrantStatus? {
-        try ProviderError.requireSuccess(response, kind: .claude)
-        guard let body = ProviderParse.jsonObject(response.body) else {
-            throw ProviderError.invalidResponse
-        }
+        let body = try ProviderError.requireSuccessJSON(response, kind: .claude)
         return ClaudeResetGrantStatus.parse(body["cedar_ember"])
     }
 
@@ -53,28 +46,24 @@ enum ClaudeUsageMapper {
         return outcome(result) ?? .failed(.refused)
     }
 
-    static func formatPlan(subscriptionType: String?, rateLimitTier: String?) -> String? {
-        guard let raw = subscriptionType?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty
-        else {
-            return nil
-        }
+    static func formatLivePlan(profile: ClaudeAccountProfile) -> String? {
+        guard let organization = profile.organization, let type = organization.organizationType else { return nil }
+        let raw = (type.hasPrefix("claude_") ? String(type.dropFirst("claude_".count)) : type)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
         let base = raw.titleCased(separator: { $0 == " " }, lowercasingTail: true)
+        let tier = organization.rateLimitTier ?? ""
+        if base == "Ultra" || (base == "Max" && (tier.contains("ultra") || tier.contains("20x"))) { return "Ultra" }
+        if base == "Max" { return base }
 
-        guard let tier = rateLimitTier,
-              let match = tier.range(of: #"\d+x"#, options: .regularExpression)
-        else {
-            return base
-        }
+        guard let match = tier.range(of: #"\d+x"#, options: .regularExpression) else { return base }
         return "\(base) \(tier[match])"
     }
 
-    static func formatLivePlan(profile: ClaudeAccountProfile) -> String? {
-        guard let organization = profile.organization else { return nil }
-        let subscriptionType = organization.organizationType.map { type in
-            type.hasPrefix("claude_") ? String(type.dropFirst("claude_".count)) : type
-        }
-        return formatPlan(subscriptionType: subscriptionType, rateLimitTier: organization.rateLimitTier)
+    /// An Enterprise organization (`organization_type` `claude_enterprise`) is billed by what it spends, so its
+    /// Extra Usage is the whole monthly bill, not usage beyond a plan.
+    static func lineTitles(plan: String?) -> [String: String] {
+        plan?.hasPrefix("Enterprise") == true ? ["Extra usage spent": "Spend"] : [:]
     }
 
     private static func appendUsageWindow(_ value: Any?, label: String, periodDurationMs: Int, to lines: inout [MetricLine]) {
@@ -106,23 +95,20 @@ enum ClaudeUsageMapper {
     }
 
     private static func appendExtraUsage(_ value: Any?, to lines: inout [MetricLine]) {
-        guard let object = value as? [String: Any],
-              object["is_enabled"] as? Bool == true,
-              let usedCents = ProviderParse.number(object["used_credits"])
-        else {
-            return
-        }
+        guard let object = value as? [String: Any], object["is_enabled"] as? Bool == true else { return }
 
-        let used = ProviderParse.centsToDollars(usedCents)
-        if let limitCents = ProviderParse.number(object["monthly_limit"]), limitCents > 0 {
+        let currency = object["currency"] as? String ?? "USD"
+        let minorUnits = pow(10, ProviderParse.number(object["decimal_places"]) ?? 2)
+        let used = (ProviderParse.number(object["used_credits"]) ?? 0).rounded() / minorUnits
+        if let limitMinor = ProviderParse.number(object["monthly_limit"]), limitMinor > 0 {
             lines.append(.progress(
                 label: "Extra usage spent",
                 used: used,
-                limit: ProviderParse.centsToDollars(limitCents),
-                format: .dollars
+                limit: limitMinor.rounded() / minorUnits,
+                format: .currency(code: currency)
             ))
-        } else if used > 0 {
-            lines.append(.values(label: "Extra usage spent", values: [MetricValue(number: used, kind: .dollars)]))
+        } else {
+            lines.append(.values(label: "Extra usage spent", values: [MetricValue(number: used, kind: .dollars, currencyCode: currency)]))
         }
     }
 

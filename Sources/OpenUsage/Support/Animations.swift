@@ -3,6 +3,8 @@ import SwiftUI
 enum Motion {
     static let spring = Animation.spring(response: 0.42, dampingFraction: 0.80)
     static let modeSwitch = Animation.easeInOut(duration: 0.18)
+    /// AppKit's default animation pace, for screen slides, page pushes, and the segment thumb.
+    static let navigation = Animation.easeInOut(duration: 0.25)
 
     /// The single transaction policy behind Reduce Motion. `disablesAnimations` prevents inner
     /// `.animation` modifiers from restoring motion after this root policy clears an explicit animation.
@@ -31,10 +33,6 @@ extension View {
 
     func animationReduction(_ enabled: Bool) -> some View {
         modifier(AnimationReductionModifier(enabled: enabled))
-    }
-
-    func denyShake(trigger: Int, shakeOnAppear: Bool = false) -> some View {
-        modifier(DenyShakeModifier(trigger: trigger, shakeOnAppear: shakeOnAppear))
     }
 }
 
@@ -73,46 +71,6 @@ struct MotionAwareProgressView: View {
         } else {
             ProgressView()
                 .controlSize(controlSize)
-        }
-    }
-}
-
-private struct DenyShakeEffect: GeometryEffect {
-    var phase: CGFloat
-    var travel: CGFloat = 5
-    var shakes: CGFloat = 3
-
-    var animatableData: CGFloat {
-        get { phase }
-        set { phase = newValue }
-    }
-
-    func effectValue(size: CGSize) -> ProjectionTransform {
-        ProjectionTransform(CGAffineTransform(
-            translationX: travel * sin(phase * .pi * shakes * 2),
-            y: 0
-        ))
-    }
-}
-
-private struct DenyShakeModifier: ViewModifier {
-    let trigger: Int
-    let shakeOnAppear: Bool
-    @State private var phase: CGFloat = 0
-
-    func body(content: Content) -> some View {
-        content
-            .modifier(DenyShakeEffect(phase: phase))
-            .onChange(of: trigger) { shake() }
-            .onAppear {
-                if shakeOnAppear, trigger > 0 { shake() }
-            }
-    }
-
-    private func shake() {
-        phase = 0
-        withAnimation(.linear(duration: 0.4)) {
-            phase = 1
         }
     }
 }

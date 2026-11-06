@@ -1,17 +1,19 @@
 import SwiftUI
 
 struct PopoverTopBar: View {
+    @Environment(AppContainer.self) private var container
     @Environment(LayoutStore.self) private var layout
     @Environment(PopoverState.self) private var popover
     let screen: PopoverScreen
-    let height: CGFloat
-    let horizontalPadding: CGFloat
 
     @ViewBuilder
     var body: some View {
         switch screen {
         case .dashboard:
-            EmptyView()
+            CapsuleSegments(options: DashboardTab.allCases.map { ($0, $0.label) }, selection: Bindable(popover).dashboardTab)
+                .padding(.horizontal, PanelMetrics.margin)
+                .padding(.top, PanelMetrics.margin)
+                .padding(.bottom, DashboardContentView.barGap)
         case .accounts:
             if let providerID = popover.customizeProviderID, let provider = layout.provider(id: providerID) {
                 navigationBar(back: { popover.back() }) {
@@ -19,21 +21,38 @@ struct PopoverTopBar: View {
                 } trailing: {
                     logo(for: provider)
                 }
+            } else if let hubID = popover.customizeHubID, let hub = container.accounts.hubs.first(where: { $0.id == hubID }) {
+                navigationBar(back: { popover.back() }) {
+                    Text(hub.host)
+                        .truncationMode(.middle)
+                } trailing: {
+                    ProviderIcon(id: CLIProxyHub.markID, side: 22, inset: 0.04)
+                        .frame(width: 28, height: 28)
+                        .accessibilityHidden(true)
+                }
             } else {
                 navigationBar(back: { popover.back() }) {
                     Text("Accounts")
                 } trailing: {
-                    addAccountButton
+                    EmptyView()
                 }
             }
         case .settings:
-            navigationBar {
-                popover.back()
-            } title: {
-                Text("Settings")
-            } trailing: {
-                EmptyView()
+            VStack(spacing: 10) {
+                ZStack {
+                    Text("Settings")
+                        .font(.headline)
+                    HStack(spacing: 0) {
+                        backButton { popover.back() }
+                        Spacer(minLength: 0)
+                    }
+                }
+                .frame(height: 28)
+                SettingsTabBar()
             }
+            .padding(.horizontal, PanelMetrics.margin)
+            .padding(.top, PanelMetrics.margin)
+            .padding(.bottom, DashboardContentView.barGap)
         }
     }
 
@@ -55,45 +74,69 @@ struct PopoverTopBar: View {
                 trailing()
             }
         }
-        .padding(.horizontal, horizontalPadding)
-        .frame(height: height)
+        .padding(.horizontal, PanelMetrics.margin)
+        .frame(height: 36, alignment: .bottom)
         .frame(maxWidth: .infinity)
-        .barGlass()
     }
 
     private func backButton(action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label("Back", systemImage: "chevron.backward")
                 .labelStyle(.iconOnly)
-                .frame(width: 16, height: 16)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.severityColor(.normal))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
         }
-        .glassButtonStyle()
-        .buttonBorderShape(.circle)
-        .controlSize(.large)
+        .buttonStyle(.plain)
         .hoverTooltip("Back")
         .accessibilityLabel("Back")
     }
 
     private func logo(for provider: Provider) -> some View {
-        ProviderIcon(id: provider.icon, side: 22, inset: 0.04)
+        AccountIcon(provider: provider, side: 22, inset: 0.04)
             .frame(width: 28, height: 28)
             .accessibilityHidden(true)
     }
+}
 
-    private var addAccountButton: some View {
-        Button {
-            popover.isAddingAccount = true
-        } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 13, weight: .semibold))
-                .frame(width: 16, height: 16)
-                .contentShape(Rectangle())
+private struct SettingsTabBar: View {
+    @Environment(PopoverState.self) private var popover
+    @Environment(\.reduceAnimations) private var reduceAnimations
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(SettingsTab.allCases, id: \.self) { tab(for: $0) }
         }
-        .glassButtonStyle()
-        .buttonBorderShape(.circle)
-        .controlSize(.large)
-        .hoverTooltip("Add Account")
-        .accessibilityLabel("Add Account")
+    }
+
+    private func tab(for tab: SettingsTab) -> some View {
+        let isSelected = popover.settingsTab == tab
+        return Button {
+            popover.settingsTab = tab
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: tab.symbol)
+                    .font(.system(size: 16))
+                    .frame(height: 20)
+                Text(tab.title)
+                    .font(.system(size: 11))
+            }
+            .foregroundStyle(isSelected ? AnyShapeStyle(Theme.severityColor(.normal)) : AnyShapeStyle(.secondary))
+            .frame(maxWidth: .infinity)
+            .padding(.top, 5)
+            .padding(.bottom, 4)
+            .background {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Theme.controlFill)
+                }
+            }
+            .animation(reduceAnimations ? nil : .easeInOut(duration: 0.18), value: isSelected)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -112,13 +155,9 @@ private struct AccountTitle: View {
                 renaming.begin(provider.id)
             } label: {
                 Text(provider.accountName)
+                    .hoverHighlight(isHovered)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(.quaternary)
-                            .opacity(isHovered ? 1 : 0)
-                    }
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)

@@ -4,17 +4,12 @@ import XCTest
 
 private let openCodeUsage = #"{"usage":{"rolling":{"percent":12,"resetsAt":"2026-07-12T13:30:00Z"},"weekly":{"percent":8,"resetsAt":"2026-07-13T00:00:00Z"},"monthly":{"percent":40,"resetsAt":"2026-08-04T11:18:32Z"}}}"#
 private let ollamaBalance = #"{"included":{"balance_usd":72.5,"allowance_usd":100,"period":{"from":"2026-09-15T09:30:00Z","until":"2026-10-15T09:30:00Z"}},"purchased":{"balance_usd":25}}"#
-private let openRouterCredits = #"{"data":{"total_credits":100,"total_usage":22.23}}"#
-private let openRouterKey = #"{"data":{"usage_daily":1.5,"usage_weekly":4,"usage_monthly":12,"limit":1,"limit_remaining":0.25,"is_free_tier":false}}"#
-
-private func response(_ status: Int, _ body: String = "") -> HTTPResponse {
-    HTTPResponse(statusCode: status, headers: [:], body: Data(body.utf8))
-}
 
 @MainActor
 final class ProviderErrorBoundaryTests: XCTestCase {
     private static let keyedKinds: [(ProviderKind, AccountCredential)] = [
         (.copilot, .oauth(OAuthTokens(accessToken: "token"))),
+        (.devin, .oauth(OAuthTokens(accessToken: "key"))),
         (.ollama, .apiKey("key")),
         (.opencodeGo, .apiKey("key")),
         (.openrouter, .apiKey("key")),
@@ -31,25 +26,34 @@ final class ProviderErrorBoundaryTests: XCTestCase {
         return await AccountProviderRuntime(account: account, vault: vault, http: RoutingHTTPClient(handler: handler)).refresh()
     }
 
-    func testAnUnauthorizedResponseIsAnExpiredSignInWhateverTheBodySays() async throws {
+    func testAnUnauthorizedResponseIsARefusedCredentialWhateverTheBodySays() async throws {
         for (kind, credential) in Self.keyedKinds {
-            let snapshot = try await refresh(kind, credential: credential) { _ in response(401, openCodeUsage) }
-            XCTAssertEqual(snapshot.failure?.message, ProviderError.signInExpired(kind).localizedDescription, "\(kind)")
+            let snapshot = try await refresh(kind, credential: credential) { _ in .json(openCodeUsage, status: 401) }
+            let expected = if case .oauth = credential {
+                "\(kind.displayName) sign-in expired. Sign in again to keep reading usage."
+            } else {
+                "\(kind.displayName) rejected the API key. Replace it on the account's page."
+            }
+            XCTAssertEqual(snapshot.failure?.message, expected, "\(kind)")
         }
     }
 
-    func testAMissingKeychainItemIsAnExpiredSignIn() async {
-        let account = Account(kind: .claude, label: "Work")
-        let runtime = AccountProviderRuntime(account: account, vault: InMemoryCredentialVault(), http: RoutingHTTPClient { _ in response(200) })
-
-        let snapshot = await runtime.refresh()
-
-        XCTAssertEqual(snapshot.failure?.message, ProviderError.signInExpired(.claude).localizedDescription)
+    func testAMissingKeychainItemSaysHowToFixThatAccount() async {
+        let accounts = [
+            (Account(kind: .claude, label: "Work"), "Claude sign-in expired. Sign in again to keep reading usage."),
+            (Account(kind: .openrouter, label: "Work"), "OpenRouter rejected the API key. Replace it on the account's page."),
+            (Account(kind: .copilot, label: "acme", organization: "acme"), "GitHub rejected the token. Replace it on the account's page.")
+        ]
+        for (account, message) in accounts {
+            let runtime = AccountProviderRuntime(account: account, vault: InMemoryCredentialVault(), http: RoutingHTTPClient { _ in .json("") })
+            let snapshot = await runtime.refresh()
+            XCTAssertEqual(snapshot.failure?.message, message)
+        }
     }
 
     func testAServerErrorNamesItsStatus() async throws {
         for (kind, credential) in Self.keyedKinds {
-            let snapshot = try await refresh(kind, credential: credential) { _ in response(503, "<html>down</html>") }
+            let snapshot = try await refresh(kind, credential: credential) { _ in .json("<html>down</html>", status: 503) }
             XCTAssertEqual(snapshot.failure?.message, ProviderError.requestFailed(503).localizedDescription, "\(kind)")
         }
     }
@@ -65,55 +69,39 @@ final class ProviderErrorBoundaryTests: XCTestCase {
     func testAFailedPlanLookupCostsThePlanNotTheMeters() async throws {
         let ollama = try await refresh(.ollama) { request in
             request.url.absoluteString.hasSuffix("/api/balance")
-                ? response(200, ollamaBalance)
-                : response(500, #"{"Plan":"pro"}"#)
+                ? .json(ollamaBalance)
+                : .json(#"{"Plan":"pro"}"#, status: 500)
         }.get()
         XCTAssertNil(ollama.plan)
         XCTAssertEqual(ollama.lines.map(\.label), ["Monthly", "Purchased Credits"])
 
         let zai = try await refresh(.zai) { request in
             request.url.absoluteString.contains("quota")
-                ? response(200, #"{"data":{"limits":[]}}"#)
-                : response(401, #"{"data":{"plan":"GLM Coding Pro"}}"#)
+                ? .json(#"{"data":{"limits":[]}}"#)
+                : .json(#"{"data":{"plan":"GLM Coding Pro"}}"#, status: 401)
         }.get()
         XCTAssertNil(zai.plan)
     }
 
     func testOpenCodeWithoutAGoSubscriptionSaysSo() async throws {
         let snapshot = try await refresh(.opencodeGo) { _ in
-            response(403, #"{"type":"error","error":{"type":"EntitlementError","message":"no subscription"}}"#)
+            .json(#"{"type":"error","error":{"type":"EntitlementError","message":"no subscription"}}"#, status: 403)
         }
         XCTAssertEqual(snapshot.failure?.message, "No OpenCode Go subscription on this account.")
     }
 
-    func testOpenRouterCallsTheKeyInvalidOnlyWhenBothEndpointsRejectIt() async throws {
-        let rejected = try await refresh(.openrouter) { _ in response(401, #"{"error":{"message":"No auth credentials found","code":401}}"#) }
-        XCTAssertEqual(rejected.failure?.message, ProviderError.signInExpired(.openrouter).localizedDescription)
-
-        let gated = try await refresh(.openrouter) { request in
-            request.url.absoluteString == OpenRouterUsageClient.creditsURL
-                ? response(403, #"{"error":{"message":"forbidden","code":403}}"#)
-                : response(200, openRouterKey)
-        }.get()
-        XCTAssertEqual(gated.lines.map(\.label), ["Today", "This Week", "This Month"])
-    }
-
-    func testOpenRouterShowsTheFailureWhenNeitherEndpointAnswers() async throws {
-        let down = try await refresh(.openrouter) { request in
-            request.url.absoluteString == OpenRouterUsageClient.creditsURL
-                ? response(503, "<html>down</html>")
-                : response(401, #"{"error":{"message":"No auth credentials found","code":401}}"#)
+    func testOpenRouterShowsTheFailureOfAnyRead() async throws {
+        let creditsDown = try await refresh(.openrouter) { request in
+            request.url.absoluteString == OpenRouterUsageClient.creditsURL ? .json("", status: 503) : OpenRouterFixtures.managementAccount(request)
         }
-        XCTAssertEqual(down.failure?.message, ProviderError.requestFailed(503).localizedDescription)
+        XCTAssertEqual(creditsDown.failure?.message, ProviderError.requestFailed(503).localizedDescription)
 
-        let partial = try await refresh(.openrouter) { request in
-            request.url.absoluteString == OpenRouterUsageClient.creditsURL
-                ? response(200, openRouterCredits)
-                : response(503, "")
-        }.get()
-        XCTAssertEqual(partial.lines.map(\.label), ["Balance"])
+        let secondPageDown = try await refresh(.openrouter) { request in
+            OpenRouterFixtures.offset(request) == "100" ? .json("", status: 503) : OpenRouterFixtures.managementAccount(request)
+        }
+        XCTAssertEqual(secondPageDown.failure?.message, ProviderError.requestFailed(503).localizedDescription)
 
-        let unreadable = try await refresh(.openrouter) { _ in response(200, #"{"ok":true}"#) }
+        let unreadable = try await refresh(.openrouter) { _ in .json(#"{"ok":true}"#) }
         XCTAssertEqual(unreadable.failure?.message, ProviderError.invalidResponse.localizedDescription)
     }
 }

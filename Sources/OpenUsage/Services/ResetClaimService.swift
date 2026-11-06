@@ -24,7 +24,7 @@ extension ResetClaimOutcome {
             "Resets can't be used right now." + (until.flatMap { Formatters.whenLabel(at: $0, mode: .relative, now: now) }
                 .map { $0 == Formatters.imminent ? " Try again soon." : " Try again in \($0)." } ?? "")
         case .failed(.signInExpired):
-            "Your sign-in expired. Remove the account and add it again."
+            "Your sign-in expired. Sign in again from the account's page."
         case .failed(.notPermitted):
             "This sign-in can't use resets. Use the reset in Claude Code instead."
         case .failed(.connection):
@@ -45,7 +45,7 @@ enum ResetClaimFailure: Equatable, Sendable {
         switch error {
         case ProviderError.signInExpired:
             self = .signInExpired
-        case is URLError, ProviderError.connectionFailed:
+        case is URLError, ProviderError.connectionFailed, ProviderError.unreachable:
             self = .connection
         default:
             self = .refused
@@ -58,19 +58,26 @@ struct ResetClaimService {
     let accountID: String
     let isClaimable: Bool
     let confirmDetail: String?
-    let claimReset: @MainActor (_ expiry: Date, _ redeemRequestID: String) async -> ResetClaimOutcome
+    let claimReset: (@MainActor (_ expiry: Date, _ redeemRequestID: String) async -> ResetClaimOutcome)?
     let refreshAccount: @MainActor () async -> WidgetDataStore.RefreshOutcome
-    let refreshDelay: Duration
-    var pause: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    /// Resets that each refill one window (Z.ai), earliest first, claimed by their exact record.
+    var windowResets: [ZAIReset] = []
+    var claimWindowReset: (@MainActor (_ reset: ZAIReset, _ requestID: String) async -> ResetClaimOutcome)?
 
-    /// The claim's result shows first; the refresh that drops the spent row follows after the delay.
+    /// The claim's result shows first; the refresh that drops the spent row starts at once behind it.
     func claim(creditExpiringAt expiry: Date, redeemRequestID: String) async -> ResetClaimOutcome {
-        let outcome = await claimReset(expiry, redeemRequestID)
+        guard let claimReset else { return .noCredit }
+        return settle(await claimReset(expiry, redeemRequestID))
+    }
+
+    func claim(_ reset: ZAIReset, requestID: String) async -> ResetClaimOutcome {
+        guard let claimWindowReset else { return .noCredit }
+        return settle(await claimWindowReset(reset, requestID))
+    }
+
+    private func settle(_ outcome: ResetClaimOutcome) -> ResetClaimOutcome {
         if case .failed = outcome { return outcome }
-        Task {
-            await pause(refreshDelay)
-            await refreshAfterClaim()
-        }
+        Task { await refreshAfterClaim() }
         return outcome
     }
 

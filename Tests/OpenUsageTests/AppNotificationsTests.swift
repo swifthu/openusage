@@ -1,3 +1,4 @@
+import UserNotifications
 import XCTest
 @testable import OpenUsage
 
@@ -8,12 +9,23 @@ import XCTest
 /// store.
 @MainActor
 final class AppNotificationsTests: XCTestCase {
-    func testIsRunningUnderTestsIsTrueInTheHarness() {
-        XCTAssertTrue(AppNotifications.isRunningUnderTests)
+    func testPostSkipsAuthorizationAndDeliveryUnderTests() async {
+        let notifications = AppNotifications(authorizationStatus: {
+            XCTFail("Posting under XCTest must skip the system permission check")
+            return .denied
+        })
+        let delivered = await notifications.post(idPrefix: "claude.session.healthyToClose", title: "Cutting It Close", subtitle: "Claude Session", body: "x")
+        XCTAssertFalse(delivered)
     }
 
-    func testPostReturnsFalseUnderTests() async {
-        let delivered = await AppNotifications.shared.post(idPrefix: "claude.session.healthyToClose", title: "Cutting It Close", subtitle: "Claude Session", body: "x")
-        XCTAssertFalse(delivered)
+    func testAPermissionRevokedAfterAGrantReadsAsDenied() async {
+        var status = UNAuthorizationStatus.authorized
+        let notifications = AppNotifications(authorizationStatus: { status })
+        let granted = await notifications.requestAuthorization()
+        XCTAssertTrue(granted)
+
+        status = .denied
+        let afterRevoke = await notifications.requestAuthorization()
+        XCTAssertFalse(afterRevoke, "a permission revoked in System Settings still reads as granted")
     }
 }

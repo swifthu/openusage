@@ -13,7 +13,7 @@ import SwiftUI
 /// app, so keyboard input (Esc/Return navigation, the Settings shortcut recorder) works on the first
 /// try. (The pattern keyboard-first menu-bar apps use; cross-checked via GitHits.)
 class MenuBarPanel: NSPanel {
-    static let cornerRadius: CGFloat = 13
+    static let cornerRadius: CGFloat = 20
 
     /// A clear, borderless panel whose frame view is clipped to the rounded shape. The clip lives on
     /// the frame view, not the content view: AppKit inserts a sheet's dimming view as the content
@@ -36,6 +36,19 @@ class MenuBarPanel: NSPanel {
 
     var onDismiss: (() -> Void)?
 
+    /// Hosts the dashboard one level below the content view. Under the SwiftUI App lifecycle a hosting
+    /// view that is its window's content view resizes the window to its root size on every layout,
+    /// whatever its `sizingOptions` (`animatesWindowRootSize`), which fought `PanelHeightController` for
+    /// the frame until AppKit threw "more Update Constraints in Window passes than there are views".
+    func host(_ view: NSHostingView<some View>) {
+        guard let contentView else { return }
+        view.sizingOptions = []
+        view.layerContentsRedrawPolicy = .duringViewResize
+        view.frame = contentView.bounds
+        view.autoresizingMask = [.width, .height]
+        contentView.addSubview(view)
+    }
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
@@ -49,6 +62,25 @@ class MenuBarPanel: NSPanel {
         }
         super.sendEvent(event)
     }
+
+    /// Settings stays mounted offscreen after its first visit, where its shortcut recorder is disabled.
+    /// A disabled recorder still accepts focus, and then records the next key press as the global
+    /// shortcut, so the panel refuses to focus it.
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        if let recorder = responder as? KeyboardShortcuts.RecorderCocoa, !recorder.isEnabled { return false }
+        return super.makeFirstResponder(responder)
+    }
+
+    /// Drops keyboard focus inside the panel so a clicked plain-styled control (a metric row's
+    /// Used/Left + reset toggles) doesn't keep the system focus ring lingering as a stray outline:
+    /// AppKit leaves the control first responder until focus moves, which a click on empty space or a
+    /// close otherwise never does. Skips a live text field, whose focus is the user's intent, but not the
+    /// shortcut recorder: AppKit can focus it without a click, and then it records the next key press.
+    func clearStrayFocus() {
+        let recording = (firstResponder as? NSTextView)?.delegate is KeyboardShortcuts.RecorderCocoa
+        guard recording || !(firstResponder is NSText) else { return }
+        makeFirstResponder(nil)
+    }
 }
 
 /// Owns the menu-bar status item and the panel that shows the dashboard.
@@ -60,25 +92,28 @@ class MenuBarPanel: NSPanel {
 @MainActor
 final class StatusItemController: NSObject {
     private let container: AppContainer
+    private let updater: UpdaterController
     private let statusItem: NSStatusItem
     private var stripGate = StripGate()
+    private var rankingTick: Task<Void, Never>?
     private let panel: MenuBarPanel
     private let heightController: PanelHeightController
     private lazy var outsideClickMonitor = PanelOutsideClickMonitor(
         panel: panel,
         statusItem: statusItem,
         isMorphing: { [weak self] in self?.heightController.isMorphing ?? false },
-        onInsidePanelClick: { [weak self] in self?.clearStrayFocus() },
+        onInsidePanelClick: { [weak self] in self?.panel.clearStrayFocus() },
         onDismiss: { [weak self] in self?.hidePanel() }
     )
-    private let hostingController: NSHostingController<AnyView>
+    private let host: NSHostingView<AnyView>
 
     init(container: AppContainer, updater: UpdaterController) {
         self.container = container
+        self.updater = updater
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.statusItem = statusItem
 
-        let hosting = NSHostingController(
+        let host = NSHostingView(
             rootView: AnyView(
                 DashboardView()
                     .reduceAnimationsWhenRequested()
@@ -90,7 +125,7 @@ final class StatusItemController: NSObject {
                     .environment(updater)
             )
         )
-        self.hostingController = hosting
+        self.host = host
 
         let panel = MenuBarPanel(contentRect: NSRect(
             x: 0,
@@ -99,7 +134,11 @@ final class StatusItemController: NSObject {
             height: PanelHeightController.defaultHeight
         ))
         self.panel = panel
-        self.heightController = PanelHeightController(panel: panel) { container.popover.screen }
+        self.heightController = PanelHeightController(
+            panel: panel,
+            currentScreen: { container.popover.screen },
+            currentTab: { container.popover.dashboardTab }
+        )
 
         super.init()
 
@@ -119,10 +158,11 @@ final class StatusItemController: NSObject {
             guard let self else { return }
             container.popover.screen = .dashboard
             if panel.isVisible {
+                container.popover.dashboardTab = .allUsage
                 panel.makeKeyAndOrderFront(nil)
                 statusItem.button?.highlight(true)
             } else {
-                showPanel()
+                showPanel(dashboardTab: .allUsage)
             }
         }
 
@@ -140,12 +180,7 @@ final class StatusItemController: NSObject {
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        panel.backgroundColor = Theme.trayNSColor
-        let host = hostingController.view
-        host.wantsLayer = true
-        host.layerContentsRedrawPolicy = .duringViewResize
-        hostingController.sizingOptions = []
-        panel.contentViewController = hostingController
+        panel.host(host)
     }
 
     private func configureStatusItem() {
@@ -168,26 +203,37 @@ final class StatusItemController: NSObject {
     }
 
     private func updateImage() {
-        let (content, scale) = withObservationTracking {
+        let (accounts, burningFast, limit, updateAvailable, scale) = withObservationTracking {
+            let limit = container.hideFromScreenShare.isConcealing ? .iconOnly : container.dataStore.menuBarLimit
+            let accounts = limit == .iconOnly ? [] : container.dataStore.accounts(in: container.layout.displayGroups)
             // The size is read inside the tracked closure so changing it redraws the strip.
-            let scale = container.menuBarSize.scale
-            let content = container.hideFromScreenShare.isConcealing
-                ? MenuBarContent(groups: [])
-                : MenuBarContentBuilder.build(
-                    groups: container.layout.pinnedGroups,
-                    isStale: container.dataStore.hasStaleAccount,
-                    data: { container.dataStore.data(for: $0) }
-                )
-            return (content, scale)
+            return (accounts, container.dataStore.burningFast, limit, updater.availableUpdateVersion != nil, container.menuBarSize.scale)
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(50))
                 self?.updateImage()
             }
         }
+        rankingTick?.cancel()
+        showStrip(accounts: accounts, burningFast: burningFast, limit: limit, updateAvailable: updateAvailable, scale: scale)
+    }
+
+    private func showStrip(accounts: [DashboardAccount], burningFast: BurningFast?, limit: MenuBarLimit, updateAvailable: Bool, scale: Double) {
+        let now = Date()
+        let board = PriorityBoard.make(accounts: accounts, burningFast: burningFast, now: now)
+        var content = MenuBarContentBuilder.build(board: board, limit: limit)
+        content.updateAvailable = updateAvailable
         stripGate.show(content, scale: scale) { content, scale in
             statusItem.button?.image = MenuBarStripRenderer.image(for: content, scale: scale)
-                ?? MenuBarStripRenderer.appIcon(for: content, scale: scale)
+                ?? MenuBarStripRenderer.appIcon(scale: scale)
+        }
+        // The pace order can change between provider reads. A tick only reuses the current data;
+        // registering another observation here would multiply subscriptions on every tick.
+        guard board.requiresRankingClock(at: now) else { return }
+        rankingTick = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(30), tolerance: .seconds(1))
+            guard !Task.isCancelled else { return }
+            self?.showStrip(accounts: accounts, burningFast: burningFast, limit: limit, updateAvailable: updateAvailable, scale: scale)
         }
     }
 
@@ -238,19 +284,19 @@ final class StatusItemController: NSObject {
         }
     }
 
-    private func showPanel() {
+    private func showPanel(dashboardTab: DashboardTab = .preferred()) {
         guard let button = statusItem.button, let buttonWindow = button.window else {
             AppLog.error(.statusItem, "Cannot show panel: status item has no button")
             return
         }
         let buttonRectOnScreen = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
-        heightController.prepareForOpening(below: buttonRectOnScreen)
-        container.popover.popoverShown = true
+        heightController.prepareForOpening(below: buttonRectOnScreen, tab: dashboardTab)
+        container.popover.show(dashboardTab: dashboardTab)
 
-        hostingController.view.layoutSubtreeIfNeeded()
+        host.layoutSubtreeIfNeeded()
 
         panel.makeKeyAndOrderFront(nil)
-        clearStrayFocus()
+        panel.clearStrayFocus()
         button.highlight(true)
         outsideClickMonitor.start()
     }
@@ -259,24 +305,13 @@ final class StatusItemController: NSObject {
         HoverTooltips.dismissAll()
         HoverPopoverState.dismissAll()
         ReducedMotionPopoverController.dismissAll()
-        clearStrayFocus()
+        panel.clearStrayFocus()
         heightController.saveBeforeClosing()
         container.popover.popoverShown = false
         panel.orderOut(nil)
         outsideClickMonitor.stop()
         statusItem.button?.highlight(false)
         heightController.finishClosing()
-    }
-
-    /// Drops keyboard focus inside the panel so a clicked plain-styled control (a metric row's
-    /// Used/Left + reset toggles) doesn't keep the system focus ring lingering as a stray outline:
-    /// AppKit leaves the control first responder until focus moves, which a click on empty space or a
-    /// close otherwise never does. Skips a live text field / shortcut recorder, whose focus is the
-    /// user's intent — mirrors the `NSText` guard `PopoverKeyReader` uses for the same reason.
-    private func clearStrayFocus() {
-        guard !ShortcutRecorderField.isRecordingActive,
-              !(panel.firstResponder is NSText) else { return }
-        panel.makeFirstResponder(nil)
     }
 
 }

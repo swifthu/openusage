@@ -51,11 +51,6 @@ enum LoginHTTP {
         }
         return try JSONDecoder().decode(type, from: response.body)
     }
-
-    static func jsonObject(_ response: HTTPResponse) -> [String: String] {
-        guard let values = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any] else { return [:] }
-        return values.compactMapValues { $0 as? String }
-    }
 }
 
 struct OAuthTokenResponse: Decodable {
@@ -74,19 +69,40 @@ struct OAuthTokenResponse: Decodable {
     func grant(now: Date) -> OAuthGrant {
         OAuthGrant(accessToken: accessToken, refreshToken: refreshToken, expiresAt: expiresIn.map { now.addingTimeInterval($0) })
     }
+
+    func tokens(extras: [String: String]) -> OAuthTokens {
+        OAuthTokens(accessToken: accessToken, refreshToken: refreshToken, expiresAt: expiry, extras: extras)
+    }
+}
+
+extension OAuthTokenResponse {
+    /// Only a refusal of the refresh token itself is an expired sign-in; an outage, a rate limit, or a
+    /// malformed answer fails this refresh like any provider request, so the next pass renews again.
+    init(renewal response: HTTPResponse, kind: ProviderKind) throws {
+        if [400, 401, 403].contains(response.statusCode), let code = Self.errorCode(response.body),
+           ["invalid_grant", "refresh_token_expired", "refresh_token_reused", "refresh_token_invalidated"].contains(code) {
+            AppLog.warn(.auth, "\(kind.rawValue) sign-in renewal refused: \(code)")
+            throw ProviderError.signInExpired(kind)
+        }
+        guard (200..<300).contains(response.statusCode) else { throw ProviderError.failed(response) }
+        guard let token = try? JSONDecoder().decode(Self.self, from: response.body), !token.accessToken.isEmpty else {
+            throw ProviderError.invalidResponse
+        }
+        self = token
+    }
+
+    /// RFC 6749 sends `error` as a string; OpenAI also sends `error.code` or a top-level `code`.
+    private static func errorCode(_ body: Data) -> String? {
+        let json = ProviderParse.jsonObject(body)
+        let error = json?["error"]
+        return error as? String ?? (error as? [String: Any])?["code"] as? String ?? json?["code"] as? String
+    }
 }
 
 struct OAuthGrant: Sendable {
     var accessToken: String
     var refreshToken: String?
     var expiresAt: Date?
-}
-
-extension String {
-    func jwtPayload<T: Decodable>(as type: T.Type) -> T? {
-        guard let data = ProviderParse.jwtPayloadData(self) else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
-    }
 }
 
 enum LoginError: LocalizedError, Sendable {
@@ -120,28 +136,6 @@ enum AuthorizationInput: Sendable {
     case pasted(String)
 }
 
-func waitForAuthorizationInput(
-    server: LoopbackCallbackServer,
-    pastedCode: AsyncStream<String>
-) async throws -> AuthorizationInput {
-    try await withTaskCancellationHandler {
-        try await withThrowingTaskGroup(of: AuthorizationInput.self) { tasks in
-            tasks.addTask { .callback(try await server.waitForCode()) }
-            tasks.addTask {
-                var iterator = pastedCode.makeAsyncIterator()
-                guard let value = await iterator.next() else { throw LoginError.cancelled }
-                return .pasted(value)
-            }
-            guard let result = try await tasks.next() else { throw LoginError.cancelled }
-            server.cancel()
-            tasks.cancelAll()
-            return result
-        }
-    } onCancel: {
-        server.cancel()
-    }
-}
-
 func authorizeInBrowser(
     _ authorizeURL: URL,
     clientID: String,
@@ -166,7 +160,22 @@ func authorizeInBrowser(
     ] + extraQuery
     guard let url = components.url else { throw LoginError.invalidResponse }
     await prompt(.browser(url, acceptsPastedCode: true))
-    let input = try await waitForAuthorizationInput(server: server, pastedCode: pastedCode)
+    let input = try await withTaskCancellationHandler {
+        try await withThrowingTaskGroup(of: AuthorizationInput.self) { tasks in
+            tasks.addTask { .callback(try await server.waitForCode()) }
+            tasks.addTask {
+                var iterator = pastedCode.makeAsyncIterator()
+                guard let value = await iterator.next() else { throw LoginError.cancelled }
+                return .pasted(value)
+            }
+            guard let result = try await tasks.next() else { throw LoginError.cancelled }
+            server.cancel()
+            tasks.cancelAll()
+            return result
+        }
+    } onCancel: {
+        server.cancel()
+    }
     return try authorizationCode(from: input, expectedState: state)
 }
 

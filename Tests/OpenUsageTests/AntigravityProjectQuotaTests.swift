@@ -1,3 +1,4 @@
+import os
 import XCTest
 @testable import OpenUsage
 
@@ -22,7 +23,7 @@ final class AntigravityProjectQuotaTests: XCTestCase {
     {"error":{"code":403,"message":"fake","status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"SUBSCRIPTION_REQUIRED","domain":"cloudaicompanion.googleapis.com"}]}}
     """#
 
-    private func refresh(summaryStatus: Int? = nil) async throws -> Result<ProviderSnapshot, RefreshFailure> {
+    private func refresh(forbiddenBody: String? = nil) async throws -> Result<ProviderSnapshot, RefreshFailure> {
         let account = Account(kind: .antigravity, label: "Google Account")
         let vault = InMemoryCredentialVault()
         try vault.save(.oauth(OAuthTokens(accessToken: "access", refreshToken: "refresh", expiresAt: .distantFuture)), for: account.id)
@@ -32,8 +33,8 @@ final class AntigravityProjectQuotaTests: XCTestCase {
                 return HTTPResponse(statusCode: 200, headers: [:], body: Data(Self.loadCodeAssist.utf8))
             case AntigravityUsageClient.quotaSummaryPath:
                 let project = request.body.flatMap(ProviderParse.jsonObject)?["project"] as? String
-                if let summaryStatus {
-                    return HTTPResponse(statusCode: summaryStatus, headers: [:], body: Data(Self.subscriptionRequired.utf8))
+                if let forbiddenBody {
+                    return HTTPResponse(statusCode: 403, headers: [:], body: Data(forbiddenBody.utf8))
                 }
                 guard project == "fake-project-123" else {
                     return HTTPResponse(statusCode: 403, headers: [:], body: Data(Self.subscriptionRequired.utf8))
@@ -53,11 +54,96 @@ final class AntigravityProjectQuotaTests: XCTestCase {
         XCTAssertEqual(snapshot.plan, "Antigravity Starter Quota")
     }
 
-    func testRejectedQuotaCallReadsAsExpiredSignIn() async throws {
-        let snapshot = try await refresh(summaryStatus: 403)
+    func testQuotaAccessDenialReportsTheReasonGoogleSupplied() async throws {
+        let noSubscription = try await refresh(forbiddenBody: Self.subscriptionRequired)
+        XCTAssertEqual(noSubscription.failure?.message, "Google reports no Antigravity quota subscription for this project.")
 
-        guard let text = snapshot.failure?.message else { return XCTFail("Expected an error snapshot") }
-        XCTAssertEqual(text, ProviderError.signInExpired(.antigravity).localizedDescription)
+        let refused = try await refresh(forbiddenBody: #"{"error":{"status":"PERMISSION_DENIED"}}"#)
+        XCTAssertEqual(refused.failure?.message, ProviderError.signInExpired(.antigravity).localizedDescription)
+    }
+
+    func testEveryBaseOfflineIsUnreachable() async throws {
+        let account = Account(kind: .antigravity, label: "Google Account")
+        let vault = InMemoryCredentialVault()
+        try vault.save(.oauth(OAuthTokens(accessToken: "access", refreshToken: "refresh", expiresAt: .distantFuture)), for: account.id)
+        let http = RoutingHTTPClient { _ in throw URLError(.notConnectedToInternet) }
+
+        let failure = await AccountProviderRuntime(account: account, vault: vault, http: http).refresh().failure
+
+        XCTAssertEqual(http.requests.filter { $0.url.path == AntigravityUsageClient.quotaSummaryPath }.count, 2)
+        XCTAssertEqual(failure?.kind, .unreachable)
+    }
+
+    func testBothBasesRateLimitedKeepTheirRetryAfter() async throws {
+        let account = Account(kind: .antigravity, label: "Google Account")
+        let vault = InMemoryCredentialVault()
+        try vault.save(.oauth(OAuthTokens(accessToken: "access", refreshToken: "refresh", expiresAt: .distantFuture)), for: account.id)
+        let http = RoutingHTTPClient { request in
+            guard request.url.path == AntigravityUsageClient.quotaSummaryPath else {
+                return HTTPResponse(statusCode: 200, headers: [:], body: Data(Self.loadCodeAssist.utf8))
+            }
+            return HTTPResponse(statusCode: 429, headers: ["retry-after": "120"], body: Data())
+        }
+
+        let failure = await AccountProviderRuntime(account: account, vault: vault, http: http).refresh().failure
+
+        XCTAssertEqual(failure?.kind, .rateLimited(retryAfter: 120))
+    }
+
+    func testAnUnauthorizedQuotaReadRenewsTheSignInOnceAndRetries() async throws {
+        let account = Account(kind: .antigravity, label: "Google Account")
+        let vault = InMemoryCredentialVault()
+        try vault.save(.oauth(OAuthTokens(accessToken: "old-access", refreshToken: "old-refresh", expiresAt: .distantFuture)), for: account.id)
+        let http = RoutingHTTPClient { request in
+            if request.url == AntigravityLogin.tokenURL {
+                return HTTPResponse(statusCode: 200, headers: [:], body: Data(#"{"access_token":"new-access","expires_in":3600}"#.utf8))
+            }
+            switch request.url.path {
+            case AntigravityUsageClient.loadCodeAssistPath:
+                return HTTPResponse(statusCode: 200, headers: [:], body: Data(Self.loadCodeAssist.utf8))
+            case AntigravityUsageClient.quotaSummaryPath where request.headers["Authorization"] == "Bearer new-access":
+                return HTTPResponse(statusCode: 200, headers: [:], body: Data(Self.quotaSummary.utf8))
+            default:
+                return HTTPResponse(statusCode: 401, headers: [:], body: Data())
+            }
+        }
+
+        let snapshot = try await AccountProviderRuntime(account: account, vault: vault, http: http).refresh().get()
+
+        XCTAssertEqual(snapshot.lines.map(\.label), [AntigravityMetric.weeklyLabel, AntigravityMetric.claudeWeeklyLabel])
+        XCTAssertEqual(http.requests.filter { $0.url == AntigravityLogin.tokenURL }.count, 1)
+        guard case .oauth(let saved)? = try vault.load(account.id) else { return XCTFail("Expected saved tokens") }
+        XCTAssertEqual(saved.accessToken, "new-access")
+    }
+
+    func testAFailedProjectLookupIsReadAgainOnTheNextRefresh() async throws {
+        let account = Account(kind: .antigravity, label: "Google Account")
+        let vault = InMemoryCredentialVault()
+        try vault.save(.oauth(OAuthTokens(accessToken: "access", refreshToken: "refresh", expiresAt: .distantFuture)), for: account.id)
+        let lookupWorks = OSAllocatedUnfairLock(initialState: false)
+        let http = RoutingHTTPClient { request in
+            switch request.url.path {
+            case AntigravityUsageClient.loadCodeAssistPath:
+                guard lookupWorks.withLock({ $0 }) else { return HTTPResponse(statusCode: 503, headers: [:], body: Data()) }
+                return HTTPResponse(statusCode: 200, headers: [:], body: Data(Self.loadCodeAssist.utf8))
+            case AntigravityUsageClient.quotaSummaryPath:
+                guard request.body.flatMap(ProviderParse.jsonObject)?["project"] as? String == "fake-project-123" else {
+                    return HTTPResponse(statusCode: 403, headers: [:], body: Data(Self.subscriptionRequired.utf8))
+                }
+                return HTTPResponse(statusCode: 200, headers: [:], body: Data(Self.quotaSummary.utf8))
+            default:
+                return HTTPResponse(statusCode: 404, headers: [:], body: Data())
+            }
+        }
+        let runtime = AccountProviderRuntime(account: account, vault: vault, http: http)
+        let first = await runtime.refresh()
+        XCTAssertEqual(first.failure?.message, "Antigravity couldn't find a project with quota access for this account. Try again shortly.")
+
+        lookupWorks.withLock { $0 = true }
+        let snapshot = try await runtime.refresh().get()
+
+        XCTAssertEqual(snapshot.lines.map(\.label), [AntigravityMetric.weeklyLabel, AntigravityMetric.claudeWeeklyLabel])
+        XCTAssertEqual(snapshot.plan, "Antigravity Starter Quota")
     }
 
     func testPaidTiersReadAsGoogleSellsThem() {

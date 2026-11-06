@@ -4,22 +4,6 @@ import os
 
 @MainActor
 final class WidgetDataStoreTests: XCTestCase {
-    func testRefreshAllPersistsAndPublishesAllProviderSnapshots() async {
-        let fixtures = ["alpha", "beta", "gamma"].map { makeRuntime($0) }
-        let ids = fixtures.map { $0.0.id }
-        let defaults = isolatedDefaults()
-        let store = WidgetDataStore.forTesting(
-            fixtures.map { $0.1 },
-            defaults: defaults
-        )
-
-        await store.refreshAll()
-
-        XCTAssertEqual(Set(store.snapshots.keys), Set(ids))
-        let persisted = ProviderSnapshotCache(userDefaults: defaults, storageKey: "snapshots").load()
-        XCTAssertEqual(Set(persisted.keys), Set(ids))
-    }
-
     func testForcedRefreshesWaitingOnOneReadTakeTurns() async throws {
         let account = Account(kind: .openrouter, label: "Work")
         let vault = InMemoryCredentialVault()
@@ -43,30 +27,41 @@ final class WidgetDataStoreTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(50))
         await firstRead.release()
         var untracked = false
-        for _ in 0..<2000 where http.requests.count < 6 || active.withLock({ $0.now }) > 0 {
+        for _ in 0..<2000 where http.requests.count < 3 || active.withLock({ $0.now }) > 0 {
             if active.withLock({ $0.now }) > 0, !store.refreshingProviderIDs.contains(id) { untracked = true }
             try await Task.sleep(for: .milliseconds(1))
         }
         _ = await first.value
         for task in forced { _ = await task.value }
 
-        XCTAssertEqual(http.requests.count, 6, "three reads of two requests each")
+        XCTAssertEqual(http.requests.count, 3, "three reads of one request each")
         XCTAssertEqual(active.withLock { $0.most }, 1, "two reads of one account ran at once")
         XCTAssertFalse(untracked, "a read ran while the account was not marked refreshing")
     }
 
-    func testSingleProviderRefreshPersistsImmediately() async {
-        let fixture = makeRuntime("single")
-        let defaults = isolatedDefaults()
-        let store = WidgetDataStore.forTesting(
-            [fixture.1],
-            defaults: defaults
-        )
+    func testAForcedRefreshWaitingOnARead429HoldsUntilRetryAfter() async throws {
+        let account = Account(kind: .openrouter, label: "Work")
+        let vault = InMemoryCredentialVault()
+        try vault.save(.apiKey("key"), for: account.id)
+        let firstRead = HeldResponse()
+        let http = RoutingHTTPClient { _ in
+            await firstRead.hold()
+            return HTTPResponse(statusCode: 429, headers: ["retry-after": "600"], body: Data())
+        }
+        let runtime = AccountProviderRuntime(account: account, vault: vault, http: http)
+        let store = WidgetDataStore.forTesting([runtime], defaults: isolatedDefaults())
+        let id = runtime.provider.id
 
-        await store.refresh(providerID: fixture.0.id, force: true)
+        let first = Task { await store.refresh(providerID: id) }
+        await firstRead.waitUntilHeld()
+        let forced = Task { await store.refresh(providerID: id, force: true) }
+        try await Task.sleep(for: .milliseconds(50))
+        await firstRead.release()
+        _ = await first.value
 
-        let persisted = ProviderSnapshotCache(userDefaults: defaults, storageKey: "snapshots").load()
-        XCTAssertNotNil(persisted[fixture.0.id])
+        let outcome = await forced.value
+        XCTAssertEqual(outcome, .backedOff)
+        XCTAssertEqual(http.requests.count, 1, "the waiting refresh asked again inside the provider's wait")
     }
 
     func testAFinishedAccountShowsAndPersistsWithoutWaitingForThePass() async {
@@ -112,44 +107,6 @@ final class WidgetDataStoreTests: XCTestCase {
         let outcomes = await refreshTask.value
         XCTAssertEqual(outcomes, [.refreshed, .refreshed])
         XCTAssertTrue(store.refreshingProviderIDs.isEmpty)
-    }
-
-    func testResolvesProgressSnapshotIntoWidgetData() async {
-        let provider = Provider(id: "test", kind: .codex)
-        let descriptor = WidgetDescriptor(
-            provider: provider,
-            key: "session",
-            metricLabel: "Session",
-            sample: WidgetData(title: "Session", kind: .percent, used: 0, limit: 100, displayMode: .remaining)
-        )
-        let runtime = StubRuntime(
-            provider: provider,
-            descriptors: [descriptor],
-            snapshot: ProviderSnapshot(
-                providerID: provider.id,
-                displayName: provider.displayName,
-                lines: [.progress(
-                    label: "Session",
-                    used: 42,
-                    limit: 100,
-                    format: .percent,
-                    resetsAt: Date(timeIntervalSinceNow: 60 * 60),
-                    periodDurationMs: 5 * 60 * 60 * 1000
-                )]
-            )
-        )
-        let defaults = isolatedDefaults()
-        let store = WidgetDataStore.forTesting([runtime], defaults: defaults)
-
-        await store.refreshAll()
-        let data = store.data(for: descriptor)
-
-        XCTAssertEqual(data.used, 42)
-        XCTAssertEqual(data.displayedValue, 58)
-        XCTAssertEqual(data.valueText, "58%")
-        guard case .bar(_, _, let value, let reset, _) = data.dashboardRow().mark else { return XCTFail("not a bar") }
-        XCTAssertEqual(value, "58%")
-        XCTAssertNotNil(reset, "a meter with a reset date shows its countdown")
     }
 
     func testAResetCountdownBadgeCarriesItsRemainingWindowFraction() async {
@@ -200,8 +157,8 @@ final class WidgetDataStoreTests: XCTestCase {
     }
 
     func testAResetCountdownBarGoesThroughItsPhases() async {
-        // A five-hour window: white while it has time left, yellow over the last hour, red over the
-        // last fifth of that hour.
+        // A five-hour window: the strip's own ink while it has time left, the warning colour over
+        // the last hour, the critical colour over the last fifth of that hour.
         let period = MetricPeriod.sessionMs
         let cases: [(remaining: TimeInterval, level: WidgetData.ProgressLevel, fraction: Double)] = [
             (3 * 60 * 60, .normal, 0.6),
@@ -234,6 +191,68 @@ final class WidgetDataStoreTests: XCTestCase {
             XCTAssertEqual(data.progressLevel, level, "\(remaining)s left should be \(level)")
             XCTAssertEqual(data.progressFraction ?? 0, fraction, accuracy: 0.02, "\(remaining)s left")
         }
+    }
+
+    func testABoundedLimitWithAResetWindowCarriesItsCountdown() async {
+        // The menu bar draws the countdown beside the limit's value, so a bounded limit with a
+        // reset window carries the same fraction a countdown badge does.
+        let provider = Provider(id: "minimax", kind: .minimax)
+        let descriptor = WidgetDescriptor.percent(
+            key: "session", provider: provider, title: "Session", metricLabel: "Session"
+        )
+        let runtime = StubRuntime(
+            provider: provider,
+            descriptors: [descriptor],
+            snapshot: ProviderSnapshot(
+                providerID: provider.id,
+                displayName: provider.displayName,
+                lines: [.progress(
+                    label: "Session",
+                    used: 60,
+                    limit: 100,
+                    format: .percent,
+                    resetsAt: Date(timeIntervalSinceNow: 30 * 60),
+                    periodDurationMs: MetricPeriod.sessionMs
+                )]
+            )
+        )
+        let store = WidgetDataStore.forTesting([runtime], defaults: isolatedDefaults())
+
+        await store.refreshAll()
+        let data = store.data(for: descriptor)
+
+        XCTAssertEqual(data.progressLevel, .warning, "the last hour of the window warns")
+        XCTAssertEqual(data.progressFraction ?? 0, 0.5, accuracy: 0.02)
+    }
+
+    func testABoundedLimitWithAWeekLongWindowCarriesNoCountdown() async {
+        // A week-long window's bar would sit near full for days, so it is left out.
+        let provider = Provider(id: "claude", kind: .claude)
+        let descriptor = WidgetDescriptor.percent(
+            key: "weekly", provider: provider, title: "Weekly", metricLabel: "Weekly"
+        )
+        let runtime = StubRuntime(
+            provider: provider,
+            descriptors: [descriptor],
+            snapshot: ProviderSnapshot(
+                providerID: provider.id,
+                displayName: provider.displayName,
+                lines: [.progress(
+                    label: "Weekly",
+                    used: 60,
+                    limit: 100,
+                    format: .percent,
+                    resetsAt: Date(timeIntervalSinceNow: 3 * 24 * 60 * 60),
+                    periodDurationMs: MetricPeriod.weekMs
+                )]
+            )
+        )
+        let store = WidgetDataStore.forTesting([runtime], defaults: isolatedDefaults())
+
+        await store.refreshAll()
+        let data = store.data(for: descriptor)
+
+        XCTAssertNil(data.progressFraction)
     }
 
     func testBarFractionMatchesRoundedValue() {
@@ -270,9 +289,8 @@ final class WidgetDataStoreTests: XCTestCase {
         store.meterStyle = .remaining
         let remaining = store.data(for: descriptor)
         XCTAssertFalse(remaining.isBounded)
-        XCTAssertEqual(remaining.unboundedDetail, "1K credits")
-        XCTAssertEqual(remaining.menuBarValue, "1K credits")
-        XCTAssertEqual(remaining.dashboardRow().mark, .value("1K credits"))
+        XCTAssertEqual(remaining.unboundedDetail, "$40")
+        XCTAssertEqual(remaining.dashboardRow().mark, .value("$40"))
 
         store.meterStyle = .used
         let used = store.data(for: descriptor)
@@ -280,14 +298,13 @@ final class WidgetDataStoreTests: XCTestCase {
         XCTAssertEqual(used.dashboardRow(), remaining.dashboardRow())
     }
 
-    func testRateLimitResetsTileShowsCountInTrayAndPopover() async {
+    func testRateLimitResetsShowsAvailableCountInDashboard() async {
         let provider = Provider(id: "codex", kind: .codex)
         let descriptor = WidgetDescriptor.values(
             key: "rateLimitResets",
             provider: provider,
             title: "Rate Limit Resets",
-            metricLabel: "Rate Limit Resets",
-            traySuffix: "resets"
+            metricLabel: "Rate Limit Resets"
         )
         let runtime = StubRuntime(
             provider: provider,
@@ -307,7 +324,7 @@ final class WidgetDataStoreTests: XCTestCase {
         XCTAssertTrue(data.hasData)
         XCTAssertFalse(data.isBounded)
         XCTAssertEqual(data.unboundedDetail, "1 available")
-        XCTAssertEqual(data.menuBarValue, "1 resets")
+        XCTAssertEqual(data.dashboardRow().mark, .value("1 available"))
     }
 
     func testZeroRateLimitResetsStillFlagsResetPopoverForEmptyState() async {
@@ -317,7 +334,6 @@ final class WidgetDataStoreTests: XCTestCase {
             provider: provider,
             title: "Rate Limit Resets",
             metricLabel: "Rate Limit Resets",
-            traySuffix: "resets",
             showsResetExpiries: true
         )
         let runtime = StubRuntime(
@@ -379,7 +395,7 @@ final class WidgetDataStoreTests: XCTestCase {
 
     func testCursorCreditsRenderAsUnboundedBalance() async {
         let provider = Provider(id: "cursor", kind: .cursor)
-        let descriptor = WidgetDescriptor.dollarBalance(
+        let descriptor = WidgetDescriptor.values(
             key: "credits",
             provider: provider,
             title: "Credits",
@@ -402,118 +418,80 @@ final class WidgetDataStoreTests: XCTestCase {
         let remaining = store.data(for: descriptor)
         XCTAssertFalse(remaining.isBounded)
         XCTAssertEqual(remaining.unboundedDetail, "$7.9K left")
-        XCTAssertEqual(remaining.menuBarValue, "$7.9K")
 
         store.meterStyle = .used
         let used = store.data(for: descriptor)
         XCTAssertEqual(used.unboundedDetail, remaining.unboundedDetail)
-        XCTAssertEqual(used.menuBarValue, remaining.menuBarValue)
     }
 
-    func testUncappedExtraUsageRendersCompactAndUnbounded() async {
-        let provider = Provider(id: "claude", kind: .claude)
-        let descriptor = WidgetDescriptor.boundedDollars(
-            key: "extra", provider: provider, title: "Extra Usage",
-            metricLabel: "Extra usage spent", limit: 100, valueWord: "spent"
-        )
-        let runtime = StubRuntime(
-            provider: provider,
-            descriptors: [descriptor],
-            snapshot: ProviderSnapshot(
-                providerID: provider.id,
-                displayName: provider.displayName,
-                lines: [.values(label: "Extra usage spent",
-                                values: [MetricValue(number: 1234.56, kind: .dollars)])]
-            )
-        )
-        let defaults = isolatedDefaults()
-        let store = WidgetDataStore.forTesting([runtime], defaults: defaults)
+    func testClaudesUncappedExtraUsageReadsCompactDollarsSpent() async throws {
+        let account = Account(kind: .claude, label: "Max")
+        let descriptor = try XCTUnwrap(AccountProviderRuntime.widgetDescriptors(for: account).first { $0.key == "extra" })
+        let lines = try ClaudeUsageMapper.mapUsageResponse(HTTPResponse(
+            statusCode: 200, headers: [:],
+            body: Data(#"{"extra_usage":{"is_enabled":true,"used_credits":123456,"monthly_limit":null}}"#.utf8)
+        ))
+        let provider = AccountProviderRuntime.provider(for: account)
+        let runtime = StubRuntime(provider: provider, descriptors: [descriptor],
+                                  snapshot: ProviderSnapshot(provider: provider, plan: nil, lines: lines))
+        let store = WidgetDataStore.forTesting([runtime], defaults: isolatedDefaults())
         await store.refreshAll()
 
         let data = store.data(for: descriptor)
-        XCTAssertTrue(data.hasData)
-        XCTAssertFalse(data.isBounded)
-        XCTAssertEqual(data.unboundedDetail, "$1.2K spent")
-        XCTAssertEqual(data.menuBarValue, "$1.2K")
+        XCTAssertEqual(data.dashboardRow(), DashboardRowModel(label: "Extra Usage", mark: .value("$1.2K spent")))
+    }
+
+    func testClaudesExtraUsageReadsInTheBillingCurrency() async throws {
+        let account = Account(kind: .claude, label: "Team")
+        let descriptor = try XCTUnwrap(AccountProviderRuntime.widgetDescriptors(for: account).first { $0.key == "extra" })
+        let provider = AccountProviderRuntime.provider(for: account)
+        func data(_ extra: String) async throws -> WidgetData {
+            let lines = try ClaudeUsageMapper.mapUsageResponse(HTTPResponse(
+                statusCode: 200, headers: [:], body: Data(#"{"extra_usage":\#(extra)}"#.utf8)
+            ))
+            let runtime = StubRuntime(provider: provider, descriptors: [descriptor],
+                                      snapshot: ProviderSnapshot(provider: provider, plan: nil, lines: lines))
+            let store = WidgetDataStore.forTesting([runtime], defaults: isolatedDefaults())
+            store.meterStyle = .used
+            await store.refreshAll()
+            return store.data(for: descriptor)
+        }
+
+        let capped = try await data(#"{"is_enabled":true,"used_credits":1234,"monthly_limit":5000,"currency":"EUR","decimal_places":2}"#)
+        XCTAssertEqual(capped.amountText, "€12.34 used")
+        XCTAssertEqual(capped.meterStyleTooltip, "€37.66 left")
+        XCTAssertEqual(capped.menuBarValue, "€12")
+
+        let uncapped = try await data(#"{"is_enabled":true,"used_credits":1500,"monthly_limit":null,"currency":"JPY","decimal_places":0}"#)
+        XCTAssertEqual(uncapped.dashboardRow(), DashboardRowModel(label: "Extra Usage", mark: .value("¥1.5K spent")))
+    }
+
+    func testAClaudeAccountWithNoFiveHourWindowHasNoSessionRow() async throws {
+        let account = Account(kind: .claude, label: "Ultra")
+        let descriptors = AccountProviderRuntime.widgetDescriptors(for: account)
+        let session = try XCTUnwrap(descriptors.first { $0.key == "session" })
+        let weekly = try XCTUnwrap(descriptors.first { $0.key == "weekly" })
+        let provider = AccountProviderRuntime.provider(for: account)
+        for body in [#"{"five_hour":null,"seven_day":{"utilization":40,"resets_at":"2099-01-01T00:00:00.000Z"}}"#,
+                     #"{"seven_day":{"utilization":40,"resets_at":"2099-01-01T00:00:00.000Z"}}"#] {
+            let lines = try ClaudeUsageMapper.mapUsageResponse(HTTPResponse(statusCode: 200, headers: [:], body: Data(body.utf8)))
+            let runtime = StubRuntime(provider: provider, descriptors: [session, weekly],
+                                      snapshot: ProviderSnapshot(provider: provider, plan: "Ultra", lines: lines))
+            let store = WidgetDataStore.forTesting([runtime], defaults: isolatedDefaults())
+            await store.refreshAll()
+
+            XCTAssertFalse(store.data(for: session).hasData, body)
+            XCTAssertTrue(store.data(for: weekly).hasData, body)
+        }
     }
 
     func testCreditValuesFloorAndClampBalance() {
         var data = WidgetData(title: "Extra Usage", kind: .dollars, used: 0, limit: nil)
-        data.values = CodexUsageMapper.creditValues(remaining: 820.9)
-        XCTAssertEqual(data.unboundedDetail, "820 credits")
+        data.values = CodexUsageMapper.creditValues(remaining: 821.6)
+        XCTAssertEqual(data.unboundedDetail, "$32.84")
         data.values = CodexUsageMapper.creditValues(remaining: -5)
-        XCTAssertEqual(data.unboundedDetail, "0 credits")
+        XCTAssertEqual(data.unboundedDetail, "$0")
     }
-
-    func testUsesFreshCachedSnapshotInsteadOfRefreshingProvider() async {
-        let provider = Provider(id: "test", kind: .codex)
-        let descriptor = WidgetDescriptor(
-            provider: provider,
-            key: "session",
-            metricLabel: "Session",
-            sample: WidgetData(title: "Session", kind: .percent, used: 0, limit: 100, displayMode: .remaining)
-        )
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let cache = ProviderSnapshotCache(userDefaults: isolatedDefaults(), storageKey: "snapshots")
-        cache.save([provider.id: ProviderSnapshot(
-            providerID: provider.id,
-            displayName: provider.displayName,
-            lines: [.progress(label: "Session", used: 20, limit: 100, format: .percent)],
-            refreshedAt: now.addingTimeInterval(-60)
-        )])
-        let runtime = StubRuntime(
-            provider: provider,
-            descriptors: [descriptor],
-            snapshot: ProviderSnapshot(
-                providerID: provider.id,
-                displayName: provider.displayName,
-                lines: [.progress(label: "Session", used: 80, limit: 100, format: .percent)],
-                refreshedAt: now
-            )
-        )
-        let store = WidgetDataStore.forTesting([runtime], cache: cache, defaults: isolatedDefaults(), now: { now })
-
-        await store.refreshAll()
-
-        XCTAssertEqual(runtime.refreshCount, 0)
-        XCTAssertEqual(store.data(for: descriptor).valueText, "80%")
-    }
-
-    func testExpiredCacheRefreshesAndReplacesSnapshot() async {
-        let provider = Provider(id: "test", kind: .codex)
-        let descriptor = WidgetDescriptor(
-            provider: provider,
-            key: "session",
-            metricLabel: "Session",
-            sample: WidgetData(title: "Session", kind: .percent, used: 0, limit: 100, displayMode: .remaining)
-        )
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let defaults = isolatedDefaults()
-        let cache = ProviderSnapshotCache(userDefaults: defaults, storageKey: "snapshots")
-        cache.save([provider.id: ProviderSnapshot(
-            providerID: provider.id,
-            displayName: provider.displayName,
-            lines: [.progress(label: "Session", used: 20, limit: 100, format: .percent)],
-            refreshedAt: now.addingTimeInterval(-601)
-        )])
-        let runtime = StubRuntime(
-            provider: provider,
-            descriptors: [descriptor],
-            snapshot: ProviderSnapshot(
-                providerID: provider.id,
-                displayName: provider.displayName,
-                lines: [.progress(label: "Session", used: 80, limit: 100, format: .percent)],
-                refreshedAt: now
-            )
-        )
-        let store = WidgetDataStore.forTesting([runtime], cache: cache, defaults: isolatedDefaults(), now: { now })
-
-        await store.refreshAll()
-
-        XCTAssertEqual(runtime.refreshCount, 1)
-        XCTAssertEqual(store.data(for: descriptor).valueText, "20%")
-    }
-
 
     private func makeRuntime(_ id: String) -> (Provider, StubRuntime) {
         let provider = Provider(id: id, kind: .codex)

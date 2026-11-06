@@ -5,10 +5,12 @@ struct DashboardFamily: Identifiable {
     let provider: Provider
     var accounts: [DashboardAccount]
 
+    /// The family's account when it has just the one, which then has no caption of its own.
+
     var hidingEmails: DashboardFamily {
         DashboardFamily(
             id: id, provider: provider.hidingEmail,
-            accounts: accounts.map { DashboardAccount(provider: $0.provider.hidingEmail, lines: $0.lines) }
+            accounts: accounts.map(\.hidingEmail)
         )
     }
 }
@@ -16,25 +18,38 @@ struct DashboardFamily: Identifiable {
 struct DashboardAccount: Identifiable {
     let provider: Provider
     let lines: [DashboardLine]
+    /// Before the account's first reading, the metrics it shows, each drawn as a skeleton row.
+    var waitingMetricIDs: [String] = []
 
     var id: String { provider.id }
     var name: String { provider.accountName }
+    var hidingEmail: DashboardAccount {
+        DashboardAccount(provider: provider.hidingEmail, lines: lines, waitingMetricIDs: waitingMetricIDs)
+    }
 }
 
 struct DashboardLine: Identifiable {
     let descriptor: WidgetDescriptor
     let data: WidgetData
     var id: String { descriptor.id }
+
+    // Spent reset grants remain available to CLI clients.
+    var isVisible: Bool {
+        guard data.hasData else { return false }
+        if data.showsResetExpiries { return data.resetCreditCount > 0 }
+        return true
+    }
 }
 
 extension DashboardFamily {
-    static func make(groups: [ProviderMetrics], line: (WidgetDescriptor) -> DashboardLine) -> [DashboardFamily] {
+    static func make(
+        groups: [ProviderMetrics], isWaiting: (Provider) -> Bool = { _ in false }, line: (WidgetDescriptor) -> DashboardLine
+    ) -> [DashboardFamily] {
         var families: [DashboardFamily] = []
         for group in groups {
-            let lines = group.metrics.map(line).filter {
-                $0.data.hasData && (!$0.data.showsResetExpiries || $0.data.resetCreditCount > 0)
-            }
-            let account = DashboardAccount(provider: group.provider, lines: lines)
+            let account = isWaiting(group.provider)
+                ? DashboardAccount(provider: group.provider, lines: [], waitingMetricIDs: group.metrics.map(\.id))
+                : DashboardAccount(provider: group.provider, lines: group.metrics.map(line).filter(\.isVisible))
             let familyID = group.provider.kind.rawValue
             if let index = families.firstIndex(where: { $0.id == familyID }) {
                 families[index].accounts.append(account)
@@ -53,6 +68,6 @@ extension Provider {
 
     var hidingEmail: Provider {
         guard isNamedByEmail else { return self }
-        return Provider(id: id, kind: kind)
+        var copy = self; copy.accountLabel = nil; return copy
     }
 }

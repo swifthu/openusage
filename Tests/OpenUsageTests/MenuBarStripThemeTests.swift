@@ -7,14 +7,15 @@ import XCTest
 @MainActor
 final class MenuBarStripThemeTests: XCTestCase {
     func testTheStripIsDrawnInWhite() throws {
-        let content = MenuBarContent(
-            groups: [
-                MenuBarContent.Group(
-                    provider: Provider(id: "claude", kind: .claude),
-                    metrics: [MenuBarContent.Metric(id: "claude.session", label: "Session", value: "99%")]
-                )
-            ]
-        )
+        let content = MenuBarContent(items: [
+            MenuBarContent.Item(
+                id: "claude.session",
+                provider: Provider(id: "claude", kind: .claude),
+                label: "Session",
+                shortLabel: "Session",
+                value: "99%"
+            )
+        ])
 
         let image = try XCTUnwrap(MenuBarStripRenderer.image(for: content))
         XCTAssertFalse(image.isTemplate, "a template image would be tinted by macOS, not white")
@@ -27,9 +28,7 @@ final class MenuBarStripThemeTests: XCTestCase {
     }
 
     func testTheAppIconIsDrawnInWhite() throws {
-        let empty = MenuBarContentBuilder.build(groups: [], data: { $0.sample })
-
-        let icon = MenuBarStripRenderer.appIcon(for: empty)
+        let icon = MenuBarStripRenderer.appIcon()
         XCTAssertFalse(icon.isTemplate, "a template icon would be tinted by macOS, not white")
 
         let colors = try opaqueColors(in: icon)

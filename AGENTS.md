@@ -1,8 +1,8 @@
 # AGENTS.md
 
 OpenUsage is a SwiftPM-based macOS menu-bar app that shows the usage limits of the AI coding accounts a
-user adds within the app (Claude, Codex, Cursor, Copilot, Antigravity, Grok, Ollama, OpenCode,
-OpenRouter, Z.ai).
+user adds within the app (Claude, Codex, Cursor, Copilot, Antigravity, Devin, Grok, Muse Code, Ollama,
+OpenCode, OpenRouter, Z.ai).
 
 This file documents the engineering conventions for the project. Read it before contributing.
 
@@ -45,7 +45,8 @@ on `gh-pages`). Cut releases with the release-swift skill.
   or accounts from other tools, and never read their files, Keychain items, SQLite databases, or
   environment variables.
 - Each account has one provider runtime. The runtime calls the provider API and maps its response to
-  dashboard metrics. Do not add log scanning, spend estimates, or external pricing.
+  dashboard metrics. Do not add log scanning, spend estimates, or external pricing; the one exception
+  is ChatGPT's credits, priced at 4¢ each in `CodexUsageMapper`.
 - The dashboard shows provider-supplied limits and dollar values only. Provider and account order is
   the user's saved order; a provider's first account goes to the bottom, and a new account goes to the
   bottom of its provider's accounts, in the order they were added. Never sort providers or accounts by
@@ -61,10 +62,9 @@ Provider sign-in and usage code lives under `Sources/OpenUsage/Providers/<Name>/
 account-scoped refresh. Provider API failures should surface as friendly account-specific errors
 without logging credentials or response bodies. See `docs/adding-a-provider.md`.
 
-**Metric placement defaults:** every metric starts shown. When adding or changing a metric, confirm its
-two defaults with the owner before choosing — never pick silently:
-1. starred into the menu bar (`.pinnedByDefault()` on its descriptor in `widgetDescriptors`),
-2. order (within an account, the `widgetDescriptors` declaration order).
+**Metric order default:** every metric with data shows. When adding or changing a metric, confirm its
+order (within an account, the `widgetDescriptors` declaration order) with the owner before choosing —
+never pick silently.
 
 ## Running / Testing Changes
 
@@ -76,9 +76,10 @@ script/test_quiet.sh [--filter <Suite>]
 
 `script/test_quiet.sh` is the only way to run the tests on a Mac someone is using: the suite hosts real
 windows, and the script runs it niced, keeps it from taking the keyboard or the screen, and fails the
-run if a test process ever came to the front. The rename-focus tests need a key window, so they skip
-unless `OPENUSAGE_FOCUS_TESTS=1`; run them with `swift test --filter InlineRenameFocusTests` on a Mac
-nobody is typing on after every change to a header or to renaming, or they rot unseen.
+run if a test process ever came to the front. The rename-focus tests need a key window and the Options
+menu test shows a real menu, so they skip unless `OPENUSAGE_FOCUS_TESTS=1`; run them with
+`swift test --filter 'InlineRenameFocusTests|UpdateControlsTests'` on a Mac nobody is typing on after
+every change to a header, to renaming, or to the Options menu, or they rot unseen.
 
 There is no hot reload. The app is a long-lived menu-bar process, so **every code change requires a
 full rebuild and restart of the running app** to take effect. The development bundle identifier is
@@ -128,9 +129,9 @@ response bodies.
 
 ## This fork (`swifthu/openusage`)
 
-This fork tracks upstream `main` and adds the four things below. Everything else in this file is
+This fork tracks upstream `main` and adds the things below. Everything else in this file is
 upstream's, unchanged: when upstream rewrites a rule here, take upstream's version and re-apply only
-these four.
+these.
 
 ### 1. The MiniMax provider
 
@@ -154,11 +155,12 @@ Upstream draws the menu-bar strip as a template image so macOS tints it for the 
 This fork keeps it white.
 
 - `MenuBarStripRenderer.themeColor` is the single place that color lives. Draw the strip, the badge
-  capsule, the provider glyph, and the app icon from it; do not sprinkle literal colors.
+  capsule, the provider glyph, the countdown bar and the app icon from it; do not sprinkle literal
+  colors.
 - Because the strip is white, its image is **not** a template (`isTemplate = false`). A template image
   would let macOS tint it and lose the color.
-- The app-icon fallback (`MenuBarStripRenderer.appIcon(for:)`) is drawn the same way, including its
-  dimmed stale variant. A template icon there would render black next to a white strip.
+- The app-icon fallback (`MenuBarStripRenderer.appIcon(scale:)`) is drawn the same way, and so is the
+  update dot next to it. A template icon there would render black next to a white strip.
 - This is a deliberate divergence: white reads on both Light and Dark Aqua, but it is close to
   invisible on a light menu bar. If that ever becomes a problem, the fix is to make the color follow
   the system appearance — not to sprinkle another literal color.
@@ -173,11 +175,29 @@ log scanner. This fork does not rebuild them.
 - The fork's `pricing-update` skill and `docs/pricing.md` are gone with the engine. Do not
   reintroduce a pricing supplement or a snapshot script.
 
-### 4. Sync cadence
+### 4. The fork's own menu bar and settings
+
+Upstream has none of these; the fork keeps them across a sync.
+
+- **The countdown bar.** A limit whose window resets within a day carries a bar in the menu bar
+  strip, drawn beside its value, draining towards the reset. `WidgetData.progressFraction` and
+  `WidgetData.progressLevel` carry it, `WidgetDataStore.applyCountdown` works it out, and
+  `MenuBarStripRenderer` draws it. Over the window's last hour the bar restarts from full and takes
+  `Theme.severityColor(.warning)`; over the last fifth of that hour it takes
+  `Theme.severityColor(.critical)`.
+- **The refresh interval.** `RefreshSetting.interval` reads the user's choice from UserDefaults
+  (30 seconds to 5 minutes, 5 minutes by default) instead of being a constant, and the refresh loop
+  re-reads it while it waits so a change lands within seconds.
+- **The menu bar size.** `MenuBarSizeSetting` scales the whole strip from 70% to 130%, and the
+  strip's gate carries the scale so a size change redraws it.
+- **No yellow of the project's own.** `SeverityPaletteTests` keeps the sources from inventing a
+  yellow the app does not use: take the warning colour from `Theme.severityColor`.
+
+### 5. Sync cadence
 
 - Sync with upstream every 2–4 weeks. Upstream's `main` moves fast and rewrites whole subsystems.
 - Before syncing, read `docs/superpowers/plans/` — the migration assessment and the MiniMax design
   notes record why this fork diverges where it does.
 - Sync in two passes: merge upstream first and get the build and tests green on upstream's code
-  alone, then replay this fork's four sections on top. Do not resolve upstream conflicts and rewrite
+  alone, then replay this fork's sections on top. Do not resolve upstream conflicts and rewrite
   fork features in one merge.

@@ -10,14 +10,18 @@
 set -uo pipefail
 
 front_app() {
-  lsappinfo info -only name "$(lsappinfo front)" | head -1 | sed -E 's/^"([^"]*)".*$/\1/'
+  # macOS 27 returns a full app record even for -only name.
+  lsappinfo info -only name "$(lsappinfo front)" | sed -nE \
+    -e 's/^"LSDisplayName"="(.*)"$/\1/p' \
+    -e 's/^"(.*)" ASN:[^ ]+: \(in front\).*$/\1/p'
 }
 
 before="$(front_app)"
+[ -n "$before" ] || { echo "test_quiet: could not read the front app" >&2; exit 1; }
 seen="$(mktemp -t test_quiet)"
 is_test_process() {
   case "$1" in
-    xctest|OpenUsage*|swift-*) return 0 ;;
+    xctest|swift-*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -32,6 +36,11 @@ is_test_process() {
 watcher=$!
 disown "$watcher"
 trap 'kill "$watcher" 2>/dev/null; rm -f "$seen"' EXIT
+
+# The Swift Build layout links the test bundle against PackageFrameworks/ but builds Sparkle one level up.
+frameworks="$(dirname "$0")/../.build/out/Products/Debug/PackageFrameworks"
+mkdir -p "$frameworks"
+[ -L "$frameworks/Sparkle.framework" ] || ln -s ../Sparkle.framework "$frameworks/Sparkle.framework"
 
 nice -n 19 swift test -j 2 "$@"
 status=$?

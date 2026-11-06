@@ -1,22 +1,22 @@
 import Foundation
 
 enum LimitsEnvelope {
-    static let schema = "openusage.limits.v1"
+    static let schema = "openusage.limits.v2"
 
     struct Input: Sendable {
-        var providerIDs: [String]
+        var registry: WidgetRegistry
         var snapshots: [String: ProviderSnapshot]
-        var limitDescriptors: [String: [WidgetDescriptor]] = [:]
         var generatedAt = Date()
     }
 
     static func encode(_ input: Input) -> Data {
         var providers: [String: WireProvider] = [:]
-        for providerID in input.providerIDs {
-            guard let snapshot = input.snapshots[providerID] else { continue }
-            providers[providerID] = WireProvider(
+        for provider in input.registry.providers {
+            guard let snapshot = input.snapshots[provider.id] else { continue }
+            providers[provider.id] = WireProvider(
+                provider: provider,
                 snapshot: snapshot,
-                descriptors: input.limitDescriptors[providerID] ?? [],
+                descriptors: input.registry.descriptors(for: provider.id),
                 generatedAt: input.generatedAt
             )
         }
@@ -28,7 +28,7 @@ enum LimitsEnvelope {
             providers: providers
         )
         return (try? encoder.encode(envelope))
-            ?? Data(#"{"providers":{},"schema":"openusage.limits.v1"}"#.utf8)
+            ?? Data(#"{"providers":{},"schema":"\#(schema)"}"#.utf8)
     }
 
     private struct WireEnvelope: Encodable {
@@ -45,13 +45,12 @@ enum LimitsEnvelope {
         let stale: Bool
         let resources: [String: WireResource]
 
-        init(snapshot: ProviderSnapshot, descriptors: [WidgetDescriptor], generatedAt: Date) {
-            displayName = snapshot.displayName
+        init(provider: Provider, snapshot: ProviderSnapshot, descriptors: [WidgetDescriptor], generatedAt: Date) {
+            displayName = provider.fullName
             plan = snapshot.plan
             fetchedAt = OpenUsageISO8601.string(from: snapshot.refreshedAt)
-            let expiry = snapshot.refreshedAt.addingTimeInterval(RefreshSetting.interval)
-            expiresAt = OpenUsageISO8601.string(from: expiry)
-            stale = generatedAt >= expiry
+            expiresAt = OpenUsageISO8601.string(from: snapshot.staleAt)
+            stale = snapshot.isStale(at: generatedAt)
 
             var resources: [String: WireResource] = [:]
             for descriptor in descriptors {
@@ -68,7 +67,7 @@ enum LimitsEnvelope {
 
     private struct WireResource: Encodable {
         let kind: LimitResourceDescriptor.Kind
-        let unit: String
+        var unit: String
         var used: Double?
         var available: Double?
         var limit: Double?
@@ -95,11 +94,10 @@ enum LimitsEnvelope {
                 resetsAt = reset.map(OpenUsageISO8601.string(from:))
                 windowSeconds = periodMs.map { Double($0) / 1_000 }
 
-            case (.value(let expectedKind, let expectedLabel), .values(_, let values, let expiries)),
-                 (.progressOrValue(let expectedKind, let expectedLabel), .values(_, let values, let expiries)):
-                guard let metric = values.first(where: { value in
-                    value.kind == expectedKind && (expectedLabel == nil || value.label == expectedLabel)
-                }) else { return nil }
+            case (.value, .values(_, let values, let expiries)),
+                 (.progressOrValue, .values(_, let values, let expiries)):
+                guard let metric = resource.value(in: values) else { return nil }
+                unit = metric.currencyCode?.lowercased() ?? unit
                 if resource.kind == .balance {
                     available = metric.number
                 } else {
@@ -119,6 +117,8 @@ enum LimitsEnvelope {
                 return "percent"
             case .dollars:
                 return "usd"
+            case .currency(let code):
+                return code.lowercased()
             case .count(let suffix):
                 let unit = suffix.trimmingCharacters(in: .whitespacesAndNewlines)
                 return unit.isEmpty ? nil : unit

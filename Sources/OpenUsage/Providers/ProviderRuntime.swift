@@ -20,6 +20,10 @@ extension ProviderRuntime {
 struct ProviderUsage: Equatable, Sendable {
     var plan: String?
     var lines: [MetricLine]
+    var notice: String?
+    var history: UsageHistory?
+    /// Row titles this reading renames, keyed by line label.
+    var lineTitles: [String: String] = [:]
 }
 
 extension MetricLine {

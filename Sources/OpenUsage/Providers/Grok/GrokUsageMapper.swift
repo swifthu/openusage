@@ -4,7 +4,7 @@ enum GrokUsageMapper {
     static func mapCreditsConfig(_ response: HTTPResponse) throws -> ProviderUsage {
         if response.statusCode == 412,
            (ProviderParse.jsonObject(response.body)?["error"] as? String)?.localizedCaseInsensitiveContains("no personal team") == true {
-            throw ProviderError.unavailable("Grok team accounts have no personal quota.")
+            return ProviderUsage(lines: [], notice: "Grok team accounts have no personal quota.")
         }
         try ProviderError.requireSuccess(response, kind: .grok)
         let config = try GrokCreditsConfigDecoder.decode(responseBody: response.body)
@@ -14,10 +14,9 @@ enum GrokUsageMapper {
             let used = ProviderParse.clampPercent(config.usedPercent)
             lines.append(.percent("Weekly limit", used, resetsAt: config.periodEnd, periodMs: config.periodDurationMs))
         }
-        lines.append(.badge(
-            label: "Pay as you go",
-            text: config.onDemandCap > 0 ? "\(formatUnits(config.onDemandCap)) cap" : "Disabled"
-        ))
+        if config.onDemandCap > 0 {
+            lines.append(.badge(label: "Pay as you go", text: "\(formatUnits(config.onDemandCap)) cap"))
+        }
         return ProviderUsage(lines: lines)
     }
 

@@ -2,8 +2,7 @@ import XCTest
 @testable import OpenUsageCLI
 
 final class CLIArgumentsTests: XCTestCase {
-    func testParsesTheProviderLowercased() throws {
-        XCTAssertEqual(try CLIArguments.parse(["Codex"]).providerID, "codex")
+    func testParsesNoProviderWhenNoneIsGiven() throws {
         XCTAssertNil(try CLIArguments.parse([]).providerID)
     }
 
@@ -14,9 +13,12 @@ final class CLIArgumentsTests: XCTestCase {
         XCTAssertTrue(try CLIArguments.parse(["--version"]).showVersion)
     }
 
+    func testAcceptsZeroSevensForceFlag() throws {
+        XCTAssertEqual(try CLIArguments.parse(["--force", "Codex"]), CLIArguments(providerID: "codex", force: true))
+    }
+
     func testRejectsUnknownOptionsAndMultipleProviders() {
         XCTAssertThrowsError(try CLIArguments.parse(["--json"]))
-        XCTAssertThrowsError(try CLIArguments.parse(["--force"]))
         XCTAssertThrowsError(try CLIArguments.parse(["claude", "codex"]))
     }
 }

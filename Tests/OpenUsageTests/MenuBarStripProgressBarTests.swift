@@ -2,20 +2,24 @@ import AppKit
 import XCTest
 @testable import OpenUsage
 
-/// A metric that counts down to a reset is drawn in the strip as a bar draining towards the reset,
+/// A limit that counts down to a reset is drawn in the strip as a bar draining towards the reset,
 /// so the countdown reads at a glance instead of only as text. The filled part is the time still to
 /// run. While the window has plenty left the bar is the strip's own white ink; over the window's
 /// final stretch it takes the app's warning colour, and the critical colour over the last fifth of
 /// that stretch.
 @MainActor
 final class MenuBarStripProgressBarTests: XCTestCase {
-    func testAResetCountdownIsDrawnAsABarInsteadOfItsText() throws {
+    func testAResetCountdownIsDrawnAsABarBesideItsValue() throws {
         let withBar = try XCTUnwrap(strip(fraction: 0.4, level: .normal))
         let withText = try XCTUnwrap(strip(fraction: nil, level: nil))
 
-        XCTAssertNotEqual(
+        XCTAssertGreaterThan(
+            withBar.size.width, withText.size.width,
+            "the bar is drawn beside the value, so the strip is wider"
+        )
+        XCTAssertEqual(
             withBar.size.height, withText.size.height,
-            "the bar replaces the countdown text, so the strip is a different shape"
+            "the bar sits on the value's line, so the strip keeps its height"
         )
     }
 
@@ -59,17 +63,16 @@ final class MenuBarStripProgressBarTests: XCTestCase {
     }
 
     private func strip(fraction: Double?, level: WidgetData.ProgressLevel?) -> NSImage? {
-        var countdown = MenuBarContent.Metric(id: "minimax.sessionReset", label: "5h Reset", value: "2h 30m")
-        countdown.progressFraction = fraction
-        countdown.progressLevel = level
-        let content = MenuBarContent(groups: [MenuBarContent.Group(
+        var item = MenuBarContent.Item(
+            id: "minimax.session",
             provider: Provider(id: "minimax", kind: .minimax),
-            metrics: [
-                MenuBarContent.Metric(id: "minimax.session", label: "Session", value: "89%"),
-                countdown
-            ]
-        )])
-        return MenuBarStripRenderer.image(for: content)
+            label: "Session",
+            shortLabel: "Session",
+            value: "89%"
+        )
+        item.progressFraction = fraction
+        item.progressLevel = level
+        return MenuBarStripRenderer.image(for: MenuBarContent(items: [item]))
     }
 
     /// The pixels the bar's fill covers. The track is drawn at low opacity, so only the fill counts.

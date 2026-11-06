@@ -37,13 +37,13 @@ enum Formatters {
             [.day], from: calendar.startOfDay(for: now), to: calendar.startOfDay(for: date)
         ).day ?? 0
         if days <= 0 { return TimeFormatSetting.current.shortTime(date) }
-        if days < 7 { return TimeFormatSetting.current.weekdayHour(date) }
+        if days < 7 { return TimeFormatSetting.current.weekdayTime(date) }
         return monthDayLabel(date)
     }
 
     static func compactDuration(_ seconds: TimeInterval) -> String? {
         guard seconds.isFinite, seconds > 0 else { return nil }
-        let totalMinutes = max(1, Int((seconds / 60).rounded(.up)))
+        let totalMinutes = max(1, ProviderParse.int((seconds / 60).rounded(.up)) ?? .max)
         let days = totalMinutes / (24 * 60)
         let hours = (totalMinutes % (24 * 60)) / 60
         let minutes = totalMinutes % 60

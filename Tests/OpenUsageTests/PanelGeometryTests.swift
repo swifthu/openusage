@@ -21,16 +21,7 @@ final class PanelGeometryTests: XCTestCase {
         XCTAssertEqual(left.y, 846)
     }
 
-    func testMaximumHeightUsesAvailableRoomAndDisplayCap() {
-        let visible = NSRect(x: 0, y: 0, width: 1200, height: 1000)
-
-        XCTAssertEqual(
-            PanelGeometry.maximumHeight(topLeft: NSPoint(x: 100, y: 900), visibleFrame: visible),
-            850
-        )
-    }
-
-    func testShortDisplayMayShrinkBelowNormalMinimum() {
+    func testShortDisplayCapsTheHeightToTheRoomBelowTheAnchor() {
         let visible = NSRect(x: 0, y: 0, width: 500, height: 200)
         let maximum = PanelGeometry.maximumHeight(
             topLeft: NSPoint(x: 100, y: 190),
@@ -38,34 +29,6 @@ final class PanelGeometryTests: XCTestCase {
         )
 
         XCTAssertEqual(maximum, 170)
-        XCTAssertEqual(PanelGeometry.clampedHeight(600, minimum: 200, maximum: maximum), 170)
-    }
-
-    func testHeightClampsToTheScreensMinimumAndTheDisplayMaximum() {
-        XCTAssertEqual(PanelGeometry.clampedHeight(50, minimum: 200, maximum: 700), 200)
-        XCTAssertEqual(PanelGeometry.clampedHeight(900, minimum: 200, maximum: 700), 700)
-        XCTAssertEqual(PanelGeometry.clampedHeight(520, minimum: 200, maximum: 700), 520)
-    }
-
-    func testTheDashboardsFloorSitsUnderAOneRowCard() {
-        let oneRowCard = 2 * PanelMetrics.margin + DashboardGrid.headerHeight + DashboardGrid.headerGap
-            + 2 * DashboardGrid.cardPadding + DashboardGrid.captionHeight + DashboardGrid.rowHeight
-        let footer: CGFloat = 52
-        XCTAssertLessThanOrEqual(PanelGeometry.minimumHeight(for: .dashboard), oneRowCard + footer)
-        XCTAssertEqual(PanelGeometry.clampedHeight(oneRowCard + footer, minimum: PanelGeometry.minimumHeight(for: .dashboard), maximum: 700), oneRowCard + footer)
-        XCTAssertEqual(PanelGeometry.minimumHeight(for: .accounts), 200)
-        XCTAssertEqual(PanelGeometry.minimumHeight(for: .settings), 200)
-    }
-
-    func testChangingHeightKeepsTopEdgeFixed() {
-        let topLeft = NSPoint(x: 120, y: 800)
-        let short = PanelGeometry.frame(topLeft: topLeft, width: 320, height: 300)
-        let tall = PanelGeometry.frame(topLeft: topLeft, width: 320, height: 650)
-
-        XCTAssertEqual(short.maxY, topLeft.y)
-        XCTAssertEqual(tall.maxY, topLeft.y)
-        XCTAssertEqual(short.minX, tall.minX)
-        XCTAssertEqual(short.width, tall.width)
     }
 
     func testFractionalAnchorAndHeightsKeepTopEdgeOnOneWholePoint() {

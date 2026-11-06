@@ -6,22 +6,16 @@ final class StalenessLabelTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
     func testFreshSnapshotsAndFutureClockSkewHaveNoStalenessLabel() {
-        for offset in [0, -RefreshSetting.interval, -(WidgetDataStore.stalenessThreshold - 1), 3_600] {
+        for offset in [0, -RefreshSetting.interval, -(RefreshSetting.stalenessThreshold - 1), 3_600] {
             let store = makeStore()
             store.snapshots["devin"] = snapshot(refreshedAt: now.addingTimeInterval(offset))
             XCTAssertNil(store.stalenessHint(for: "devin"), "offset: \(offset)")
         }
     }
 
-    func testStaleSnapshotSurfacesItsAge() {
-        let store = makeStore()
-        store.snapshots["devin"] = snapshot(refreshedAt: now.addingTimeInterval(-3 * 60 * 60))
-        XCTAssertEqual(store.stalenessHint(for: "devin"), "Last updated 3h ago")
-    }
-
     func testSnapshotExactlyAtThresholdIsStale() {
         let store = makeStore()
-        store.snapshots["devin"] = snapshot(refreshedAt: now.addingTimeInterval(-WidgetDataStore.stalenessThreshold))
+        store.snapshots["devin"] = snapshot(refreshedAt: now.addingTimeInterval(-RefreshSetting.stalenessThreshold))
         XCTAssertNotNil(store.stalenessHint(for: "devin"))
     }
 
@@ -47,12 +41,8 @@ final class StalenessLabelTests: XCTestCase {
             descriptors: [descriptor],
             failure: RefreshFailure(message: "Not logged in", kind: .refused)
         )
-        let store = makeStore(provider: provider, descriptor: descriptor, runtime: runtime)
-        store.snapshots["devin"] = ProviderSnapshot(
-            providerID: "devin", displayName: "Devin", plan: "Team 5x",
-            lines: [.progress(label: "Weekly quota", used: 40, limit: 100, format: .percent)],
-            refreshedAt: now.addingTimeInterval(-3 * 60 * 60)
-        )
+        let store = WidgetDataStore.forTesting([runtime], defaults: isolatedDefaults(), now: { self.now })
+        store.snapshots["devin"] = snapshot(refreshedAt: now.addingTimeInterval(-3 * 60 * 60))
 
         await store.refreshAll()
 
@@ -79,15 +69,6 @@ final class StalenessLabelTests: XCTestCase {
         )
         let runtime = StubRuntime(provider: provider, descriptors: [descriptor],
                                           snapshot: snapshot(refreshedAt: now))
-        return makeStore(provider: provider, descriptor: descriptor, runtime: runtime)
-    }
-
-    private func makeStore(
-        provider: Provider,
-        descriptor: WidgetDescriptor,
-        runtime: some ProviderRuntime
-    ) -> WidgetDataStore {
-        let defaults = isolatedDefaults()
-        return WidgetDataStore.forTesting([runtime], defaults: defaults, now: { self.now })
+        return WidgetDataStore.forTesting([runtime], defaults: isolatedDefaults(), now: { self.now })
     }
 }

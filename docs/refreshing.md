@@ -1,75 +1,73 @@
 # Refreshing
 
+OpenUsage refreshes every account on a fixed interval you can choose: **Refresh Interval** in
+Settings, from 30 seconds to 5 minutes, 5 minutes by default. A change takes effect within seconds,
+without waiting for the running cycle to end.
+
 ## When data updates
 
 | Trigger | What refreshes |
 | --- | --- |
-| Launch | Every account whose saved values are one refresh interval old or more |
-| Every refresh interval | Every account, whatever you are doing, so the menu bar stays current; a pass whose time came while the Mac slept runs as soon as it wakes |
+| Launch | Accounts whose saved values are one refresh interval old or more |
+| Every refresh interval | Every account. A pass missed during sleep runs on wake |
 | Adding an account | That account |
-| **⌘R**, or clicking the footer's **Next update in …** | Every account, skipping the cache, the hourly reads and the wait after a failure, never a wait the provider asked for |
-| An account's **Refresh** menu item | Its accounts, the same way as ⌘R |
-| Claiming a rate-limit reset | That account, once the result has shown: 5 seconds after a ChatGPT claim, 30 seconds after a Claude claim |
+| **⌘R**, or clicking **Next update in …** | Every account, skipping the cache and the wait after a failure |
+| An account's **Refresh** menu item | Its accounts, like ⌘R |
+| Claiming a rate-limit reset | That account |
+| Launch, opening Accounts, and hourly | Each [CLIProxyAPI hub](cliproxyapi.md#staying-in-sync)'s login list |
+| Replacing a hub's management key | Every account from that hub |
 
-The interval is a setting: **Refresh Interval** in Settings, from 30 seconds to 5 minutes, 5 minutes by
-default. A change takes effect within seconds, and a shorter one also shortens how long a failed
-account waits before it is tried again. A wait a provider asked for (HTTP 429) holds for every trigger,
-⌘R included. Accounts fetch in parallel, so a fast provider never waits for a slow one. Each account's
-result shows and is saved as soon as it lands. While an account is fetching, a spinner shows next to
-its name and in the footer.
+A wait a provider asked for (HTTP 429) holds even for ⌘R. Accounts fetch in parallel.
 
 ## Caching
 
-Usage is read on every refresh. Reads that rarely change are read at most once an hour and reused in
-between: the plan name (Claude, Cursor, Grok, Ollama, Z.ai, and Antigravity's Cloud Code project),
-ChatGPT's list of reset credits with their expiry times (the count still updates every refresh), and
-Claude's reset grants. ⌘R reads them all again at once, so a plan upgrade shows within an hour, or on
-the next ⌘R. Claude's plan and reset grants are read halfway between two passes, never together with
-its usage, and ⌘R reads the reset grants again only once their last check is 15 minutes old.
+Usage is read on every refresh. These reads happen at most once an hour, and on ⌘R:
 
-The last snapshot of every account is saved on disk and shown at launch, so you see your last-known
-values before the first fetch finishes. A value counts as fresh for one interval after it was fetched,
-across a relaunch too: relaunching within the interval of a refresh asks no provider until the next
-pass.
+- The plan name, and Cursor's membership.
+- ChatGPT's reset credits. The count still updates every refresh.
+- Claude's reset grants. ⌘R rereads them only after 15 minutes.
+
+Usage history:
+
+- [Cursor](providers.md#cursor) reads today and yesterday every refresh, and each older day until
+  one read of it succeeds.
+- [Ollama](providers.md#ollama) and [ChatGPT](providers.md#chatgpt) read it hourly, at the start
+  of a UTC day, and on ⌘R.
+
+The last values are saved on disk and shown at launch. They stay fresh for one refresh interval,
+across a relaunch too.
 
 ## When a fetch fails
 
-A failed refresh never wipes your data. The last good values stay on screen and a warning icon appears
-next to the account's name; the account's right-click menu starts with the reason. The
-error clears on the next successful refresh.
+A failed refresh keeps the last good values. The account shows under **Needs Attention** in
+Priority, and **Fix** opens its page with the reason. The next successful refresh clears the error.
 
-An account that failed waits before it is tried again: one interval after the first failure, then twice
-as long after each further failure in a row, up to an hour. An account whose key or sign-in keeps
-being refused drops to one request an hour. A failure that never reached the provider (no internet)
-is tried again on the next pass without growing the wait. A successful refresh ends the wait, and a
-manual refresh skips it.
+An account that failed waits before the next try:
 
-When a provider rate-limits OpenUsage (HTTP 429), the account waits as long as the provider's
-`Retry-After` header asks, or on the same doubling schedule when it names no wait. The last good values
-stay on screen with the clock icon, whose tooltip names the time of the next try, for example "Claude
-asked OpenUsage to wait. Retrying at 14:32." A manual refresh does not ask before that time.
+- One refresh interval, doubling with each failure in a row, up to an hour.
+- One request an hour if its key or sign-in keeps being refused.
+- No extra wait if it never reached the provider, such as with no internet.
+- A manual refresh skips the wait.
 
-Claude budgets requests per Anthropic login, so its wait covers the whole login: every card signed in
-to it, its usage, plan and reset-grant reads, and the refresh after a claim. When Claude names no wait
-(or a wait of 0), the first wait is one refresh interval and each 429 in a row doubles it, up to an
-hour. The wait is saved, so a relaunch inside it sends Claude nothing and shows the same "Retrying at"
-time. Two cards signed in to the same Claude login share one usage request per pass.
+When a provider rate-limits OpenUsage (HTTP 429, or GitHub's HTTP 403), the account waits as long as
+`Retry-After` asks, up to an hour, or on the doubling schedule. Claude's wait covers every card
+signed in to the same Anthropic login, and survives a relaunch.
 
-An account that stops responding is given up on after two minutes. Its spinner stops, the warning reads
-"Refresh timed out after 120s", and it is tried again on a later pass.
+An account that doesn't answer within two minutes shows "Refresh timed out after 120s" and is tried
+again on a later pass.
 
-Once an account's values are more than two refresh cycles old, a clock appears next to its name, and
-the account's right-click menu starts with their age. A successful refresh clears it.
-
-While any account's values are older than one refresh cycle because its refreshes fail or a provider
-asked OpenUsage to wait, the menu bar strip dims, or the app icon when nothing is starred. A refresh
-that is only in progress does not dim it, and a successful refresh brings it back to full strength.
+Values more than two refresh cycles old get a clock next to the account's name, and the
+[`openusage` command](cli.md) marks them `"stale": true`.
 
 ## Expired sign-ins
 
-OAuth accounts renew their own sign-in with the provider's refresh token, 5 minutes before the
-provider's expiry (the margin Claude Code uses), so a refresh never sends a token that is about to
-expire. Cursor renews its sign-in in the last 7 days of its 60-day token. When Claude, ChatGPT or Grok
-refuses the access token anyway (a 401 on the usage read, for an expiry the sign-in never reported or
-one the provider cut short), the sign-in is renewed once and the read retried; a second refusal, or a
-rejected renewal, shows a warning with the reason. Remove the account and add it again to sign in afresh.
+OAuth accounts renew their sign-in 5 minutes before it expires. Cursor renews in the last 7 days of
+its 60-day token. If Claude, ChatGPT, Grok, or Antigravity refuses the token anyway (HTTP 401),
+OpenUsage renews once and retries.
+
+If the provider still refuses the token or refuses the renewal, the warning says the sign-in
+expired. Use **Sign In Again…** on the account's page.
+
+Other renewal failures, such as an outage, a rate limit, or no connection, don't mean the sign-in
+expired. The account keeps its current token while it works and retries the renewal on the next
+pass. Once the token expires, the refresh fails like any [failed fetch](#when-a-fetch-fails).

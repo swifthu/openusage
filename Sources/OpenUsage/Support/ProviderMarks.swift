@@ -13,6 +13,68 @@ struct ProviderIcon: View {
     }
 }
 
+/// An account's initials, punched out of its menu bar mark, the one place the mark stands without the
+/// account's name beside it. The view holding both needs a `compositingGroup` for the cut-out to work.
+struct AccountBadge: View {
+    let text: String
+    /// The badge's ink. The menu bar strip draws it in the strip's own color.
+    var color: Color = .black
+    /// The size the badge is drawn at, as a multiple of its default.
+    var scale: Double = 1
+
+    static let overhang = CGSize(width: 5, height: 2.5)
+
+    var body: some View {
+        ZStack {
+            Capsule().fill(color)
+                .padding(-1.25 * scale)
+                .blendMode(.destinationOut)
+            Capsule().fill(color)
+            Text(text)
+                .font(.system(size: 6.5 * scale, weight: .heavy))
+                .padding(.horizontal, 2 * scale)
+                .frame(minWidth: 8 * scale, minHeight: 8 * scale)
+                .foregroundStyle(color)
+                .blendMode(.destinationOut)
+        }
+        .fixedSize()
+    }
+}
+
+/// An account's provider mark. An account mirrored from a CLIProxyAPI hub carries the hub's mark in the
+/// bottom-trailing corner, cut out of the provider's mark so the two never touch.
+struct AccountIcon: View {
+    let provider: Provider
+    let side: CGFloat
+    var inset: CGFloat = 0.14
+
+    @ViewBuilder
+    var body: some View {
+        if provider.hubHost == nil {
+            ProviderIcon(id: provider.icon, side: side, inset: inset)
+        } else {
+            let badge = side * 0.52
+            let offset = side * 0.08
+            ProviderIcon(id: provider.icon, side: side, inset: inset)
+                .mask {
+                    Rectangle()
+                        .overlay(alignment: .bottomTrailing) {
+                            Circle()
+                                .frame(width: badge * 1.24, height: badge * 1.24)
+                                .offset(x: offset + badge * 0.12, y: offset + badge * 0.12)
+                                .blendMode(.destinationOut)
+                        }
+                        .compositingGroup()
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    ProviderIcon(id: CLIProxyHub.markID, side: badge, inset: 0)
+                        .offset(x: offset, y: offset)
+                }
+                .accessibilityLabel("Managed by CLIProxyAPI")
+        }
+    }
+}
+
 struct ProviderMark {
     let rep: NSImageRep
     let bounds: CGRect

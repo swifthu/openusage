@@ -28,31 +28,38 @@ final class QuotaNotificationEvaluator {
             let previous = notificationState[key] ?? NotificationState()
             let result = PaceNotificationLogic.transitions(
                 state: state,
-                fraction: data.remainingFraction,
+                severity: data.severity,
                 resetsAt: data.resetsAt,
+                unusedNearReset: PaceNotificationLogic.isUnusedNearReset(data, now: now),
                 previous: previous
             )
             var next = result.newState
             var paceDelivered = false
-            var underDelivered = false
+            var levelDelivered = false
             for milestone in result.fire {
+                // A drop past both levels sends the lowest one that's switched on, not both.
+                if levelDelivered, milestone.isLevel {
+                    next.firedMilestones.insert(milestone)
+                    continue
+                }
                 let delivered = isOn(milestone)
                     ? await deliver(milestone, data: data, providerID: descriptor.providerID, providerName: providerName)
                     : false
                 if delivered {
-                    if milestone == .underTenPercent { underDelivered = true } else { paceDelivered = true }
+                    if milestone.isPace { paceDelivered = true }
+                    if milestone.isLevel { levelDelivered = true }
                     next.firedMilestones.insert(milestone)
                 }
             }
             let held = PaceNotificationLogic.carriedOver(previous, resetsAt: data.resetsAt)
-            if result.fire.contains(where: { $0 != .underTenPercent }) && !paceDelivered {
+            if result.fire.contains(where: \.isPace) && !paceDelivered {
                 next.previousBucket = held.previousBucket
             }
-            if result.fire.contains(.underTenPercent) && !underDelivered {
-                next.wasUnderTenPercent = held.wasUnderTenPercent
+            if result.fire.contains(where: \.isLevel) && !levelDelivered {
+                next.previousSeverity = held.previousSeverity
             }
             if !result.fire.isEmpty {
-                AppLog.debug(.notifications, "\(key): \(previous.previousBucket) -> \(next.previousBucket), fired \(result.fire.map(\.rawValue)), delivered pace=\(paceDelivered) under10=\(underDelivered)")
+                AppLog.debug(.notifications, "\(key): \(previous.previousBucket) -> \(next.previousBucket), fired \(result.fire.map(\.rawValue)), delivered pace=\(paceDelivered) level=\(levelDelivered)")
             }
             nextState[key] = next
         }
@@ -66,6 +73,6 @@ final class QuotaNotificationEvaluator {
         providerName: @MainActor (String) -> String
     ) async -> Bool {
         let subtitle = "\(providerName(providerID)) \(data.title)"
-        return await post("\(providerID).\(milestone.rawValue)", milestone.notificationTitle, subtitle, milestone.body)
+        return await post("\(providerID).\(milestone.rawValue)", milestone.notificationTitle, subtitle, milestone.body(data.priorityLimits))
     }
 }

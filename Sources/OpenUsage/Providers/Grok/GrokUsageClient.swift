@@ -14,11 +14,7 @@ extension GrokLogin {
             body: Data(body.utf8),
             timeout: 15
         ))
-        if ProviderError.refusedGrant(response) { throw ProviderError.signInExpired(.grok) }
-        guard (200..<300).contains(response.statusCode),
-              let token = try? JSONDecoder().decode(OAuthTokenResponse.self, from: response.body)
-        else { throw ProviderError.failed(response) }
-        return token.grant(now: now)
+        return try OAuthTokenResponse(renewal: response, kind: .grok).grant(now: now)
     }
 }
 
@@ -29,10 +25,6 @@ struct GrokUsageClient: Sendable {
     static let creditsConfigURL = URL(string: "https://cli-chat-proxy.grok.com/v1/billing?format=credits")!
 
     var httpClient: HTTPClient
-
-    init(httpClient: HTTPClient = URLSessionHTTPClient()) {
-        self.httpClient = httpClient
-    }
 
     func fetchCreditsConfig(accessToken: String) async throws -> HTTPResponse {
         try await httpClient.send(HTTPRequest(

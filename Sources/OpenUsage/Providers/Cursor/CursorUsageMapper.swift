@@ -86,6 +86,7 @@ enum CursorUsageMapper {
         }
 
         var lines: [MetricLine] = []
+        var lineTitles: [String: String] = [:]
         appendCredits(creditGrants: creditGrants, stripeBalanceCents: stripeBalanceCents, to: &lines)
 
         let planUsedCents = ProviderParse.number(planUsage["totalSpend"])
@@ -134,7 +135,8 @@ enum CursorUsageMapper {
         }
 
         if let spendLimitUsage {
-            let limit = ProviderParse.number(spendLimitUsage["individualLimit"]) ?? ProviderParse.number(spendLimitUsage["pooledLimit"]) ?? 0
+            let individualLimit = ProviderParse.number(spendLimitUsage["individualLimit"])
+            let limit = individualLimit ?? ProviderParse.number(spendLimitUsage["pooledLimit"]) ?? 0
             let remaining = ProviderParse.number(spendLimitUsage["individualRemaining"]) ?? ProviderParse.number(spendLimitUsage["pooledRemaining"]) ?? 0
             let spent = onDemandSpendCents(from: spendLimitUsage, limit: limit, remaining: remaining)
             if limit > 0 {
@@ -142,7 +144,9 @@ enum CursorUsageMapper {
                     label: "On-demand",
                     used: ProviderParse.centsToDollars(spent),
                     limit: ProviderParse.centsToDollars(limit),
-                    format: .dollars
+                    format: .dollars,
+                    resetsAt: cycle.resetsAt,
+                    periodDurationMs: cycle.periodDurationMs
                 ))
             } else if spent > 0 {
                 lines.append(.values(
@@ -150,9 +154,12 @@ enum CursorUsageMapper {
                     values: [MetricValue(number: ProviderParse.centsToDollars(spent), kind: .dollars)]
                 ))
             }
+            if individualLimit == nil && facts.isTeamByShape && (limit > 0 || spent > 0) {
+                lineTitles["On-demand"] = "Team Spend"
+            }
         }
 
-        return ProviderUsage(plan: planLabel(planName), lines: lines)
+        return ProviderUsage(plan: planLabel(planName), lines: lines, lineTitles: lineTitles)
     }
 
     private static func onDemandSpendCents(from spendLimitUsage: [String: Any], limit: Double, remaining: Double) -> Double {
@@ -213,7 +220,7 @@ enum CursorUsageMapper {
         let combinedTotalCents = (hasValidGrantData ? grantTotalCents : 0) + stripeBalanceCents
         let remainingCents = max(0, combinedTotalCents - (hasValidGrantData ? grantUsedCents : 0))
 
-        guard combinedTotalCents > 0 else { return }
+        guard creditGrants != nil || combinedTotalCents > 0 else { return }
         lines.append(.values(
             label: "Credits",
             values: [MetricValue(number: ProviderParse.centsToDollars(remainingCents), kind: .dollars)]
@@ -225,17 +232,19 @@ enum CursorUsageMapper {
         let cycleEnd = ProviderParse.number(usage["billingCycleEnd"])
         guard let cycleStart,
               let cycleEnd,
-              cycleEnd > cycleStart
+              cycleEnd > cycleStart,
+              let periodMs = ProviderParse.int(cycleEnd - cycleStart)
         else {
             return (cycleEnd.map { Date(timeIntervalSince1970: $0 / 1000) }, billingPeriodMs)
         }
-        return (
-            Date(timeIntervalSince1970: cycleEnd / 1000),
-            Int(cycleEnd - cycleStart)
-        )
+        return (Date(timeIntervalSince1970: cycleEnd / 1000), periodMs)
     }
 
     static let orgMembershipTypes: Set<String> = ["enterprise", "team"]
+
+    static func membershipType(in summary: [String: Any]?) -> String? {
+        normalizedMembership(summary?["membershipType"] as? String)
+    }
 
     /// Badge / display plan. Prefer org billing membership over GetPlanInfo when it still says Pro.
     static func resolvedPlanName(planInfoName: String?, membershipType: String?) -> String? {

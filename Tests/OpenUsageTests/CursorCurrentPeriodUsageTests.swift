@@ -24,6 +24,8 @@ final class CursorCurrentPeriodUsageTests: XCTestCase {
         let http = RoutingHTTPClient { request in
             switch request.url {
             case CursorUsageClient.usageURL: return usage
+            case CursorUsageClient.refreshURL:
+                return HTTPResponse(statusCode: 200, headers: [:], body: Data(#"{"access_token":"renewed"}"#.utf8))
             case CursorUsageClient.planURL:
                 return HTTPResponse(statusCode: 200, headers: [:], body: Data(#"{"planInfo":{"planName":"Pro"}}"#.utf8))
             case CursorUsageClient.creditsURL:
@@ -54,6 +56,32 @@ final class CursorCurrentPeriodUsageTests: XCTestCase {
         }
     }
 
+    /// #1424: a team's pooled spend limit must not read like a personal Extra Usage cap.
+    func testATeamPoolReadsAsTeamSpendAndAPersonalCapStaysExtraUsage() async throws {
+        let team = Self.currentPeriodUsage.replacingOccurrences(
+            of: #""individualLimit":5000,"individualRemaining":4000,"limitType":"user""#,
+            with: #""pooledLimit":50000,"pooledUsed":12000,"pooledRemaining":38000,"limitType":"team""#
+        )
+        let teamRow = try await onDemandRow(team)
+        XCTAssertEqual(teamRow?.title, "Team Spend")
+        XCTAssertEqual(teamRow?.used, 120)
+        XCTAssertEqual(teamRow?.limit, 500)
+
+        let personalRow = try await onDemandRow(Self.currentPeriodUsage)
+        XCTAssertEqual(personalRow?.title, "Extra Usage")
+        XCTAssertEqual(personalRow?.limit, 50)
+    }
+
+    private func onDemandRow(_ usage: String) async throws -> WidgetData? {
+        let runtime = try runtime(usage: HTTPResponse(statusCode: 200, headers: [:], body: Data(usage.utf8)))
+        let snapshot = try await runtime.refresh().get()
+        let stub = StubRuntime(provider: runtime.provider, descriptors: runtime.widgetDescriptors, snapshot: snapshot)
+        let store = WidgetDataStore.forTesting([stub], defaults: isolatedDefaults())
+        await store.refreshAll()
+        return store.accounts(in: [ProviderMetrics(provider: stub.provider, metrics: stub.widgetDescriptors)])
+            .flatMap(\.lines).first { $0.descriptor.key == "onDemand" }?.data
+    }
+
     func testRejectedTokenReadsAsExpiredSignIn() async throws {
         let runtime = try runtime(usage: HTTPResponse(statusCode: 401, headers: [:], body: Data()))
 
@@ -61,5 +89,9 @@ final class CursorCurrentPeriodUsageTests: XCTestCase {
 
         guard let text = snapshot.failure?.message else { return XCTFail("Expected an error snapshot") }
         XCTAssertEqual(text, ProviderError.signInExpired(.cursor).localizedDescription)
+        let usageTokens = (runtime.http as? RoutingHTTPClient)?.requests
+            .filter { $0.url == CursorUsageClient.usageURL }
+            .map { $0.headers["Authorization"] }
+        XCTAssertEqual(usageTokens, ["Bearer access", "Bearer renewed"], "the renewed token is rejected too")
     }
 }

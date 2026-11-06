@@ -7,44 +7,25 @@ import XCTest
 final class SeverityPaletteTests: XCTestCase {
     private let d: TimeInterval = 86400
 
-    private static let palette: [(WidgetData.MeterSeverity, String)] = [
-        (.normal, "systemBlue"), (.warning, "systemOrange"), (.critical, "systemRed"),
-    ]
-
-    private static let candidates: [(String, NSColor)] = [
-        ("systemBlue", .systemBlue), ("systemOrange", .systemOrange), ("systemRed", .systemRed),
-        ("systemYellow", .systemYellow), ("controlAccent", .controlAccentColor),
-        ("swiftUIOrange", NSColor(Color.orange)), ("swiftUIRed", NSColor(Color.red)),
-    ]
-
+    /// The severity colours every place that draws a severity takes them from `Theme`, so a limit
+    /// never shows two colours for one severity.
     func testEachSeverityMapsToItsSystemColour() {
-        for (severity, name) in Self.palette {
-            XCTAssertEqual(Self.nearest(NSColor(Theme.severityColor(severity))), name, "\(severity)")
-        }
+        XCTAssertEqual(Self.nearest(NSColor(Theme.severityColor(.normal))), "systemBlue")
+        XCTAssertEqual(Self.nearest(NSColor(Theme.severityColor(.warning))), "systemOrange")
+        XCTAssertEqual(Self.nearest(NSColor(Theme.severityColor(.critical))), "systemRed")
     }
 
-    func testMeterValueTimelineDotAndBannerAgree() throws {
-        for (severity, name) in Self.palette {
-            let meter = UsageMeterBar(fill: 1, severity: severity).frame(width: 60)
-            XCTAssertEqual(try dominant(meter), name, "meter \(severity)")
-
-            if severity != .normal {
-                let row = DashboardMetricRow(model: DashboardRowModel(label: "Weekly", mark: .bar(fill: 0, severity: severity, value: "0%", reset: "1d 8h")))
-                    .frame(width: 292)
-                XCTAssertEqual(try dominant(row), name, "value \(severity)")
-                let count = DashboardMetricRow(model: DashboardRowModel(label: "Limit Resets", mark: .value("2 available", severity: severity)))
-                    .frame(width: 292)
-                XCTAssertEqual(try dominant(count), name, "count \(severity)")
-            }
-            if severity == .critical {
-                let flame = DashboardMetricRow(model: DashboardRowModel(label: "Weekly", mark: .bar(fill: 0, severity: .normal, value: "60%", reset: "1d 8h", flame: true)))
-                    .frame(width: 292)
-                XCTAssertEqual(try dominant(flame), name, "flame")
-            }
+    func testTheBarTheTimelineDotAndTheBannerShareOneSeverityColour() throws {
+        for severity in [WidgetData.MeterSeverity.normal, .warning, .critical] {
+            // The bar, drawn as shapes so an image renderer can draw it at all.
+            let bar = try dominant(LevelIndicator(fill: 1, severity: severity)
+                .environment(\.drawsLevelsAsShapes, true)
+                .frame(width: 60))
+            XCTAssertEqual(bar, try dominant(Rectangle().fill(Theme.severityColor(severity))), "bar \(severity)")
 
             let expiry = Date().addingTimeInterval(expiryOffset(severity))
             let timeline = RateLimitResetsDetail(count: 1, expiries: [expiry], onHoverChange: { _ in })
-            XCTAssertEqual(try dominant(timeline), name, "timeline dot \(severity)")
+            XCTAssertEqual(try dominant(timeline), bar, "timeline dot \(severity)")
         }
 
         let banners: [(ResetClaimOutcome, String)] = [
@@ -52,6 +33,33 @@ final class SeverityPaletteTests: XCTestCase {
         ]
         for (outcome, name) in banners {
             XCTAssertEqual(Self.nearest(NSColor(RateLimitResetsDetail.banner(for: outcome).tint)), name, "banner \(outcome)")
+        }
+    }
+
+    func testTheAmountAndTheCountTakeTheDarkenedVariantOfTheirSeverity() throws {
+        // Small text on a light panel reads better in the darkened severity colour, and it is still
+        // the same severity: the same hue as the bar, only darker.
+        for severity in [WidgetData.MeterSeverity.warning, .critical] {
+            let row = DashboardMetricRow(model: DashboardRowModel(
+                label: "Weekly", mark: .bar(fill: 0, severity: severity, value: "0%", reset: "1d 8h")
+            ))
+            .environment(\.drawsLevelsAsShapes, true)
+            .frame(width: 292)
+            XCTAssertEqual(
+                try dominant(row),
+                try dominant(Text("0%").foregroundStyle(Theme.severityTextColor(severity))),
+                "amount \(severity)"
+            )
+
+            let count = DashboardMetricRow(model: DashboardRowModel(
+                label: "Limit Resets", mark: .value("2 available", severity: severity)
+            ))
+            .frame(width: 292)
+            XCTAssertEqual(
+                try dominant(count),
+                try dominant(Text("2 available").foregroundStyle(Theme.severityTextColor(severity))),
+                "count \(severity)"
+            )
         }
     }
 
@@ -79,7 +87,8 @@ final class SeverityPaletteTests: XCTestCase {
         }
     }
 
-    private func dominant(_ view: some View) throws -> String {
+    /// The colour of the most saturated opaque pixel of a rendered view.
+    private func dominant(_ view: some View) throws -> SIMD3<Double> {
         let renderer = ImageRenderer(content: view.environment(\.colorScheme, .light))
         renderer.scale = 2
         let image = try XCTUnwrap(renderer.cgImage, "render failed")
@@ -98,9 +107,14 @@ final class SeverityPaletteTests: XCTestCase {
             counts[UInt32(r) << 16 | UInt32(g) << 8 | UInt32(b), default: 0] += 1
         }
         let key = try XCTUnwrap(counts.max { $0.value < $1.value }?.key, "no saturated pixels")
-        let rgb = SIMD3(Double(key >> 16 & 0xFF), Double(key >> 8 & 0xFF), Double(key & 0xFF)) / 255
-        return Self.nearest(rgb)
+        return SIMD3(Double(key >> 16 & 0xFF), Double(key >> 8 & 0xFF), Double(key & 0xFF)) / 255
     }
+
+    private static let candidates: [(String, NSColor)] = [
+        ("systemBlue", .systemBlue), ("systemOrange", .systemOrange), ("systemRed", .systemRed),
+        ("systemYellow", .systemYellow), ("controlAccent", .controlAccentColor),
+        ("swiftUIOrange", NSColor(Color.orange)), ("swiftUIRed", NSColor(Color.red)),
+    ]
 
     private static func nearest(_ color: NSColor) -> String {
         nearest(resolve(color, .aqua))

@@ -7,31 +7,31 @@ enum ProviderError: Error, LocalizedError, Equatable {
     case requestFailed(Int)
     case rateLimited(retryAfter: TimeInterval?)
     case unavailable(String)
+    case keyRejected(String)
+    /// A server between OpenUsage and the provider, such as a CLIProxyAPI hub, can't be reached.
+    case unreachable(String)
 
     var errorDescription: String? {
         switch self {
-        case .signInExpired(let kind):
-            if case .apiKey = kind.authMethod {
-                "\(kind.displayName) rejected the API key. Replace it on the account's page."
-            } else {
-                "\(kind.displayName) sign-in expired. Remove the account and add it again."
-            }
+        case .signInExpired(let kind): "\(kind.displayName) sign-in expired. Sign in again to keep reading usage."
         case .connectionFailed: "Connection failed. Check your internet connection and try again."
         case .invalidResponse: "The provider returned an invalid response."
         case .requestFailed(let status): "The provider request failed (HTTP \(status))."
         case .rateLimited: "The provider asked OpenUsage to wait before asking again."
         case .unavailable(let message): message
+        case .keyRejected(let message): "\(message) Replace it on the account's page."
+        case .unreachable(let message): message
         }
     }
 
     static func isAuthFailure(_ response: HTTPResponse) -> Bool {
-        response.statusCode == 401 || response.statusCode == 403
+        response.statusCode == 401 || (response.statusCode == 403 && !isRateLimit(response))
     }
 
-    /// A token endpoint refusing the refresh token itself (RFC 6749 `invalid_grant`), which only a new sign-in cures.
-    static func refusedGrant(_ response: HTTPResponse) -> Bool {
-        (response.statusCode == 400 || response.statusCode == 401)
-            && ProviderParse.jsonObject(response.body)?["error"] as? String == "invalid_grant"
+    /// GitHub sends its rate limits as 403 with `x-ratelimit-remaining: 0` or `retry-after`.
+    private static func isRateLimit(_ response: HTTPResponse) -> Bool {
+        response.statusCode == 429
+            || (response.statusCode == 403 && (response.header("x-ratelimit-remaining") == "0" || response.header("retry-after") != nil))
     }
 
     static func requireSuccess(_ response: HTTPResponse, kind: ProviderKind) throws {
@@ -39,7 +39,13 @@ enum ProviderError: Error, LocalizedError, Equatable {
         guard (200..<300).contains(response.statusCode) else { throw ProviderError.failed(response) }
     }
 
+    static func requireSuccessJSON(_ response: HTTPResponse, kind: ProviderKind) throws -> [String: Any] {
+        try requireSuccess(response, kind: kind)
+        guard let body = ProviderParse.jsonObject(response.body) else { throw ProviderError.invalidResponse }
+        return body
+    }
+
     static func failed(_ response: HTTPResponse, now: Date = Date()) -> ProviderError {
-        response.statusCode == 429 ? .rateLimited(retryAfter: response.retryAfter(now: now)) : .requestFailed(response.statusCode)
+        isRateLimit(response) ? .rateLimited(retryAfter: response.retryAfter(now: now)) : .requestFailed(response.statusCode)
     }
 }

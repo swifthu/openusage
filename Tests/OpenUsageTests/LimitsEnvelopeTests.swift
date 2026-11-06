@@ -7,14 +7,14 @@ final class LimitsEnvelopeTests: XCTestCase {
 
     private static let documentedExample = """
     {
-      "schema": "openusage.limits.v1",
+      "schema": "openusage.limits.v2",
       "generatedAt": "2026-07-13T01:40:00.000Z",
       "providers": {
         "codex": {
-          "displayName": "ChatGPT",
+          "displayName": "ChatGPT · Work",
           "plan": "Pro 200",
           "fetchedAt": "2026-07-13T01:39:30.000Z",
-          "expiresAt": "2026-07-13T01:44:30.000Z",
+          "expiresAt": "2026-07-13T01:49:30.000Z",
           "stale": false,
           "resources": {
             "session": {
@@ -42,28 +42,28 @@ final class LimitsEnvelopeTests: XCTestCase {
         try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
-    private func input(snapshot: ProviderSnapshot, descriptors: [WidgetDescriptor]) -> LimitsEnvelope.Input {
+    private func input(_ provider: Provider, snapshot: ProviderSnapshot, descriptors: [WidgetDescriptor]) -> LimitsEnvelope.Input {
         LimitsEnvelope.Input(
-            providerIDs: [snapshot.providerID],
-            snapshots: [snapshot.providerID: snapshot],
-            limitDescriptors: [snapshot.providerID: descriptors],
+            registry: WidgetRegistry(providers: [provider], descriptors: descriptors),
+            snapshots: [provider.id: snapshot],
             generatedAt: generatedAt
         )
     }
 
     private func limitResource(
         _ key: String,
+        of provider: Provider,
         snapshot: ProviderSnapshot,
         descriptors: [WidgetDescriptor]
     ) throws -> [String: Any] {
-        let root = try json(LimitsEnvelope.encode(input(snapshot: snapshot, descriptors: descriptors)))
-        let provider = try XCTUnwrap((root["providers"] as? [String: Any])?[snapshot.providerID] as? [String: Any])
-        return try XCTUnwrap((provider["resources"] as? [String: Any])?[key] as? [String: Any])
+        let root = try json(LimitsEnvelope.encode(input(provider, snapshot: snapshot, descriptors: descriptors)))
+        let entry = try XCTUnwrap((root["providers"] as? [String: Any])?[provider.id] as? [String: Any])
+        return try XCTUnwrap((entry["resources"] as? [String: Any])?[key] as? [String: Any])
     }
 
     @MainActor
     func testEnvelopeMatchesTheDocumentedExample() throws {
-        let account = Account(kind: .codex, label: "Codex")
+        let account = Account(kind: .codex, label: "Work")
         let snapshot = ProviderSnapshot(
             providerID: account.cardID,
             displayName: "ChatGPT",
@@ -72,96 +72,51 @@ final class LimitsEnvelopeTests: XCTestCase {
                 .progress(label: "Session", used: 42, limit: 100, format: .percent,
                           resetsAt: OpenUsageISO8601.date(from: "2026-07-13T06:00:00.000Z"),
                           periodDurationMs: 18_000_000),
-                .values(label: "Credits", values: [MetricValue(number: 821, kind: .count, label: "credits")])
-            ],
-            refreshedAt: fetchedAt
-        )
-        let descriptors = AccountProviderRuntime.widgetDescriptors(for: account)
-        let actual = try json(LimitsEnvelope.encode(input(snapshot: snapshot, descriptors: descriptors)))
-        let expected = try json(Data(
-            Self.documentedExample.replacingOccurrences(of: "\"codex\": {", with: "\"\(account.cardID)\": {").utf8
-        ))
-
-        XCTAssertEqual(actual as NSDictionary, expected as NSDictionary)
-    }
-
-    func testEnvelopeCarriesRawScalarsAndFreshnessWithoutUIPresentation() throws {
-        let provider = Provider(id: "codex", kind: .codex)
-        let session = WidgetDescriptor.percent(key: "session", provider: provider, title: "Session")
-            .exportingLimit("session", unit: "percent")
-        let credits = WidgetDescriptor.values(
-            key: "credits", provider: provider, title: "Extra Usage", metricLabel: "Credits"
-        )
-        .exportingLimit("credits", kind: .balance, unit: "credits", source: .value(kind: .count, label: "credits"))
-        let snapshot = ProviderSnapshot(
-            providerID: "codex",
-            displayName: "ChatGPT",
-            plan: "Pro 200",
-            lines: [
-                .progress(
-                    label: "Session", used: 42, limit: 100, format: .percent,
-                    resetsAt: OpenUsageISO8601.date(from: "2026-07-13T06:00:00.000Z"),
-                    periodDurationMs: 18_000_000
-                ),
                 .values(label: "Credits", values: CodexUsageMapper.creditValues(remaining: 821.6)),
                 .badge(label: "Pay as you go", text: "2500 cap")
             ],
             refreshedAt: fetchedAt
         )
-        let input = input(snapshot: snapshot, descriptors: [session, credits])
+        let descriptors = AccountProviderRuntime.widgetDescriptors(for: account)
+        let provider = AccountProviderRuntime.provider(for: account)
+        var request = input(provider, snapshot: snapshot, descriptors: descriptors)
+        let actual = try json(LimitsEnvelope.encode(request))
+        let expected = try json(Data(
+            Self.documentedExample.replacingOccurrences(of: "\"codex\": {", with: "\"\(account.cardID)\": {").utf8
+        ))
 
-        let root = try json(LimitsEnvelope.encode(input))
-        let providerJSON = try XCTUnwrap((root["providers"] as? [String: Any])?["codex"] as? [String: Any])
-        let resources = try XCTUnwrap(providerJSON["resources"] as? [String: Any])
-        let sessionJSON = try XCTUnwrap(resources["session"] as? [String: Any])
-        let creditsJSON = try XCTUnwrap(resources["credits"] as? [String: Any])
+        XCTAssertEqual(actual as NSDictionary, expected as NSDictionary)
 
-        XCTAssertEqual(root["schema"] as? String, "openusage.limits.v1")
-        XCTAssertEqual(root["generatedAt"] as? String, "2026-07-13T01:40:00.000Z")
-        XCTAssertEqual(providerJSON["plan"] as? String, "Pro 200")
-        XCTAssertEqual(providerJSON["fetchedAt"] as? String, "2026-07-13T01:39:30.000Z")
-        XCTAssertEqual(providerJSON["expiresAt"] as? String, "2026-07-13T01:44:30.000Z")
-        XCTAssertEqual(providerJSON["stale"] as? Bool, false)
-        XCTAssertEqual(sessionJSON["kind"] as? String, "consumption")
-        XCTAssertEqual(sessionJSON["unit"] as? String, "percent")
-        XCTAssertEqual(sessionJSON["used"] as? Double, 42)
-        XCTAssertEqual(sessionJSON["limit"] as? Double, 100)
-        XCTAssertEqual(sessionJSON["remaining"] as? Double, 58)
-        XCTAssertEqual(try XCTUnwrap(sessionJSON["utilization"] as? Double), 0.42, accuracy: 0.000_001)
-        XCTAssertEqual(sessionJSON["windowSeconds"] as? Double, 18_000)
-        XCTAssertEqual(creditsJSON["kind"] as? String, "balance")
-        XCTAssertEqual(creditsJSON["available"] as? Double, 821)
-        XCTAssertEqual(creditsJSON["unit"] as? String, "credits")
-        XCTAssertEqual(Set(resources.keys), ["session", "credits"])
-        XCTAssertNil(sessionJSON["label"])
-
-        var expired = input
-        expired.generatedAt = fetchedAt.addingTimeInterval(RefreshSetting.interval)
-        let expiredRoot = try json(LimitsEnvelope.encode(expired))
-        let expiredProvider = try XCTUnwrap((expiredRoot["providers"] as? [String: Any])?["codex"] as? [String: Any])
-        XCTAssertEqual(expiredProvider["stale"] as? Bool, true)
+        request.generatedAt = fetchedAt.addingTimeInterval(RefreshSetting.stalenessThreshold)
+        let expired = try json(LimitsEnvelope.encode(request))
+        let entries = try XCTUnwrap(expired["providers"] as? [String: [String: Any]])
+        XCTAssertEqual(entries[account.cardID]?["stale"] as? Bool, true)
     }
 
     func testCardWithoutSnapshotHasNoEntryAndTheEnvelopeHasOnlyFilledKeys() throws {
-        let input = LimitsEnvelope.Input(providerIDs: ["codex@ab12cd34"], snapshots: [:], generatedAt: generatedAt)
+        let input = LimitsEnvelope.Input(
+            registry: WidgetRegistry(providers: [Provider(id: "codex@ab12cd34", kind: .codex)], descriptors: []),
+            snapshots: [:],
+            generatedAt: generatedAt
+        )
         let pending = try json(LimitsEnvelope.encode(input))
         XCTAssertTrue((pending["providers"] as? [String: Any])?.isEmpty == true)
         XCTAssertEqual(Set(pending.keys), ["schema", "generatedAt", "providers"])
     }
 
     func testProvidersPrintInTheRequestedOrderAndOnlyThoseRequested() throws {
-        let provider = Provider(id: "zai", kind: .zai)
-        let weekly = WidgetDescriptor.percent(key: "weekly", provider: provider, title: "Weekly")
-            .exportingLimit("weekly", unit: "percent")
+        let providers = ["zai@2", "zai@1"].map { Provider(id: $0, kind: .zai) }
+        let weekly = providers.map {
+            WidgetDescriptor.percent(key: "weekly", provider: $0, title: "Weekly").exportingLimit("weekly", unit: "percent")
+        }
         func snapshot(_ id: String) -> ProviderSnapshot {
             ProviderSnapshot(providerID: id, displayName: "Z.ai",
                              lines: [.progress(label: "Weekly", used: 1, limit: 100, format: .percent)],
                              refreshedAt: fetchedAt)
         }
         let input = LimitsEnvelope.Input(
-            providerIDs: ["zai@2", "zai@1"],
+            registry: WidgetRegistry(providers: providers, descriptors: weekly),
             snapshots: ["zai@1": snapshot("zai@1"), "zai@2": snapshot("zai@2"), "zai@3": snapshot("zai@3")],
-            limitDescriptors: ["zai@1": [weekly], "zai@2": [weekly], "zai@3": [weekly]],
             generatedAt: generatedAt
         )
 
@@ -181,13 +136,29 @@ final class LimitsEnvelopeTests: XCTestCase {
             lines: [.values(label: "Extra usage spent", values: [MetricValue(number: 12.5, kind: .dollars)])],
             refreshedAt: fetchedAt
         )
-        let resource = try limitResource("extraUsage", snapshot: snapshot, descriptors: [extra])
+        let resource = try limitResource("extraUsage", of: provider, snapshot: snapshot, descriptors: [extra])
 
         XCTAssertEqual(resource["used"] as? Double, 12.5)
         XCTAssertEqual(resource["unit"] as? String, "usd")
         XCTAssertNil(resource["limit"])
         XCTAssertNil(resource["remaining"])
         XCTAssertNil(resource["utilization"])
+    }
+
+    func testClaudeExtraUsageExportsItsBillingCurrencyAsTheUnit() throws {
+        let provider = Provider(id: "claude", kind: .claude)
+        let extra = WidgetDescriptor.boundedDollars(
+            key: "extra", provider: provider, title: "Extra Usage",
+            metricLabel: "Extra usage spent", limit: 100
+        ).exportingLimit("extraUsage", unit: "usd", source: .progressOrValue(kind: .dollars))
+        func unit(_ line: MetricLine) throws -> String? {
+            let snapshot = ProviderSnapshot(providerID: "claude", displayName: "Claude", lines: [line], refreshedAt: fetchedAt)
+            return try limitResource("extraUsage", of: provider, snapshot: snapshot, descriptors: [extra])["unit"] as? String
+        }
+
+        XCTAssertEqual(try unit(.progress(label: "Extra usage spent", used: 12.34, limit: 50, format: .currency(code: "EUR"))), "eur")
+        XCTAssertEqual(try unit(.values(label: "Extra usage spent",
+                                        values: [MetricValue(number: 15, kind: .dollars, currencyCode: "EUR")])), "eur")
     }
 
     @MainActor
@@ -209,12 +180,13 @@ final class LimitsEnvelopeTests: XCTestCase {
             refreshedAt: fetchedAt
         )
 
-        let count = try limitResource("premiumCredits", snapshot: personal, descriptors: [credits])
+        let provider = AccountProviderRuntime.provider(for: account)
+        let count = try limitResource("premiumCredits", of: provider, snapshot: personal, descriptors: [credits])
         XCTAssertEqual(count["used"] as? Double, 2111)
         XCTAssertEqual(count["unit"] as? String, "credits")
         XCTAssertNil(count["limit"])
 
-        let percent = try limitResource("premiumCredits", snapshot: paid, descriptors: [credits])
+        let percent = try limitResource("premiumCredits", of: provider, snapshot: paid, descriptors: [credits])
         XCTAssertEqual(percent["used"] as? Double, 59)
         XCTAssertEqual(percent["unit"] as? String, "percent")
         XCTAssertEqual(percent["limit"] as? Double, 100)
@@ -231,11 +203,25 @@ final class LimitsEnvelopeTests: XCTestCase {
             lines: [.progress(label: "Total usage", used: 37, limit: 750, format: .count(suffix: "requests"))],
             refreshedAt: fetchedAt
         )
-        let resource = try limitResource("totalUsage", snapshot: snapshot, descriptors: [total])
+        let resource = try limitResource("totalUsage", of: provider, snapshot: snapshot, descriptors: [total])
 
         XCTAssertEqual(resource["unit"] as? String, "requests")
         XCTAssertEqual(resource["used"] as? Double, 37)
         XCTAssertEqual(resource["limit"] as? Double, 750)
+    }
+
+    @MainActor
+    func testAReportedZeroCodexBalanceIsExported() throws {
+        let account = Account(kind: .codex, label: "ChatGPT")
+        let provider = AccountProviderRuntime.provider(for: account)
+        let usage = try CodexUsageMapper.mapUsageResponse(
+            HTTPResponse(statusCode: 200, headers: [:], body: Data(#"{"credits":{"balance":"0"}}"#.utf8))
+        )
+        let resource = try limitResource(
+            "credits", of: provider, snapshot: ProviderSnapshot(provider: provider, plan: usage.plan, lines: usage.lines),
+            descriptors: AccountProviderRuntime.widgetDescriptors(for: account)
+        )
+        XCTAssertEqual(resource["available"] as? Double, 0)
     }
 
     @MainActor
@@ -252,7 +238,9 @@ final class LimitsEnvelopeTests: XCTestCase {
                             expiriesAt: [later, sooner])],
             refreshedAt: fetchedAt
         )
-        let resource = try limitResource("rateLimitResets", snapshot: snapshot, descriptors: descriptors)
+        let resource = try limitResource(
+            "rateLimitResets", of: AccountProviderRuntime.provider(for: account), snapshot: snapshot, descriptors: descriptors
+        )
 
         XCTAssertEqual(resource["kind"] as? String, "balance")
         XCTAssertEqual(resource["unit"] as? String, "resets")
@@ -277,8 +265,9 @@ final class LimitsEnvelopeTests: XCTestCase {
             ],
             refreshedAt: fetchedAt
         )
-        let argon = try limitResource("argonWeekly", snapshot: snapshot, descriptors: descriptors)
-        let gemini = try limitResource("geminiWeekly", snapshot: snapshot, descriptors: descriptors)
+        let provider = AccountProviderRuntime.provider(for: account)
+        let argon = try limitResource("argonWeekly", of: provider, snapshot: snapshot, descriptors: descriptors)
+        let gemini = try limitResource("geminiWeekly", of: provider, snapshot: snapshot, descriptors: descriptors)
 
         XCTAssertEqual(argon["unit"] as? String, "percent")
         XCTAssertEqual(argon["used"] as? Double, 75)
@@ -288,9 +277,9 @@ final class LimitsEnvelopeTests: XCTestCase {
         XCTAssertEqual(gemini["used"] as? Double, 10)
 
         snapshot.lines.removeAll { $0.label == AntigravityMetric.argonWeeklyLabel }
-        let root = try json(LimitsEnvelope.encode(input(snapshot: snapshot, descriptors: descriptors)))
-        let provider = try XCTUnwrap((root["providers"] as? [String: Any])?[account.cardID] as? [String: Any])
-        XCTAssertEqual(Set((provider["resources"] as? [String: Any])?.keys.map { $0 } ?? []), ["geminiWeekly"])
+        let root = try json(LimitsEnvelope.encode(input(provider, snapshot: snapshot, descriptors: descriptors)))
+        let entry = try XCTUnwrap((root["providers"] as? [String: Any])?[account.cardID] as? [String: Any])
+        XCTAssertEqual(Set((entry["resources"] as? [String: Any])?.keys.map { $0 } ?? []), ["geminiWeekly"])
     }
 
     @MainActor
@@ -305,14 +294,18 @@ final class LimitsEnvelopeTests: XCTestCase {
             "cursor": ["totalUsage", "grokBot", "autoUsage", "apiUsage", "onDemand", "requests", "credits"],
             "antigravity": ["geminiSession", "geminiWeekly", "argonWeekly", "nonGeminiSession", "nonGeminiWeekly"],
             "copilot": ["premiumCredits", "extraUsage", "chat", "completions"],
+            "devin": ["daily", "weekly", "extraUsageBalance"],
             "grok": ["weekly"],
+            "muse": ["session", "weekly"],
             "ollama": ["session", "weekly", "monthly", "purchasedCredits"],
             "opencode": ["session", "weekly", "monthly"],
-            "openrouter": ["balance"],
-            "zai": ["session", "weekly", "webSearches"],
+            "openrouter": ["balance", "keyLimit"],
+            "zai": ["session", "weekly", "webSearches", "rateLimitResets"],
             "minimax": ["session", "weekly"]
         ]
 
         XCTAssertEqual(actual, expected)
+        let organization = AccountProviderRuntime.widgetDescriptors(for: Account(kind: .copilot, label: "acme", organization: "acme"))
+        XCTAssertEqual(Set(organization.flatMap(\.limitResources).map(\.key)), ["orgCredits", "orgSpend"])
     }
 }

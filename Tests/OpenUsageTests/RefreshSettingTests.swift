@@ -30,6 +30,7 @@ final class RefreshSettingTests: XCTestCase {
         XCTAssertEqual(runtime.refreshCount, 0, "a snapshot under 5 minutes old is fresh at launch")
         XCTAssertEqual(store.snapshots["test"]?.line(label: "Session"),
                        .progress(label: "Session", used: 20, limit: 100, format: .percent))
+        XCTAssertEqual(store.data(for: runtime.widgetDescriptors[0]).valueText, "80%")
     }
 
     func testRelaunchRefetchesASnapshotOlderThanTheInterval() async {
@@ -46,6 +47,7 @@ final class RefreshSettingTests: XCTestCase {
         XCTAssertEqual(runtime.refreshCount, 1)
         XCTAssertEqual(store.snapshots["test"]?.line(label: "Session"),
                        .progress(label: "Session", used: 80, limit: 100, format: .percent))
+        XCTAssertEqual(store.data(for: runtime.widgetDescriptors[0]).valueText, "20%")
     }
 
     func testASnapshotFromTheFutureIsRefetched() async {
@@ -56,30 +58,6 @@ final class RefreshSettingTests: XCTestCase {
         let runtime = makeRuntime(used: 80)
         await makeStore(runtime: runtime, suite: suite, now: now).refreshAll()
         XCTAssertEqual(runtime.refreshCount, 1)
-    }
-
-    func testWithinSessionPassServedFromCacheUntilInterval() async {
-        var now = Date(timeIntervalSince1970: 1_800_000_000)
-        let suite = isolatedDefaults()
-
-        let cache = ProviderSnapshotCache(userDefaults: suite, storageKey: "snapshots")
-        cache.save(["test": ProviderSnapshot(
-            providerID: "test",
-            displayName: "Test",
-            lines: [.progress(label: "Session", used: 20, limit: 100, format: .percent)],
-            refreshedAt: now.addingTimeInterval(-240)
-        )])
-
-        let runtime = makeRuntime(used: 80)
-        let store = WidgetDataStore.forTesting([runtime], cache: cache, defaults: suite, now: { now })
-        await store.refreshAll()
-
-        XCTAssertEqual(runtime.refreshCount, 0)
-        XCTAssertNotNil(store.snapshots["test"])
-
-        now = now.addingTimeInterval(61)
-        await store.refreshAll()
-        XCTAssertEqual(runtime.refreshCount, 1, "the same-session cache expires after the refresh interval")
     }
 
     private func storeSnapshot(

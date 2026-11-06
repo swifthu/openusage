@@ -22,6 +22,10 @@ enum RefreshSetting {
         return min(max(stored, minInterval), maxInterval)
     }
 
+    /// A forced refresh lets the next pass skip an account, so working refreshes can leave its values
+    /// about two intervals old.
+    static var stalenessThreshold: TimeInterval { interval * 2 }
+
     /// A failed provider is retried one interval later, then backs off from there. Tied to the
     /// chosen interval so a faster cadence also recovers faster.
     static var failureBackoffBase: TimeInterval { interval }

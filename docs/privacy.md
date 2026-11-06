@@ -1,59 +1,46 @@
 # Privacy
 
-OpenUsage reads nothing that belongs to other tools. It never opens another app's Keychain items,
-auth files, logs, databases, or environment variables. The only credentials it holds are the ones you
-create by adding an account in the app, and the only network requests it makes for usage are the
-provider API calls those accounts need.
+OpenUsage reads nothing that belongs to other tools: no other app's Keychain items, auth files, logs,
+databases, or environment variables. It holds only the credentials you add in the app, and it calls
+only the provider APIs those accounts need.
 
 ## Credentials stored on this Mac
 
-OAuth tokens and API keys live in the app's own Keychain service (`com.robinebers.openusage.accounts`),
-one item per account. Removing an account deletes its item. Account names, the layout, settings, and
-the last fetched usage live in the app's own preferences. Nothing is synced to iCloud. The
-[`openusage` command](cli.md) reads that last fetched usage and nothing else: no Keychain item, no
-network request.
+- OAuth tokens and API keys live in the app's own Keychain service
+  (`com.robinebers.openusage.accounts`), one item per account. Removing an account deletes its item.
+- A [CLIProxyAPI hub](cliproxyapi.md)'s management key lives in `com.robinebers.openusage.cliproxy-hubs`
+  and is deleted with the hub. Hub accounts hold no token.
+- Account names, the layout, settings, and the last fetched usage live in the app's preferences.
+- Provider responses are never written to disk. Nothing syncs to iCloud.
+- The [`openusage` command](cli.md) reads only that last fetched usage. It makes no network request
+  and reads no Keychain item.
+- A [proxy](proxy.md) password stays in your `~/.openusage/config.json`. OpenUsage reads it but never
+  writes or logs it.
 
 ## Screen sharing
 
-With **Settings → Privacy → Hide From Screen Share** on, the menu bar shows the app icon instead of
-your usage while your screen is shared or recorded. It is off by default and does not hide the
-panel. To tell that a capture is running, OpenUsage asks the macOS window server whether anything is
-watching the screen.
+**Settings → Privacy → Hide From Screen Share** shows the app icon in the menu bar instead of your
+usage while your screen is shared or recorded. It is off by default and doesn't hide the panel.
 
 ## Anonymous telemetry
 
-OpenUsage always sends an anonymous daily active ping and anonymous crash reports so the team can count
-active users and fix crashes. These are not optional.
+| Data | When | Can you turn it off? |
+| --- | --- | --- |
+| App use ping | Once per local day | No |
+| Crash reports | The launch after a crash | No |
+| Provider account counts | Once per active install per local day | Yes |
 
-You can also share extra anonymous usage analytics. Extra analytics is on by default for new installs.
-Turn it off any time in **Settings → Privacy → Help Make OpenUsage Better**. Existing installs keep
-the choice they already stored.
-
-### What is always shared
-
-- Once per local day, an **app use** ping: that the app was active today, the app and macOS version,
-  which providers you have accounts for, which metrics are shown, and which are starred in the menu
-  bar. Metric ids name the provider and the metric (`claude.session`), never the account. A random
-  install id, not tied to you or any account, lets the team count daily active users.
-- **Crash reports**: if OpenUsage crashes, it saves a report and sends it the next time it starts. The
-  report holds the stack trace of OpenUsage's own code and the app and macOS version. It holds no
-  account details, credentials, or usage values.
-
-### What the toggle shares
-
-With extra analytics on, OpenUsage sends at most one event per provider per day with how many
-refreshes succeeded or failed and how many manual refreshes you triggered.
-
-### What is never shared
-
-- No account names, emails, or credentials.
-- No usage values: no limits, balances, or spend.
-- No error messages or file paths, only success and failure counts.
-
-### How it works
-
-- Data is anonymous: OpenUsage never identifies you to the analytics service and creates no user profile.
-- Counts are rolled up locally and sent as daily summaries, so the 5-minute refresh never turns into a
-  flood of network calls.
-- Your analytics choice and the install id are stored apart from the rest of the settings, so an app
-  update never re-enables extra analytics or changes the id.
+- The **app use** ping says the app was active today, with the app and macOS version, which providers
+  you have accounts for, and which metrics they have. Metric ids name the provider and metric
+  (`claude.session`), never the account. A random install id lets the team count daily users.
+- A **crash report** holds the stack trace of OpenUsage's own code and the app and macOS version. It
+  holds no account details, credentials, or usage values.
+- **Provider account counts** say how many accounts are configured for each provider, split between
+  direct accounts and accounts imported from CLIProxyAPI. They use the same random install id as the
+  app use ping and don't report refresh activity. Turn them off in **Settings → Privacy → Help Make
+  OpenUsage Better**. They are on by default for new installs, and existing installs keep their
+  stored choice.
+- Telemetry never includes account names, emails, credentials, usage values, error messages, or file
+  paths.
+- OpenUsage never identifies you to the analytics service. The analytics choice and install id are
+  stored apart from other settings, so an update never turns analytics back on or changes the id.

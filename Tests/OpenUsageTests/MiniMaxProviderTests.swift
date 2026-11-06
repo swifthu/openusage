@@ -61,13 +61,6 @@ final class MiniMaxProviderTests: XCTestCase {
         XCTAssertEqual(descriptors.last?.title, "5h Reset")
     }
 
-    func testSessionIsPinnedToTheMenuBar() {
-        let runtime = makeRuntime(http: RoutingHTTPClient { _ in jsonResponse(bothLimitsJSON) })
-        let session = runtime.widgetDescriptors.first { $0.key == "session" }
-
-        XCTAssertEqual(session?.isPinnedByDefault, true)
-    }
-
     func testRefreshIncludesSessionResetBadgeWithCountdown() async throws {
         let fixedNow = Date(timeIntervalSince1970: 1_800_000_000)
         let runtime = makeRuntime(
@@ -128,7 +121,10 @@ final class MiniMaxProviderTests: XCTestCase {
     }
 
     func testLoginForMiniMaxAsksForAnAPIKey() {
-        let login = ProviderLoginCatalog.login(for: .minimax)
+        let login = ProviderLoginCatalog.login(
+            for: .minimax, method: .apiKey(keyPage: URL(string: "https://platform.minimaxi.com/")!),
+            organization: "", domain: .github
+        )
 
         XCTAssertTrue(login is APIKeyLogin)
     }

@@ -10,7 +10,7 @@ final class ProviderLoginTests: XCTestCase {
             case "/v1/oauth/token":
                 Self.response(#"{"access_token":"claude-access","refresh_token":"claude-refresh","expires_in":3600}"#)
             case "/api/oauth/profile":
-                Self.response(#"{"account":{"email":"claude@example.com"}}"#)
+                Self.response(#"{"account":{"email":"claude@example.com","uuid":"acct"}}"#)
             default:
                 Self.response("{}", status: 404)
             }
@@ -34,7 +34,33 @@ final class ProviderLoginTests: XCTestCase {
         XCTAssertEqual(body["code"] as? String, "fake-authorization-code")
         XCTAssertEqual(body["client_id"] as? String, ClaudeLogin.clientID)
         XCTAssertEqual((body["redirect_uri"] as? String).flatMap(URL.init(string:))?.host, "localhost")
-        XCTAssertEqual(body["code_verifier"] as? String, body["state"] as? String)
+        let verifier = try XCTUnwrap(body["code_verifier"] as? String)
+        XCTAssertNotEqual(body["state"] as? String, verifier)
+        XCTAssertEqual(body["state"] as? String, query.first { $0.name == "state" }?.value)
+        XCTAssertFalse(authorizeURL.absoluteString.contains(verifier), "the authorize URL carries the challenge, never the verifier")
+    }
+
+    func testClaudeLoginFailsWhenItCannotReadTheProfile() async throws {
+        let profiles = [
+            Self.response(#"{"type":"error","error":{"type":"rate_limit_error"}}"#, status: 429),
+            Self.response(#"{"account":{"email":"claude@example.com"}}"#),
+        ]
+        for profile in profiles {
+            let http = RoutingHTTPClient { request in
+                request.url.path == "/v1/oauth/token"
+                    ? Self.response(#"{"access_token":"claude-access","refresh_token":"claude-refresh","expires_in":3600}"#)
+                    : profile
+            }
+            do {
+                let result = try await ClaudeLogin(http: http).login(
+                    prompt: Self.browserPrompt(PromptCapture(), callback: CallbackStatus()),
+                    pastedCode: emptyInput()
+                )
+                XCTFail("signed in as \(result.label) without the profile that identifies the account (HTTP \(profile.statusCode))")
+            } catch {
+                XCTAssertEqual(error.localizedDescription, "Claude didn’t return your profile. Click Try Again to sign in again.")
+            }
+        }
     }
 
     func testCodexLoginUsesPiOriginatorAndMapsAccountClaims() async throws {
@@ -107,7 +133,7 @@ final class ProviderLoginTests: XCTestCase {
         let http = RoutingHTTPClient { request in
             switch request.url.path {
             case "/oauth2/device/code":
-                Self.response(#"{"device_code":"device","user_code":"GROK-CODE","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":1}"#)
+                Self.response(#"{"device_code":"device","user_code":"GROK-CODE","verification_uri":"https://auth.x.ai/activate","verification_uri_complete":"https:/activate","expires_in":600,"interval":1}"#)
             case "/oauth2/token":
                 Self.response("""
                 {"access_token":"\(accessToken)","refresh_token":"grok-refresh","expires_in":3600}
@@ -125,12 +151,50 @@ final class ProviderLoginTests: XCTestCase {
 
         XCTAssertEqual(result.label, "grok@example.com")
         XCTAssertEqual(prompt.value?.deviceCode?.userCode, "GROK-CODE")
+        XCTAssertEqual(prompt.value?.deviceCode?.verificationURL, URL(string: "https://auth.x.ai/activate"), "an unusable prefilled link falls back to the plain one")
         let start = try XCTUnwrap(http.requests.first { $0.url.path == "/oauth2/device/code" })
         XCTAssertEqual(Self.formBody(start)["client_id"], GrokLogin.clientID)
-        XCTAssertEqual(Self.formBody(start)["scope"], "openid profile email offline_access grok-cli:access api:access")
+        XCTAssertEqual(Self.formBody(start)["scope"], "openid email offline_access grok-cli:access")
         let token = try XCTUnwrap(http.requests.first { $0.url.path == "/oauth2/token" })
         XCTAssertEqual(Self.formBody(token)["grant_type"], "urn:ietf:params:oauth:grant-type:device_code")
         XCTAssertEqual(Self.formBody(token)["device_code"], "device")
+    }
+
+    func testMuseDeviceLoginSendsNoScopeAndNamesTheAccountByEmail() async throws {
+        let http = RoutingHTTPClient { request in
+            switch request.url.path {
+            case "/oidc/device/authorization":
+                Self.response(#"{"device_code":"device","user_code":"MUSE-CODE","verification_uri":"https://auth.meta.com/oauth/device/","verification_uri_complete":"https://auth.meta.com/oauth/device/?code=MUSE-CODE","expires_in":600,"interval":1}"#)
+            case "/oidc/device/token":
+                Self.response(#"{"access_token":"dca:muse-access","token_type":"Bearer"}"#)
+            case "/muse-code/key":
+                Self.response(#"{"api_key":"LLM|SYNTHETIC-inference-key","user_email":"muse@example.com","is_subs_active":true}"#)
+            default:
+                Self.response("{}", status: 404)
+            }
+        }
+        let prompt = PromptCapture()
+
+        let result = try await MuseLogin(http: http).login(
+            prompt: { prompt.store($0) },
+            pastedCode: emptyInput()
+        )
+
+        XCTAssertEqual(result.label, "muse@example.com")
+        XCTAssertEqual(result.credential, .oauth(OAuthTokens(
+            accessToken: "dca:muse-access",
+            extras: [OAuthTokens.identityKey: "muse:muse@example.com"]
+        )), "only the dca: token is stored, never the inference key the key read returns")
+        XCTAssertEqual(prompt.value?.deviceCode?.userCode, "MUSE-CODE")
+        XCTAssertEqual(prompt.value?.deviceCode?.verificationURL, URL(string: "https://auth.meta.com/oauth/device/?code=MUSE-CODE"), "the browser opens with the code filled in")
+        let start = try XCTUnwrap(http.requests.first { $0.url.path == "/oidc/device/authorization" })
+        XCTAssertEqual(Self.formBody(start), ["client_id": MuseLogin.clientID], "no scope field at all")
+        let token = try XCTUnwrap(http.requests.first { $0.url.path == "/oidc/device/token" })
+        XCTAssertEqual(Self.formBody(token)["grant_type"], "urn:ietf:params:oauth:grant-type:device_code")
+        XCTAssertEqual(Self.formBody(token)["device_code"], "device")
+        let key = try XCTUnwrap(http.requests.first { $0.url.path == "/muse-code/key" })
+        XCTAssertEqual(key.headers["Authorization"], "Bearer dca:muse-access")
+        XCTAssertEqual(Self.jsonBody(key)?["onboard"] as? Bool, false)
     }
 
     func testCursorLoginPollsForTokens() async throws {
@@ -156,6 +220,57 @@ final class ProviderLoginTests: XCTestCase {
         let pollQuery = URLComponents(url: poll.url, resolvingAgainstBaseURL: false)?.queryItems
         XCTAssertFalse(pollQuery?.first { $0.name == "uuid" }?.value?.isEmpty ?? true)
         XCTAssertFalse(pollQuery?.first { $0.name == "verifier" }?.value?.isEmpty ?? true)
+    }
+
+    func testCursorLoginNamesTheAccountByTheProfileEmail() async throws {
+        let accessToken = Self.jwt(#"{"sub":"auth0|user_abc"}"#)
+        let http = RoutingHTTPClient { request in
+            request.url.path == "/api/auth/me"
+                ? Self.response(#"{"email":"dev@example.com","name":"Dev","sub":"auth0|user_abc"}"#)
+                : Self.response(#"{"accessToken":"\#(accessToken)","refreshToken":"cursor-refresh"}"#)
+        }
+
+        let result = try await CursorLogin(http: http).login(prompt: { _ in }, pastedCode: emptyInput())
+
+        XCTAssertEqual(result.label, "dev@example.com")
+        let profile = try XCTUnwrap(http.requests.first { $0.url.path == "/api/auth/me" })
+        XCTAssertEqual(profile.url.host, "cursor.com")
+        XCTAssertEqual(profile.headers["Cookie"], "WorkosCursorSessionToken=user_abc%3A%3A\(accessToken)")
+    }
+
+    func testCursorLoginKeepsTheDefaultNameWhenTheProfileReadFails() async throws {
+        let http = RoutingHTTPClient { request in
+            request.url.path == "/api/auth/me"
+                ? Self.response("{}", status: 500)
+                : Self.response(#"{"accessToken":"\#(Self.jwt(#"{"sub":"auth0|user_abc"}"#))","refreshToken":"cursor-refresh"}"#)
+        }
+
+        let result = try await CursorLogin(http: http).login(prompt: { _ in }, pastedCode: emptyInput())
+
+        XCTAssertNotNil(http.requests.first { $0.url.path == "/api/auth/me" })
+        XCTAssertEqual(result.label, "Cursor Account")
+        XCTAssertEqual(result.credential.identity, "cursor:user_abc")
+    }
+
+    func testOllamaKeyLoginNamesTheAccountByTheEmailOfItsPlanRead() async throws {
+        for account in [#"{"Email":"dev@example.com","Name":"dev","Plan":"pro"}"#, #"{"email":"dev@example.com","name":"dev","plan":"pro"}"#] {
+            let http = Self.ollamaHTTP(account: account)
+
+            let result = try await APIKeyLogin(kind: .ollama, http: http).login(prompt: { _ in }, pastedCode: pastedInput("ollama-key"))
+
+            XCTAssertEqual(result.label, "dev@example.com")
+            XCTAssertEqual(http.requests.filter { $0.url.path == "/api/me" }.count, 1, "the plan read names the account; no second request")
+        }
+    }
+
+    func testOllamaKeyLoginKeepsTheProviderNameWithoutAnEmail() async throws {
+        for (account, status) in [(#"{"Name":"dev","Plan":"free"}"#, 200), (#"{"Email":""}"#, 200), ("{}", 401)] {
+            let http = Self.ollamaHTTP(account: account, status: status)
+
+            let result = try await APIKeyLogin(kind: .ollama, http: http).login(prompt: { _ in }, pastedCode: pastedInput("ollama-key"))
+
+            XCTAssertEqual(result.label, "Ollama")
+        }
     }
 
     func testAntigravityLoginExchangesCodeAndMapsGoogleProfile() async throws {
@@ -191,10 +306,25 @@ final class ProviderLoginTests: XCTestCase {
         XCTAssertEqual(body["code"], "fake-authorization-code")
         XCTAssertEqual(body["redirect_uri"], "http://localhost:51121/oauth-callback")
         XCTAssertFalse(body["code_verifier", default: ""].isEmpty)
+        let verifier = try XCTUnwrap(body["code_verifier"])
+        XCTAssertNotEqual(query.first { $0.name == "state" }?.value, verifier)
+        XCTAssertFalse(authorizeURL.absoluteString.contains(verifier), "the authorize URL carries the challenge, never the verifier")
     }
 
     private func emptyInput() -> AsyncStream<String> {
         AsyncStream { $0.finish() }
+    }
+
+    private func pastedInput(_ value: String) -> AsyncStream<String> {
+        AsyncStream { $0.yield(value); $0.finish() }
+    }
+
+    private static func ollamaHTTP(account: String, status: Int = 200) -> RoutingHTTPClient {
+        RoutingHTTPClient { request in
+            request.url.path == "/api/me"
+                ? Self.response(account, status: status)
+                : Self.response(#"{"included":{"balance_usd":72.5,"allowance_usd":100}}"#)
+        }
     }
 
     private static func browserPrompt(

@@ -8,6 +8,9 @@ MiniMax 是一家中国 AI 服务商，提供语言 / 语音 / 视频 / 图像�
 - **Weekly** — 周窗口
 - **5h Reset** — 距离 Session 窗口重置的倒计时（文字）
 
+菜单栏里，Session 这一项旁边会画一条倒计时进度条：窗口还有时间时是白色，最后一小时变成警告色，
+最后一小时的最后五分之一变成危险色。详见 [Menu bar](../menu-bar.md)。
+
 ## 认证
 
 在 App 的 **Accounts** 界面添加 MiniMax 账号，粘贴你的 **Token Plan 订阅 Key**

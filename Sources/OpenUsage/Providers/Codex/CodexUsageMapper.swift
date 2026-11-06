@@ -1,16 +1,15 @@
 import Foundation
 
 enum CodexUsageMapper {
+    /// OpenAI sells ChatGPT credits at 4¢ each; the usage API reports only the count.
+    private static let creditUSDRate = 0.04
+
     static func mapUsageResponse(
         _ response: HTTPResponse,
         resetCredits: HTTPResponse? = nil,
         now: Date = Date()
     ) throws -> ProviderUsage {
-        try ProviderError.requireSuccess(response, kind: .codex)
-
-        guard let body = ProviderParse.jsonObject(response.body) else {
-            throw ProviderError.invalidResponse
-        }
+        let body = try ProviderError.requireSuccessJSON(response, kind: .codex)
 
         var lines: [MetricLine] = []
         let rateLimit = body["rate_limit"] as? [String: Any]
@@ -34,8 +33,12 @@ enum CodexUsageMapper {
             ))
         }
 
-        if let remaining = readCreditsRemaining(response: response, body: body) {
+        if let remaining = readCreditsRemaining(response: response, body: body), ProviderParse.int(remaining) != nil {
             lines.append(.values(label: "Credits", values: creditValues(remaining: remaining)))
+        }
+
+        if let creditLimit = creditLimitLine(body: body) {
+            lines.append(creditLimit)
         }
 
         return ProviderUsage(plan: formatCodexPlan(body["plan_type"]), lines: lines)
@@ -109,12 +112,15 @@ enum CodexUsageMapper {
     private static func readPeriodMs(_ window: [String: Any]?) -> Int? {
         guard let window else { return nil }
         guard let seconds = ProviderParse.number(window["limit_window_seconds"]) else { return nil }
-        return Int(seconds * 1000)
+        return ProviderParse.int(seconds * 1000)
     }
 
     static func creditValues(remaining: Double) -> [MetricValue] {
         let credits = max(0, Int(remaining.rounded(.down)))
-        return [MetricValue(number: Double(credits), kind: .count, label: "credits")]
+        return [
+            MetricValue(number: Double(credits) * creditUSDRate, kind: .dollars),
+            MetricValue(number: Double(credits), kind: .count, label: "credits")
+        ]
     }
 
     /// The count comes from the usage body of this pass; the dedicated list, read hourly, supplies the
@@ -126,8 +132,7 @@ enum CodexUsageMapper {
     ) -> (count: Int, expiries: [Date])? {
         let embedded = body["rate_limit_reset_credits"] as? [String: Any]
         let dedicated = resetCredits.flatMap { response -> [String: Any]? in
-            guard (200..<300).contains(response.statusCode), let body = ProviderParse.jsonObject(response.body),
-                  availableCount(in: body) != nil
+            guard let body = ProviderParse.jsonObject(response.body), availableCount(in: body) != nil
             else { return nil }
             return body
         }
@@ -142,7 +147,7 @@ enum CodexUsageMapper {
     /// `ProviderParse.number` because a JSON `null` decodes to `NSNull`, which a bare nil-check would accept.
     private static func availableCount(in source: [String: Any]) -> Int? {
         guard let count = ProviderParse.number(source["available_count"]), count >= 0 else { return nil }
-        return Int(count.rounded(.down))
+        return ProviderParse.int(count.rounded(.down))
     }
 
     static func resetCreditID(in body: [String: Any], expiringAt expiry: Date) -> String? {
@@ -190,16 +195,23 @@ enum CodexUsageMapper {
         }
     }
 
+    /// The credit limit a workspace sets on the member; ChatGPT sends its numbers as decimal strings.
+    private static func creditLimitLine(body: [String: Any]) -> MetricLine? {
+        guard let limit = (body["spend_control"] as? [String: Any])?["individual_limit"] as? [String: Any],
+              let used = ProviderParse.number(limit["used"]), used >= 0,
+              let cap = ProviderParse.number(limit["limit"]), cap >= 0
+        else { return nil }
+        return .progress(
+            label: "Credit Limit", used: used, limit: cap, format: .count(suffix: "credits"),
+            resetsAt: ProviderParse.number(limit["reset_at"]).map(Date.init(timeIntervalSince1970:))
+        )
+    }
+
     private static func readCreditsRemaining(response: HTTPResponse, body: [String: Any]) -> Double? {
-        if let credits = body["credits"] as? [String: Any] {
-            if let balance = ProviderParse.number(credits["balance"]) {
-                return balance
-            }
-            if credits["has_credits"] as? Bool == false {
-                return 0
-            }
-        }
-        return ProviderParse.number(response.header("x-codex-credits-balance"))
+        let credits = body["credits"] as? [String: Any]
+        let hasCredits = ProviderParse.bool(credits?["has_credits"]) ?? ProviderParse.bool(response.header("x-codex-credits-has-credits"))
+        guard hasCredits != false else { return nil }
+        return ProviderParse.number(credits?["balance"]) ?? ProviderParse.number(response.header("x-codex-credits-balance"))
     }
 
     static func formatCodexPlan(_ value: Any?) -> String? {

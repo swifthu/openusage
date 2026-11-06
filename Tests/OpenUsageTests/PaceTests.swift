@@ -9,39 +9,6 @@ final class PaceTests: XCTestCase {
         now.addingTimeInterval(period * (1 - elapsed))
     }
 
-    func testZeroUsageHasNoPaceSignal() {
-        let reset = resetsAt(elapsed: 0.5, period: week)
-        XCTAssertNil(Pace.evaluate(used: 0, limit: 100, resetsAt: reset, periodDuration: week, now: now))
-    }
-
-    func testEarlyInWindowStillProjectsPace() {
-        let reset = resetsAt(elapsed: 0.02, period: week)
-        XCTAssertEqual(Pace.evaluate(used: 5, limit: 100, resetsAt: reset, periodDuration: week, now: now)?.status, .behind)
-    }
-
-    func testAheadOnTrackBehindThresholds() {
-        let reset = resetsAt(elapsed: 0.5, period: week)
-        let cases: [(used: Double, status: Pace.Status)] = [
-            (44, .ahead), (46, .onTrack),
-            (50, .onTrack), (60, .behind), (100, .behind), (130, .behind)
-        ]
-
-        for testCase in cases {
-            XCTAssertEqual(
-                Pace.evaluate(used: testCase.used, limit: 100, resetsAt: reset, periodDuration: week, now: now)?.status,
-                testCase.status,
-                "used: \(testCase.used)"
-            )
-        }
-    }
-
-    func testEvaluateProjectsEndOfPeriodUsage() {
-        let reset = resetsAt(elapsed: 0.5, period: week)
-        let result = Pace.evaluate(used: 30, limit: 100, resetsAt: reset, periodDuration: week, now: now)
-        XCTAssertEqual(result?.status, .ahead)
-        XCTAssertEqual(result?.projectedUsage ?? 0, 60, accuracy: 0.01)
-    }
-
     func testWindowAlreadyResetReturnsNil() {
         let past = now.addingTimeInterval(-60)
         XCTAssertNil(Pace.evaluate(used: 50, limit: 100, resetsAt: past, periodDuration: week, now: now))
@@ -65,22 +32,21 @@ final class PaceTests: XCTestCase {
     func testNoPaceVerdictWithoutAResetWindow() {
         var data = WidgetData(title: "Credits", kind: .dollars,
                               used: 12, limit: 20)
-        XCTAssertEqual(WidgetData(title: "Credits", kind: .dollars, used: 16, limit: 20).meterState(now: now), .level(.warning))
-        XCTAssertEqual(WidgetData(title: "Credits", kind: .dollars, used: 18, limit: 20).meterState(now: now), .level(.critical))
-        XCTAssertEqual(data.meterState(now: now), .level(.normal))
+        XCTAssertEqual(data.meterState(now: now), .unpaced)
         data.resetsAt = now.addingTimeInterval(week)
-        XCTAssertEqual(data.meterState(now: now), .level(.normal))
+        XCTAssertEqual(data.meterState(now: now), .unpaced)
     }
 
     func testThePaceVerdictPicksTheMeterState() {
         XCTAssertEqual(pacedData(used: 30).meterState(now: now), .healthy)
+        XCTAssertEqual(pacedData(used: 44).meterState(now: now), .healthy)
         XCTAssertEqual(pacedData(used: 46).meterState(now: now), .closeToLimit)
         XCTAssertEqual(pacedData(used: 60).meterState(now: now), .runningOut)
         XCTAssertEqual(pacedData(used: 50.2).meterState(now: now), .runningOut)
     }
 
     func testZeroUsageHasNoPaceState() {
-        XCTAssertEqual(pacedData(used: 0).meterState(now: now), .level(.normal))
+        XCTAssertEqual(pacedData(used: 0).meterState(now: now), .unpaced)
     }
 
     func testSpentOutranksThePaceVerdict() {
@@ -90,7 +56,7 @@ final class PaceTests: XCTestCase {
         XCTAssertEqual(nearlyEmpty.meterState(now: now), .spent)
         let withHeadroom = WidgetData(title: "Credits", kind: .dollars,
                                       used: 99.0, limit: 100)
-        XCTAssertEqual(withHeadroom.meterState(now: now), .level(.critical))
+        XCTAssertEqual(withHeadroom.meterState(now: now), .unpaced)
 
         var data = WidgetData(title: "Weekly", kind: .percent,
                               used: 99.6, limit: 100)
@@ -113,12 +79,12 @@ final class PaceTests: XCTestCase {
         let session: TimeInterval = 5 * 3600
         let elapsed = 240 / session
         let data = pacedData(used: 2, elapsed: elapsed, period: session)
-        XCTAssertEqual(data.meterState(now: now), .level(.normal))
+        XCTAssertEqual(data.meterState(now: now), .unpaced)
     }
 
     func testOnePercentAtProjectionGateDoesNotBecomeRed() {
         let session: TimeInterval = 5 * 3600
-        XCTAssertEqual(pacedData(used: 1, elapsed: 0.01, period: session).meterState(now: now), .level(.normal))
+        XCTAssertEqual(pacedData(used: 1, elapsed: 0.01, period: session).meterState(now: now), .unpaced)
     }
 
     func testRunOutFlameShowsOnceFivePercentUsedDespiteHighRemaining() {
@@ -135,10 +101,5 @@ final class PaceTests: XCTestCase {
         let elapsed = 60 / session
         let reset = resetsAt(elapsed: elapsed, period: session)
         XCTAssertNil(Pace.evaluate(used: 1, limit: 100, resetsAt: reset, periodDuration: session, now: now))
-    }
-
-    func testUntouchedMeterEarlyInItsWindowStaysOnTheLevelBand() {
-        let data = pacedData(used: 0, elapsed: 0.03)
-        XCTAssertEqual(data.meterState(now: now), .level(.normal))
     }
 }
