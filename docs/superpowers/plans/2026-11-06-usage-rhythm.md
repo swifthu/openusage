@@ -1327,6 +1327,7 @@ import XCTest
 @testable import OpenUsage
 
 /// The wiring between a refresh and the rhythm recorder.
+@MainActor
 final class RhythmWiringTests: XCTestCase {
     private let calendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
@@ -1386,7 +1387,7 @@ final class RhythmWiringTests: XCTestCase {
         let runtime = StubRuntime(
             provider: Provider(id: "account-1", kind: .claude),
             descriptors: [],
-            failure: .unreachable
+            failure: RefreshFailure(message: "Unreachable", kind: .unreachable)
         )
         let dataStore = WidgetDataStore.forTesting([runtime], defaults: isolatedDefaults(), rhythm: recorder)
 
@@ -1939,7 +1940,8 @@ git commit -m "feat(rhythm): turn the recorded buckets into chart bars"
 
 ### Task 5: The chart and the tab
 
-The views. The chart draws the bars, the context strip draws the whole day with a draggable window, and the tab puts them together.
+The views. The chart draws the bars, the context strip draws the whole day with a draggable window,
+and the tab puts them together.
 
 **Files:**
 - Create: `Sources/OpenUsage/Views/RhythmChart.swift`
@@ -1950,7 +1952,8 @@ The views. The chart draws the bars, the context strip draws the whole day with 
 - Test: `Tests/OpenUsageTests/RhythmChartTests.swift`
 
 **Interfaces:**
-- Consumes: `RhythmBar`, `RhythmZoom`, `RhythmAnalytics` from Task 4; `RhythmRecorder`, `RhythmSettings` from Tasks 2 and 3.
+- Consumes: `RhythmBar`, `RhythmZoom`, `RhythmAnalytics` from Task 4; `RhythmRecorder`, `RhythmSettings`,
+  `RhythmStore` from Tasks 1–3.
 - Produces:
   - `struct RhythmChart: View` with `init(bars:peak:zoom:)`
   - `struct RhythmContextStrip: View` with `init(dayBars:window:onMove:)`
@@ -1973,30 +1976,55 @@ import XCTest
 @MainActor
 final class RhythmChartTests: XCTestCase {
     func testThePeakBarIsDrawnInTheStrongerBlue() throws {
-        var bars = [RhythmBar](repeating: RhythmBar(index: 0, points: 0, samples: 1, start: Date()), count: 24)
+        var bars = makeBars()
         bars[14].points = 9
         bars[15].points = 8
 
         let image = try XCTUnwrap(render(RhythmChart(bars: bars, peak: 14...15, zoom: .day)))
 
-        let strong = try stronglyBluePixels(in: image)
-        XCTAssertFalse(strong.isEmpty, "the peak is drawn in the stronger blue")
+        XCTAssertFalse(try stronglyBluePixels(in: image).isEmpty, "the peak is drawn in the stronger blue")
     }
 
-    func testABarThatWasNotReadIsLeftEmpty() throws {
-        var bars = [RhythmBar](repeating: RhythmBar(index: 0, points: 0, samples: 0, start: Date()), count: 24)
+    func testABurnThatHasNoReadingOfItsOwnIsStillDrawn() throws {
+        // The burn between two readings is spread over the buckets it covered, and those buckets
+        // hold no reading of their own. They still show.
+        var bars = makeBars()
         bars[14].points = 9
         bars[14].samples = 0
 
+        let image = try XCTUnwrap(render(RhythmChart(bars: bars, peak: 14...14, zoom: .day)))
+
+        XCTAssertFalse(try stronglyBluePixels(in: image).isEmpty, "a burn without a reading of its own is drawn")
+    }
+
+    func testASliceThatWasReadButNotUsedDrawsABaseline() throws {
+        let bars = makeBars()
+
         let image = try XCTUnwrap(render(RhythmChart(bars: bars, peak: nil, zoom: .day)))
 
-        XCTAssertTrue(try stronglyBluePixels(in: image).isEmpty, "an unread slice draws nothing")
+        XCTAssertFalse(try inkPixels(in: image).isEmpty, "a slice that was read and not used draws a baseline")
+    }
+
+    func testASliceThatWasNotReadDrawsNothing() throws {
+        let bars = makeBars(samples: 0)
+
+        let image = try XCTUnwrap(render(RhythmChart(bars: bars, peak: nil, zoom: .day)))
+
+        XCTAssertTrue(try inkPixels(in: image).isEmpty, "a slice that was not read draws nothing")
     }
 
     // MARK: - Rendering
 
+    /// Twenty-four bars with distinct indices — the chart identifies a bar by its index, so two
+    /// bars with the same one would make the drawing undefined.
+    private func makeBars(samples: Int = 1) -> [RhythmBar] {
+        (0..<24).map { RhythmBar(index: $0, points: 0, samples: samples, start: Date()) }
+    }
+
     private func render(_ view: some View) -> CGImage? {
-        let renderer = ImageRenderer(content: view.frame(width: 300, height: 100))
+        // The white background makes the faint ink visible: without it a half-transparent bar has
+        // a half-transparent alpha, and the test cannot tell it from nothing at all.
+        let renderer = ImageRenderer(content: view.frame(width: 300, height: 100).background(Color.white))
         renderer.scale = 2
         return renderer.cgImage
     }
@@ -2017,6 +2045,12 @@ final class RhythmChartTests: XCTestCase {
     /// The pixels the strong blue covers. macOS's system blue is 0, 122, 255.
     private func stronglyBluePixels(in image: CGImage) throws -> [(r: Int, g: Int, b: Int, a: Int)] {
         try pixels(in: image).filter { $0.a > 128 && $0.b > 200 && $0.r < 120 && $0.g < 170 }
+    }
+
+    /// Every pixel that carries any of the chart's ink, however faint. The white background is not
+    /// ink: blue minus red is what tells them apart.
+    private func inkPixels(in image: CGImage) throws -> [(r: Int, g: Int, b: Int, a: Int)] {
+        try pixels(in: image).filter { $0.b > 200 && $0.b - $0.r > 30 }
     }
 }
 ```
@@ -2091,9 +2125,7 @@ struct RhythmChart: View {
     }
 
     private var accessibilityText: String {
-        guard let peak = RhythmAnalytics.peakBars(in: bars) else {
-            return "Usage rhythm, nothing to show"
-        }
+        guard let peak else { return "Usage rhythm, nothing to show" }
         let first = bars[peak.lowerBound].start
         let last = bars[peak.upperBound].start.addingTimeInterval(zoom.barDuration)
         return "Usage rhythm. The peak runs from \(first.formatted(date: .omitted, time: .shortened)) to \(last.formatted(date: .omitted, time: .shortened))."
@@ -2201,7 +2233,7 @@ struct RhythmView: View {
     }
 
     /// How many days the average covers.
-    private enum Range: Int, CaseIterable, Identifiable {
+    private enum Span: Int, CaseIterable, Identifiable {
         case week = 7
         case month = 30
         case quarter = 90
@@ -2211,11 +2243,14 @@ struct RhythmView: View {
 
     @State private var mode: Mode = .day
     @State private var day = Date()
-    @State private var range: Range = .month
+    @State private var span: Span = .month
     @State private var zoom: RhythmZoom = .day
     @State private var offset: TimeInterval = 0
     @State private var isPickingDay = false
     @State private var records: [RhythmDayRecord] = []
+    /// Whether the history holds any day at all, which is what tells "nothing yet" apart from
+    /// "not on that day".
+    @State private var hasHistory = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.l) {
@@ -2237,18 +2272,23 @@ struct RhythmView: View {
     private var bars: [RhythmBar] {
         switch mode {
         case .day:
-            guard let record = records.first(where: { Calendar.current.isDate($0.day, inSameDayAs: day) }) else { return [] }
+            guard let record = selectedRecord else { return [] }
             return RhythmAnalytics.bars(for: record, zoom: zoom, offset: offset)
         case .average:
             return RhythmAnalytics.averageBars(for: records, zoom: zoom, offset: offset)
         }
     }
 
+    /// The day on show, when it was recorded.
+    private var selectedRecord: RhythmDayRecord? {
+        records.first { Calendar.current.isDate($0.day, inSameDayAs: day) }
+    }
+
     private var chart: some View {
         VStack(alignment: .leading, spacing: 6) {
             header
             if bars.isEmpty {
-                Text("Nothing recorded yet. The rhythm builds up from today.")
+                Text(emptyText)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -2297,10 +2337,10 @@ struct RhythmView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.severityColor(.normal))
             case .average:
-                Text("Last \(range.rawValue) Days")
+                Text("Last \(span.rawValue) Days")
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
-                CapsuleSegments(options: Range.allCases.map { ($0, $0.label) }, selection: $range)
+                CapsuleSegments(options: Span.allCases.map { ($0, $0.label) }, selection: $span)
                     .frame(width: 190)
             }
             Spacer(minLength: 0)
@@ -2355,6 +2395,12 @@ struct RhythmView: View {
         }
     }
 
+    /// What the empty chart says. "We do not know" is not the same as "nothing was used".
+    private var emptyText: String {
+        guard hasHistory else { return "Nothing recorded yet. The rhythm builds up from today." }
+        return mode == .day ? "Nothing was recorded on this day." : "Nothing was recorded in this range."
+    }
+
     private var dayTitle: String {
         if Calendar.current.isDateInToday(day) { return "Today" }
         return day.formatted(.dateTime.month(.abbreviated).day())
@@ -2364,9 +2410,7 @@ struct RhythmView: View {
     private var contextBars: [RhythmBar] {
         switch mode {
         case .day:
-            guard let record = records.first(where: { Calendar.current.isDate($0.day, inSameDayAs: day) }) else {
-                return []
-            }
+            guard let record = selectedRecord else { return [] }
             return RhythmAnalytics.bars(for: record, zoom: .day, offset: 0)
         case .average:
             return RhythmAnalytics.averageBars(for: records, zoom: .day, offset: 0)
@@ -2386,7 +2430,7 @@ struct RhythmView: View {
     }
 
     private var refreshKey: String {
-        "\(mode.rawValue)-\(day.timeIntervalSince1970)-\(range.rawValue)-\(zoom.rawValue)"
+        "\(mode.rawValue)-\(day.timeIntervalSince1970)-\(span.rawValue)-\(zoom.rawValue)"
     }
 
     private func axisLabel(at step: Int) -> String {
@@ -2423,42 +2467,88 @@ struct RhythmView: View {
         offset = (offset / zoom.barDuration).rounded(.down) * zoom.barDuration
     }
 
+    /// Reads the days the chart needs: the selected day, or the days the chosen range covers.
     private func load() {
-        // The range covers whole days: the store compares days, and a range that starts in the
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        // The store compares days, so the range covers whole days: a range that starts in the
         // afternoon would otherwise leave that day's record out.
-        let today = Calendar.current.startOfDay(for: Date())
-        let start = Calendar.current.date(byAdding: .day, value: -(RhythmSettings.retentionDays - 1), to: today) ?? today
-        records = (try? container.rhythm.store.load(days: start...today)) ?? []
+        let days: ClosedRange<Date>
+        switch mode {
+        case .day:
+            let selected = calendar.startOfDay(for: day)
+            days = selected...selected
+        case .average:
+            let start = calendar.date(byAdding: .day, value: -(span.rawValue - 1), to: today) ?? today
+            days = start...today
+        }
+        records = (try? container.rhythm.store.load(days: days)) ?? []
+        hasHistory = !((try? container.rhythm.store.recordedDays()) ?? []).isEmpty
     }
 }
 ```
 
 - [ ] **Step 6: Add the tab**
 
-In `Sources/OpenUsage/Models/DashboardTab.swift`, add the case and the label:
+In `Sources/OpenUsage/Models/DashboardTab.swift`, add the case:
 
 ```swift
     case rhythm
 ```
 
+and the label:
+
 ```swift
         case .rhythm: "Rhythm"
 ```
 
-In `Sources/OpenUsage/Views/DashboardContentView.swift`, add to the switch:
+The tab bar in `PopoverTopBar` and the "Default Tab" picker in Settings both build their options
+from `DashboardTab.allCases`, so the new case appears in both without another change.
+
+In `Sources/OpenUsage/Views/DashboardContentView.swift`, the rhythm tab has to come **before** the
+two guards: the rhythm is recorded from what the provider reports and does not depend on which
+metrics the user has shown, so it stays available when every metric is hidden.
 
 ```swift
+    @ViewBuilder
+    private var widgetContent: some View {
+        if layout.registry.providers.isEmpty {
+            EmptyDashboardView { popover.isAddingAccount = true }
+        } else if popover.dashboardTab == .rhythm {
+            RhythmView()
+        } else if layout.displayGroups.isEmpty {
+            Text("Every metric is hidden. Turn them back on in Accounts.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 22)
+        } else {
+            switch popover.dashboardTab {
+            case .priority:
+                PriorityDashboardView()
+            case .allUsage:
+                WidgetGroupedListView(
+                    reorderSpaceName: reorderSpaceName,
+                    reorderLift: $reorderLift
+                )
             case .rhythm:
                 RhythmView()
+            }
+        }
+    }
 ```
 
 - [ ] **Step 7: Run the chart tests to verify they pass**
 
 Run: `script/test_quiet.sh --filter RhythmChartTests`
 
-Expected: PASS — 2 tests, 0 failures.
+Expected: PASS — 4 tests, 0 failures.
 
-If the pixel assertions do not match macOS's system blue, loosen the filter in `stronglyBluePixels` to the blue that actually came out — print the pixels once and set the thresholds to them. The point of the test is that the peak is the strong blue and an unread slice draws nothing.
+If the pixel assertions do not match macOS's system blue, loosen the filters in
+`stronglyBluePixels` and `inkPixels` to the blue that actually came out — print the pixels once and
+set the thresholds to them. The point of the tests is that the peak is the strong blue, that a
+burn without a reading of its own is still drawn, that a slice that was read but not used draws a
+baseline, and that a slice that was not read draws nothing at all.
 
 - [ ] **Step 8: Build the app**
 
@@ -2469,9 +2559,18 @@ Expected: BUILD SUCCEEDED.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add Sources/OpenUsage/Views/RhythmChart.swift Sources/OpenUsage/Views/RhythmContextStrip.swift Sources/OpenUsage/Views/RhythmView.swift Sources/OpenUsage/Models/DashboardTab.swift Sources/OpenUsage/Views/DashboardContentView.swift Sources/OpenUsage/Rhythm/RhythmStore.swift Tests/OpenUsageTests/RhythmChartTests.swift
+git add Sources/OpenUsage/Views/RhythmChart.swift Sources/OpenUsage/Views/RhythmContextStrip.swift Sources/OpenUsage/Views/RhythmView.swift Sources/OpenUsage/Models/DashboardTab.swift Sources/OpenUsage/Views/DashboardContentView.swift Tests/OpenUsageTests/RhythmChartTests.swift
 git commit -m "feat(rhythm): show the rhythm in a dashboard tab"
 ```
+
+---
+
+## Notes for the task that comes next (the settings and the docs)
+
+- **`AppContainer.rhythm` is the recorder, and `recorder.store` is the history.** The settings
+  screen needs the store to delete the history, and the recorder's settings to switch the
+  recording off.
+- **`RhythmSettings.retentionDays` is 90.** The store trims the days older than that.
 
 ---
 
