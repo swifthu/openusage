@@ -3346,7 +3346,7 @@ struct RhythmView: View {
         }
         .task(id: refreshKey) {
             // The history grows while the tab is open, so it reloads on a timer as well as when
-            // the day, the mode or the zoom changes.
+            // the day, the mode or the range changes.
             while !Task.isCancelled {
                 await load()
                 try? await Task.sleep(for: .seconds(30))
@@ -3382,8 +3382,10 @@ struct RhythmView: View {
                 message("The rhythm history could not be read: \(readError)")
             } else if bars.isEmpty {
                 message(emptyText)
-            } else if averageHasNoReadings {
-                message("No readings were taken in this range.")
+            } else if hasNoReadings {
+                message(mode == .day
+                    ? "No readings were taken on this day."
+                    : "No readings were taken in this range.")
             } else {
                 if zoom != .day {
                     RhythmContextStrip(
@@ -3455,7 +3457,7 @@ struct RhythmView: View {
     private var axis: some View {
         HStack {
             ForEach(0..<5) { step in
-                Text(axisLabel(at: step))
+                Text(axisLabels[step])
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
                 if step < 4 { Spacer() }
@@ -3485,7 +3487,9 @@ struct RhythmView: View {
 
     private var summary: some View {
         Group {
-            if let peak = RhythmAnalytics.peakBars(in: bars), !bars.isEmpty {
+            // A read that failed leaves the summary out: the card says the history could not be
+            // read, and a peak of the data that is still in memory would contradict that.
+            if readError == nil, let peak = RhythmAnalytics.peakBars(in: bars), !bars.isEmpty {
                 HStack(spacing: 5) {
                     Circle().fill(Theme.severityColor(.normal)).frame(width: 7, height: 7)
                     Text(summaryText(from: bars[peak.lowerBound].start))
@@ -3501,10 +3505,10 @@ struct RhythmView: View {
         return mode == .day ? "Nothing was recorded on this day." : "Nothing was recorded in this range."
     }
 
-    /// Whether the average is of days that hold no reading at all. The chart would be an empty
-    /// grid then, with nothing on it to say why.
-    private var averageHasNoReadings: Bool {
-        mode == .average && !bars.isEmpty && bars.allSatisfy { $0.samples == 0 }
+    /// Whether the days on show hold no reading at all. The chart would be an empty grid then,
+    /// with nothing on it to say why.
+    private var hasNoReadings: Bool {
+        !bars.isEmpty && bars.allSatisfy { $0.samples == 0 }
     }
 
     private var dayTitle: String {
@@ -3536,20 +3540,28 @@ struct RhythmView: View {
     }
 
     private var refreshKey: String {
-        "\(mode.rawValue)-\(day.timeIntervalSince1970)-\(span.rawValue)-\(zoom.rawValue)"
+        "\(mode.rawValue)-\(day.timeIntervalSince1970)-\(span.rawValue)"
     }
 
-    private func axisLabel(at step: Int) -> String {
-        // Five labels over 24 bars: every sixth bar.
-        let start = bars.first?.start ?? Calendar.current.startOfDay(for: day)
-        guard step < 4 else {
-            // The last label is the end of the window. A whole day ends at the next midnight,
-            // which would print "00:00" and read exactly like the first label, so it is marked
-            // "24:00" instead.
-            guard zoom != .day else { return "24:00" }
-            return start.addingTimeInterval(zoom.window).formatted(date: .omitted, time: .shortened)
+    /// The five labels of the axis.
+    private var axisLabels: [String] {
+        Self.axisLabels(zoom: zoom, start: bars.first?.start ?? Calendar.current.startOfDay(for: day))
+    }
+
+    /// The labels of the axis over a window: five of them, every sixth bar.
+    ///
+    /// A whole day is the window's own hours, numbered from zero. The window is a fixed
+    /// twenty-four hours from the day's midnight, so its hours are the same on a day of
+    /// twenty-three or twenty-five hours, and the axis does not mix a nominal end with clock
+    /// times. A narrowed window is on the clock: it begins and ends at a time of the day.
+    static func axisLabels(zoom: RhythmZoom, start: Date) -> [String] {
+        if zoom == .day {
+            return (0..<5).map { String($0 * 6) }
         }
-        return start.addingTimeInterval(Double(step) * 6 * zoom.barDuration).formatted(date: .omitted, time: .shortened)
+        return (0..<5).map { step in
+            start.addingTimeInterval(Double(step) * 6 * zoom.barDuration)
+                .formatted(date: .omitted, time: .shortened)
+        }
     }
 
     private func summaryText(from start: Date) -> String {
@@ -3610,6 +3622,12 @@ struct RhythmView: View {
                 return ReadOutcome.failed(error.localizedDescription)
             }
         }.value
+        // The reading may have been overtaken while it was running. A detached read is
+        // unstructured: it is not cancelled with the task that started it, so a reading that is
+        // no longer the one the view wants must not be applied — the chart would show the days of
+        // the previous range under the title of the current one, and a late failure would replace
+        // a good chart with an error message. A view that went away applies nothing at all.
+        guard !Task.isCancelled, days == daysToRead else { return }
         switch outcome {
         case .read(let loaded, let recorded):
             records = loaded
