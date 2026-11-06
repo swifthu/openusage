@@ -138,7 +138,7 @@ final class RhythmRecorderTests: XCTestCase {
     }
 
     func testTheRecorderAccumulatesIntoTheHourOfTheReading() throws {
-        let store = RecordingRhythmStore()
+        let store = RecordingRhythmStore(calendar: calendar)
         let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
 
         recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
@@ -153,7 +153,7 @@ final class RhythmRecorderTests: XCTestCase {
     }
 
     func testTheRecorderSplitsAGapAcrossTheBucketsItCovers() throws {
-        let store = RecordingRhythmStore()
+        let store = RecordingRhythmStore(calendar: calendar)
         let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
 
         recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
@@ -169,7 +169,7 @@ final class RhythmRecorderTests: XCTestCase {
     }
 
     func testNothingIsRecordedWhileTheSettingIsOff() throws {
-        let store = RecordingRhythmStore()
+        let store = RecordingRhythmStore(calendar: calendar)
         let defaults = isolatedDefaults()
         let settings = RhythmSettings(defaults: defaults)
         settings.isEnabled = false
@@ -178,10 +178,11 @@ final class RhythmRecorderTests: XCTestCase {
         recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
 
         XCTAssertTrue(recorder.pendingSeries.isEmpty)
+        XCTAssertTrue(store.saved.isEmpty)
     }
 
     func testFlushingWritesTheDayAndClearsIt() throws {
-        let store = RecordingRhythmStore()
+        let store = RecordingRhythmStore(calendar: calendar)
         let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
 
         recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
@@ -193,7 +194,7 @@ final class RhythmRecorderTests: XCTestCase {
     }
 
     func testANewDayFlushesTheOldOneFirst() throws {
-        let store = RecordingRhythmStore()
+        let store = RecordingRhythmStore(calendar: calendar)
         let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
 
         recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(23, 58))
@@ -203,8 +204,89 @@ final class RhythmRecorderTests: XCTestCase {
         XCTAssertEqual(store.saved[0].day, moment(0))
     }
 
+    func testTheWriteThatClosesTheDayCarriesTheDaysBurn() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2, resetsAt: moment(23, 59)), kind: .claude, at: moment(23, 50))
+        recorder.record(snapshot(fraction: 0.35, resetsAt: moment(23, 59)), kind: .claude, at: moment(23, 58))
+        recorder.record(snapshot(fraction: 0.1, resetsAt: moment(23, 59)), kind: .claude, at: calendar.date(byAdding: .day, value: 1, to: moment(0))!)
+
+        let written = try XCTUnwrap(store.saved.first { $0.day == moment(0) })
+        let series = try XCTUnwrap(written.series.first)
+        // The 0.15 that was burned between 23:50 and 23:58 went out with the day it belongs to:
+        // 300 of the 480 seconds fell into the bucket of 23:50 and 180 into the one of 23:55.
+        XCTAssertEqual(series.points[286], 0.09375, accuracy: 0.0001)
+        XCTAssertEqual(series.points[287], 0.05625, accuracy: 0.0001)
+        XCTAssertEqual(series.samples[286], 1)
+        XCTAssertEqual(series.samples[287], 1)
+    }
+
+    func testTheDayIsKeptUntilItsWriteLands() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        store.setFailing(true)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: moment(0))!
+
+        recorder.record(snapshot(fraction: 0.2, resetsAt: moment(23, 59)), kind: .claude, at: moment(23, 50))
+        recorder.record(snapshot(fraction: 0.35, resetsAt: moment(23, 59)), kind: .claude, at: moment(23, 58))
+        recorder.record(snapshot(fraction: 0.1, resetsAt: moment(23, 59)), kind: .claude, at: nextDay)
+
+        // The write of the day that ended failed, so the day is still in memory.
+        XCTAssertTrue(store.saved.isEmpty)
+        XCTAssertTrue(recorder.pendingDays.contains(moment(0)))
+
+        store.setFailing(false)
+        recorder.record(
+            snapshot(fraction: 0.2, resetsAt: moment(23, 59)),
+            kind: .claude,
+            at: calendar.date(byAdding: .hour, value: 2, to: nextDay)!
+        )
+
+        // The day that could not be written is taken out by the next write that lands.
+        let written = try XCTUnwrap(store.saved.first { $0.day == moment(0) })
+        let series = try XCTUnwrap(written.series.first)
+        XCTAssertEqual(series.points[286], 0.09375, accuracy: 0.0001)
+        XCTAssertEqual(series.samples[286], 1)
+        XCTAssertEqual(series.samples[287], 1)
+    }
+
+    func testTurningTheRecordingOffWritesWhatWasAlreadyRecorded() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let settings = RhythmSettings(defaults: isolatedDefaults())
+        let recorder = RhythmRecorder(store: store, settings: settings, calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        settings.isEnabled = false
+        recorder.record(snapshot(fraction: 0.35), kind: .claude, at: moment(14, 5))
+
+        let series = try XCTUnwrap(store.saved.first?.series.first)
+        // What was recorded before the recording was turned off is on disk.
+        XCTAssertEqual(series.samples[168], 1)
+        XCTAssertEqual(series.points[168], 0, accuracy: 0.0001)
+        // The reading that arrived after the recording was turned off is not recorded.
+        XCTAssertEqual(series.samples[169], 0)
+    }
+
+    func testAFailedWriteIsNotTriedAgainForEveryReading() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        store.setFailing(true)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        recorder.record(snapshot(fraction: 0.35), kind: .claude, at: moment(14, 5))
+        XCTAssertEqual(store.saveAttempts, 1)
+
+        recorder.record(snapshot(fraction: 0.5), kind: .claude, at: moment(14, 6))
+        recorder.record(snapshot(fraction: 0.6), kind: .claude, at: moment(14, 7))
+        recorder.record(snapshot(fraction: 0.7), kind: .claude, at: moment(14, 8))
+
+        // The write that failed is not tried again for every reading that follows.
+        XCTAssertEqual(store.saveAttempts, 1)
+    }
+
     func testWritingTheDayTwiceKeepsBothParts() throws {
-        let store = RecordingRhythmStore()
+        let store = RecordingRhythmStore(calendar: calendar)
         let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
 
         recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
@@ -212,8 +294,9 @@ final class RhythmRecorderTests: XCTestCase {
         recorder.record(snapshot(fraction: 0.35), kind: .claude, at: moment(14, 5))
         recorder.flush(at: moment(14, 6))
 
-        XCTAssertEqual(store.saved.count, 2)
-        let series = try XCTUnwrap(store.saved[1].series.first)
+        // The second write replaces the record of the day, as the file store does.
+        XCTAssertEqual(store.saved.count, 1)
+        let series = try XCTUnwrap(store.saved.first?.series.first)
         // The second write holds the burn of both readings, not only the one after the first write.
         XCTAssertEqual(series.points[168], 0.15, accuracy: 0.0001)
         XCTAssertEqual(series.samples[168], 1)
@@ -221,7 +304,7 @@ final class RhythmRecorderTests: XCTestCase {
     }
 
     func testTheRecorderContinuesADayAnotherRunStarted() throws {
-        let store = RecordingRhythmStore()
+        let store = RecordingRhythmStore(calendar: calendar)
         var earlier = RhythmSeriesRecord(
             key: "account-1/Session",
             kind: .claude,
@@ -244,7 +327,17 @@ final class RhythmRecorderTests: XCTestCase {
         XCTAssertEqual(series.samples[168], 2)
     }
 
-    private func snapshot(fraction: Double) -> ProviderSnapshot {
+    func testTheStoreListsEveryDayOnce() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+
+        try store.save(RhythmDayRecord(day: moment(0), series: []))
+        try store.save(RhythmDayRecord(day: moment(0), series: []))
+
+        // A day that was written twice is one day, as it is for the file store.
+        XCTAssertEqual(try store.recordedDays(), [moment(0)])
+    }
+
+    private func snapshot(fraction: Double, resetsAt: Date? = nil) -> ProviderSnapshot {
         ProviderSnapshot(
             providerID: "account-1",
             displayName: "Claude",
@@ -253,7 +346,7 @@ final class RhythmRecorderTests: XCTestCase {
                 used: fraction * 100,
                 limit: 100,
                 format: .percent,
-                resetsAt: moment(19, 0),
+                resetsAt: resetsAt ?? moment(19, 0),
                 periodDurationMs: MetricPeriod.sessionMs
             )]
         )
@@ -261,15 +354,69 @@ final class RhythmRecorderTests: XCTestCase {
 }
 
 /// A store that keeps what it was given instead of writing files.
+///
+/// It behaves like the file store: a write replaces the record of its day, and every day is
+/// listed once.
 final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
-    private let lock = OSAllocatedUnfairLock(initialState: [RhythmDayRecord]())
-    var saved: [RhythmDayRecord] { lock.withLock { $0 } }
+    /// The calendar the days are measured in, as the file store's is.
+    private let calendar: Calendar
 
-    func save(_ record: RhythmDayRecord) throws { lock.withLock { $0.append(record) } }
-    func load(day: Date) throws -> RhythmDayRecord? { lock.withLock { $0.last { $0.day == day } } }
-    func load(days: ClosedRange<Date>) throws -> [RhythmDayRecord] {
-        lock.withLock { $0.filter { days.contains($0.day) } }
+    init(calendar: Calendar) {
+        self.calendar = calendar
     }
-    func recordedDays() throws -> [Date] { lock.withLock { $0.map(\.day).sorted() } }
-    func delete(before date: Date) throws {}
+
+    private struct Records {
+        var byDay: [Date: RhythmDayRecord] = [:]
+        var saveAttempts = 0
+        var failsSave = false
+    }
+
+    private let lock = OSAllocatedUnfairLock(initialState: Records())
+
+    /// The record of every day, oldest first.
+    var saved: [RhythmDayRecord] { lock.withLock { $0.byDay.values.sorted { $0.day < $1.day } } }
+    /// How often the recorder tried to write, whether the write succeeded or not.
+    var saveAttempts: Int { lock.withLock { $0.saveAttempts } }
+
+    /// Makes every following write fail, the way a disk that cannot be written does.
+    func setFailing(_ failing: Bool) {
+        lock.withLock { $0.failsSave = failing }
+    }
+
+    func save(_ record: RhythmDayRecord) throws {
+        try lock.withLock { records in
+            records.saveAttempts += 1
+            if records.failsSave { throw RecordingRhythmStoreError.writeFailed }
+            records.byDay[record.day] = record
+        }
+    }
+
+    func load(day: Date) throws -> RhythmDayRecord? {
+        lock.withLock { $0.byDay[calendar.startOfDay(for: day)] }
+    }
+
+    func load(days: ClosedRange<Date>) throws -> [RhythmDayRecord] {
+        let first = calendar.startOfDay(for: days.lowerBound)
+        let last = calendar.startOfDay(for: days.upperBound)
+        return lock.withLock {
+            records in
+            records.byDay.values.filter { $0.day >= first && $0.day <= last }.sorted { $0.day < $1.day }
+        }
+    }
+
+    func recordedDays() throws -> [Date] { lock.withLock { $0.byDay.keys.sorted() } }
+
+    func delete(before date: Date) throws {
+        let cutoff = calendar.startOfDay(for: date)
+        lock.withLock { $0.byDay = $0.byDay.filter { $0.key < cutoff } }
+    }
+}
+
+/// A write that did not land.
+enum RecordingRhythmStoreError: LocalizedError {
+    case writeFailed
+
+    var errorDescription: String? {
+        "The rhythm history could not be written."
+    }
 }

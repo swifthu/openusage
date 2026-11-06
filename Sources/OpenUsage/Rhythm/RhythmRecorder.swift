@@ -16,7 +16,7 @@ enum RhythmDifferencer {
         from previous: RhythmReading,
         to current: RhythmReading,
         day: Date,
-        calendar: Calendar = .current
+        calendar: Calendar
     ) -> RhythmDelta {
         let interval = current.at.timeIntervalSince(previous.at)
         guard interval > 0 else { return RhythmDelta(points: 0, buckets: []) }
@@ -64,14 +64,18 @@ final class RhythmRecorder {
 
     /// The last reading of every series, so the next one can be differenced against it.
     @ObservationIgnored private var lastReading: [String: RhythmReading] = [:]
-    /// The day's buckets as they stand.
-    @ObservationIgnored private var buckets: [String: RhythmSeriesRecord] = [:]
-    /// The day's buckets as they were last written, so the recorder knows what has changed since.
-    @ObservationIgnored private var written: [String: RhythmSeriesRecord] = [:]
-    /// The day the buckets belong to.
+    /// The buckets of the days the recorder holds, by day. A day stays here until it is on disk.
+    @ObservationIgnored private var days: [Date: [String: RhythmSeriesRecord]] = [:]
+    /// What was written of each held day, by day.
+    @ObservationIgnored private var written: [Date: [String: RhythmSeriesRecord]] = [:]
+    /// The day the readings belong to.
     @ObservationIgnored private var recordedDay: Date?
     /// When the day's buckets were last written.
     @ObservationIgnored private var lastFlush: Date?
+    /// When the last write failed. A failed write is not tried again before the interval has
+    /// passed, so a disk that cannot be written does not fill the log with one warning per
+    /// reading.
+    @ObservationIgnored private var lastFailure: Date?
     /// How long the day's buckets are kept in memory before they are written.
     @ObservationIgnored private let flushInterval: TimeInterval
     /// How many writes have failed in a row.
@@ -80,7 +84,7 @@ final class RhythmRecorder {
     init(
         store: any RhythmStore,
         settings: RhythmSettings,
-        calendar: Calendar = .current,
+        calendar: Calendar,
         flushInterval: TimeInterval = 5 * 60
     ) {
         self.history = store
@@ -95,9 +99,14 @@ final class RhythmRecorder {
     /// The buckets waiting to be written: the series whose buckets have changed since the last
     /// write. The tests read this; the app does not.
     var pendingSeries: [RhythmSeriesRecord] {
-        buckets.values
-            .filter { written[$0.key] != $0 }
-            .sorted { $0.key < $1.key }
+        guard let day = recordedDay else { return [] }
+        return pendingSeries(on: day)
+    }
+
+    /// The days that are held in memory and are not on disk yet, oldest first. A day whose write
+    /// failed stays here until the write lands. The tests read this; the app does not.
+    var pendingDays: [Date] {
+        days.keys.filter { !pendingSeries(on: $0).isEmpty }.sorted()
     }
 
     /// The readings a snapshot carries: the session-sized metrics of one account.
@@ -125,7 +134,12 @@ final class RhythmRecorder {
     /// Records what a refresh found. A refresh that failed produces no reading, so the hours it
     /// covered stay empty rather than showing as no usage.
     func record(_ snapshot: ProviderSnapshot, kind: ProviderKind, at now: Date) {
-        guard settings.isEnabled else { return }
+        guard settings.isEnabled else {
+            // Turning the recording off stops the readings, but what was already recorded is
+            // written out rather than thrown away.
+            if canWrite(at: now) { flush(at: now) }
+            return
+        }
         // The day's buckets are written before the new reading is folded in, so what is on disk is
         // always a whole number of readings and the newest one is still waiting to be written.
         checkpointIfDue(at: now)
@@ -134,36 +148,55 @@ final class RhythmRecorder {
         }
     }
 
-    /// Writes the day's buckets, and remembers them as written so only what changed since is
-    /// waiting to be written again.
-    func flush(at now: Date) {
-        guard let day = recordedDay, !buckets.isEmpty else { return }
-        guard !pendingSeries.isEmpty else { return }
-        let record = RhythmDayRecord(day: day, series: buckets.values.sorted { $0.key < $1.key })
-        do {
-            try history.save(record)
-            failures = 0
-            lastFlush = now
-            written = buckets
-        } catch {
-            failures += 1
-            AppLog.warn(.rhythm, "could not write the rhythm history for \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
-            if failures >= 5 {
-                AppLog.error(.rhythm, "the rhythm history stopped being written after \(failures) failures in a row")
+    /// Writes the buckets that changed since the last write, and remembers them as written so only
+    /// what changed since is waiting to be written again. Returns whether every day was written.
+    ///
+    /// A day whose write fails stays in memory, so the next write takes it out as well.
+    @discardableResult
+    func flush(at now: Date) -> Bool {
+        var wroteEverything = true
+        var failed = false
+        for day in days.keys.sorted() {
+            let series = days[day] ?? [:]
+            guard !pendingSeries(on: day).isEmpty else { continue }
+            let record = RhythmDayRecord(day: day, series: series.values.sorted { $0.key < $1.key })
+            do {
+                try history.save(record)
+                written[day] = series
+                lastFlush = now
+                if day != recordedDay {
+                    // The day is on disk, so the recorder does not need to hold it any more.
+                    days.removeValue(forKey: day)
+                    written.removeValue(forKey: day)
+                }
+            } catch {
+                wroteEverything = false
+                failed = true
+                failures += 1
+                lastFailure = now
+                AppLog.warn(.rhythm, "could not write the rhythm history for \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
+                if failures >= 5 {
+                    AppLog.error(.rhythm, "the rhythm history stopped being written after \(failures) failures in a row")
+                }
             }
         }
+        if !failed { failures = 0 }
+        return wroteEverything
     }
 
     private func apply(_ reading: RhythmReading, at now: Date) {
         let day = calendar.startOfDay(for: now)
         if recordedDay != day {
-            flush(at: now)
-            buckets.removeAll()
-            written.removeAll()
+            // The day that just ended is written before the new reading is folded in, so what is on
+            // disk is always a whole number of readings. A day whose write failed stays in memory
+            // until it lands.
             recordedDay = day
+            days[day] = days[day] ?? [:]
+            flush(at: now)
             continueFromStore(on: day)
         }
-        var record = buckets[reading.key] ?? RhythmSeriesRecord(
+        var series = days[day] ?? [:]
+        var record = series[reading.key] ?? RhythmSeriesRecord(
             key: reading.key,
             kind: reading.kind,
             label: reading.label,
@@ -181,8 +214,17 @@ final class RhythmRecorder {
            index < record.samples.count {
             record.samples[index] += 1
         }
-        buckets[reading.key] = record
+        series[reading.key] = record
+        days[day] = series
         lastReading[reading.key] = reading
+    }
+
+    private func pendingSeries(on day: Date) -> [RhythmSeriesRecord] {
+        let series = days[day] ?? [:]
+        let writtenSeries = written[day] ?? [:]
+        return series.values
+            .filter { writtenSeries[$0.key] != $0 }
+            .sorted { $0.key < $1.key }
     }
 
     private func checkpointIfDue(at now: Date) {
@@ -191,7 +233,16 @@ final class RhythmRecorder {
             return
         }
         guard now.timeIntervalSince(lastFlush) >= flushInterval else { return }
+        guard canWrite(at: now) else { return }
         flush(at: now)
+    }
+
+    /// Whether a write may be attempted. A write that failed is not tried again before the
+    /// interval has passed, so a disk that cannot be written does not produce a warning for
+    /// every reading.
+    private func canWrite(at now: Date) -> Bool {
+        guard let lastFailure else { return true }
+        return now.timeIntervalSince(lastFailure) >= flushInterval
     }
 
     /// A day another run of the app started: the recorder continues from what was written, so the
@@ -206,21 +257,25 @@ final class RhythmRecorder {
         }
         guard let stored else { return }
         let count = RhythmClock.bucketCount(on: day, calendar: calendar)
-        for series in stored.series {
+        var series = days[day] ?? [:]
+        var writtenSeries = written[day] ?? [:]
+        for storedSeries in stored.series {
             var points = [Double](repeating: 0, count: count)
             var samples = [Int](repeating: 0, count: count)
-            for bucket in 0..<min(count, series.points.count) { points[bucket] = series.points[bucket] }
-            for bucket in 0..<min(count, series.samples.count) { samples[bucket] = series.samples[bucket] }
+            for bucket in 0..<min(count, storedSeries.points.count) { points[bucket] = storedSeries.points[bucket] }
+            for bucket in 0..<min(count, storedSeries.samples.count) { samples[bucket] = storedSeries.samples[bucket] }
             let continued = RhythmSeriesRecord(
-                key: series.key,
-                kind: series.kind,
-                label: series.label,
-                windowMs: series.windowMs,
+                key: storedSeries.key,
+                kind: storedSeries.kind,
+                label: storedSeries.label,
+                windowMs: storedSeries.windowMs,
                 points: points,
                 samples: samples
             )
-            buckets[series.key] = continued
-            written[series.key] = continued
+            series[storedSeries.key] = continued
+            writtenSeries[storedSeries.key] = continued
         }
+        days[day] = series
+        written[day] = writtenSeries
     }
 }
