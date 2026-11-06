@@ -51,19 +51,19 @@ final class RhythmViewTests: QuietWindowTestCase {
 
         // The average reads the days of its span, and each span reads its own number of days.
         try await clickUntil([CGPoint(x: 255, y: 16), CGPoint(x: 250, y: 8), CGPoint(x: 260, y: 24)], window, host) {
-            days(in: lastRange(in: store)) == 30
+            days(in: lastFinishedRange(in: store)) == 30
         }
-        XCTAssertEqual(days(in: lastRange(in: store)), 30, "the average of a month reads thirty days")
+        XCTAssertEqual(days(in: lastFinishedRange(in: store)), 30, "the average of a month reads thirty days")
 
         try await clickUntil([CGPoint(x: 124, y: 60), CGPoint(x: 130, y: 56), CGPoint(x: 120, y:  64)], window, host) {
-            days(in: lastRange(in: store)) == 7
+            days(in: lastFinishedRange(in: store)) == 7
         }
-        XCTAssertEqual(days(in: lastRange(in: store)), 7, "the average of a week reads seven days")
+        XCTAssertEqual(days(in: lastFinishedRange(in: store)), 7, "the average of a week reads seven days")
 
         try await clickUntil([CGPoint(x: 244, y: 60), CGPoint(x: 250, y: 56), CGPoint(x: 240, y: 64)], window, host) {
-            days(in: lastRange(in: store)) == 90
+            days(in: lastFinishedRange(in: store)) == 90
         }
-        XCTAssertEqual(days(in: lastRange(in: store)), 90, "the average of a quarter reads ninety days")
+        XCTAssertEqual(days(in: lastFinishedRange(in: store)), 90, "the average of a quarter reads ninety days")
     }
 
     /// "This Day" reads exactly one day: the day on show, not today.
@@ -81,16 +81,16 @@ final class RhythmViewTests: QuietWindowTestCase {
         // The arrow a day back moves the day on show, and the read follows it.
         let yesterday = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -1, to: today))
         try await clickUntil([CGPoint(x: 14, y: 56), CGPoint(x: 14, y: 52), CGPoint(x: 16, y: 60)], window, host) {
-            lastRange(in: store)?.lowerBound == yesterday
+            lastFinishedRange(in: store)?.lowerBound == yesterday
         }
-        let moved = try XCTUnwrap(lastRange(in: store))
+        let moved = try XCTUnwrap(lastFinishedRange(in: store))
         XCTAssertEqual(moved.lowerBound, moved.upperBound, "still one day")
         XCTAssertEqual(moved.lowerBound, yesterday, "the day on show, not today")
     }
 
-    /// The axis ends with the end of the window, which for a whole day is not the clock time the
-    /// day begins at.
-    func testTheAxisDoesNotEndWhereItBegins() async throws {
+    /// The axis of a whole day is the window's own hours: it does not mix a nominal end with
+    /// clock times, and it does not shift on a day that is 23 or 25 hours long.
+    func testTheAxisOfAWholeDayCountsItsHours() async throws {
         let store = RecordingRhythmStore(calendar: .current)
         try store.save(recordToday())
         let container = makeContainer(store: store)
@@ -100,9 +100,27 @@ final class RhythmViewTests: QuietWindowTestCase {
         }
 
         let shown = texts(in: host)
-        XCTAssertTrue(shown.contains("24:00"), "the axis ends with the end of the day")
+        for hour in ["0", "6", "12", "18", "24"] {
+            XCTAssertTrue(shown.contains(hour), "the axis carries the hour \(hour)")
+        }
+        XCTAssertFalse(shown.contains("24:00"), "the axis does not carry a hard-written end")
         let midnight = Calendar.current.startOfDay(for: Date()).formatted(date: .omitted, time: .shortened)
-        XCTAssertEqual(shown.filter { $0 == midnight }.count, 1, "the clock time the day begins at is on the axis once")
+        XCTAssertFalse(shown.contains(midnight), "the axis of a whole day carries no clock time")
+    }
+
+    /// A narrowed window is on the clock: it ends at the time the window ends at, not at a
+    /// nominal end.
+    func testANarrowedWindowEndsOnItsOwnClockTime() {
+        let start = Calendar.current.startOfDay(for: Date())
+        let labels = RhythmView.axisLabels(zoom: .halfDay, start: start)
+
+        XCTAssertEqual(labels.first, start.formatted(date: .omitted, time: .shortened), "the window begins at its own start")
+        XCTAssertEqual(
+            labels.last,
+            start.addingTimeInterval(RhythmZoom.halfDay.window).formatted(date: .omitted, time: .shortened),
+            "the window ends at its own end"
+        )
+        XCTAssertNotEqual(labels.last, labels.first, "a narrowed window does not end where it begins")
     }
 
     /// A history that cannot be read is not a history that was never written.
@@ -134,6 +152,44 @@ final class RhythmViewTests: QuietWindowTestCase {
             texts(in: host).contains("No readings were taken in this range.")
         }
         XCTAssertTrue(texts(in: host).contains("No readings were taken in this range."), "the average says what it means")
+    }
+
+    /// A reading that was overtaken must not be applied: a late failure must not replace a good
+    /// chart with an error message.
+    func testAReadingThatWasOvertakenIsNotApplied() async throws {
+        let store = RecordingRhythmStore(calendar: .current)
+        // The first read is slow and fails; the read that follows it is an ordinary one.
+        store.setFirstLoadFailing(after: 1)
+        let container = makeContainer(store: store)
+        let (window, host) = show(rhythmView(container), in: .titled, size: CGSize(width: PanelMetrics.width, height: 400))
+
+        // The first read is still running.
+        try await waitUntil { store.readAttempts >= 1 }
+
+        // The average reads its own days, and that read is quick.
+        try await clickUntil([CGPoint(x: 255, y: 16), CGPoint(x: 250, y: 8), CGPoint(x: 260, y: 24)], window, host) {
+            days(in: lastFinishedRange(in: store)) == 30
+        }
+
+        // The slow read has failed by now. Its failure is not the one the view wants.
+        try await Task.sleep(for: .milliseconds(1500))
+        XCTAssertFalse(
+            texts(in: host).contains { $0.contains("could not be read") },
+            "a reading that was overtaken does not replace the chart with an error"
+        )
+    }
+
+    /// A day that was recorded but holds no reading at all is an empty grid without an
+    /// explanation, in the day mode as well as in the average one.
+    func testADayOfNothingSaysSo() async throws {
+        let store = RecordingRhythmStore(calendar: .current)
+        try store.save(RhythmDayRecord(day: Calendar.current.startOfDay(for: Date()), series: []))
+        let container = makeContainer(store: store)
+        let (_, host) = show(rhythmView(container), in: .titled, size: CGSize(width: PanelMetrics.width, height: 400))
+
+        try await waitUntil {
+            texts(in: host).contains("No readings were taken in this range.")
+        }
     }
 
     // MARK: - Helpers
@@ -179,16 +235,27 @@ final class RhythmViewTests: QuietWindowTestCase {
         )
     }
 
-    /// The range the store was asked for last.
-    private func lastRange(in store: RecordingRhythmStore) -> ClosedRange<Date>? {
+    /// The range of the read that finished last. The reads run in the background, so the order
+    /// of the ranges is the order of completion, not the order of the requests.
+    private func lastFinishedRange(in store: RecordingRhythmStore) -> ClosedRange<Date>? {
         store.requestedRanges.last
     }
 
-    /// How many days a range covers.
+    /// How many days a range covers, counted by their midnights: the day count of the calendar
+    /// is not the number of days across a daylight-saving change, where a day is 23 or 25 hours
+    /// long.
     private func days(in range: ClosedRange<Date>?) -> Int {
         guard let range else { return 0 }
-        let count = Calendar.current.dateComponents([.day], from: range.lowerBound, to: range.upperBound).day ?? 0
-        return count + 1
+        let calendar = Calendar.current
+        var count = 0
+        var day = calendar.startOfDay(for: range.lowerBound)
+        let last = calendar.startOfDay(for: range.upperBound)
+        while day <= last {
+            count += 1
+            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+            day = calendar.startOfDay(for: next)
+        }
+        return count
     }
 
     /// Clicks the points in order until the view reacts.

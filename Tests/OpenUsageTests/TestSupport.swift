@@ -344,6 +344,11 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
         var failsSave = false
         var failsLoad = false
         var requestedRanges: [ClosedRange<Date>] = []
+        /// How many reads were started.
+        var readAttempts = 0
+        /// Whether the next read is the slow failing one.
+        var firstLoadPending = false
+        var firstLoadDelay: TimeInterval = 0
     }
 
     private let lock = OSAllocatedUnfairLock(initialState: Records())
@@ -352,7 +357,7 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
     var saved: [RhythmDayRecord] { lock.withLock { $0.byDay.values.sorted { $0.day < $1.day } } }
     /// How often the recorder tried to write, whether the write succeeded or not.
     var saveAttempts: Int { lock.withLock { $0.saveAttempts } }
-    /// The ranges the recorder was asked for, oldest first.
+    /// The ranges the recorder was asked for, in the order the reads finished.
     var requestedRanges: [ClosedRange<Date>] { lock.withLock { $0.requestedRanges } }
 
     /// Makes every following write fail, the way a disk that cannot be written does.
@@ -360,9 +365,22 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
         lock.withLock { $0.failsSave = failing }
     }
 
+    /// How many reads were started.
+    var readAttempts: Int { lock.withLock { $0.readAttempts } }
+
     /// Makes every following read fail, the way a history folder that cannot be read does.
     func setFailingLoad(_ failing: Bool) {
         lock.withLock { $0.failsLoad = failing }
+    }
+
+    /// Makes the next read take its time and then fail, the way a slow disk that cannot be read
+    /// does. Only that one read is slow and failing: the reads after it are ordinary ones, so a
+    /// late failure can be told apart from an ordinary one.
+    func setFirstLoadFailing(after delay: TimeInterval) {
+        lock.withLock {
+            $0.firstLoadPending = true
+            $0.firstLoadDelay = delay
+        }
     }
 
     func save(_ record: RhythmDayRecord) throws {
@@ -378,13 +396,27 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
     }
 
     func load(days: ClosedRange<Date>) throws -> [RhythmDayRecord] {
+        let slow = lock.withLock { records -> (Bool, TimeInterval) in
+            records.readAttempts += 1
+            guard records.firstLoadPending else { return (false, 0) }
+            records.firstLoadPending = false
+            return (true, records.firstLoadDelay)
+        }
+        if slow.0 {
+            // The read takes its time and then fails, the way a slow disk does.
+            Thread.sleep(forTimeInterval: slow.1)
+            throw RecordingRhythmStoreError.readFailed
+        }
         let first = calendar.startOfDay(for: days.lowerBound)
         let last = calendar.startOfDay(for: days.upperBound)
-        return try lock.withLock { records in
-            records.requestedRanges.append(days)
+        let found = try lock.withLock { records -> [RhythmDayRecord] in
             if records.failsLoad { throw RecordingRhythmStoreError.readFailed }
             return records.byDay.values.filter { $0.day >= first && $0.day <= last }.sorted { $0.day < $1.day }
         }
+        // The read is appended when it finishes: the reads run in the background, so the order is
+        // the order of completion, not the order of the requests.
+        lock.withLock { $0.requestedRanges.append(days) }
+        return found
     }
 
     func recordedDays() throws -> [Date] { lock.withLock { $0.byDay.keys.sorted() } }
