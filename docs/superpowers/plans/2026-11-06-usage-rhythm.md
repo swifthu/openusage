@@ -665,7 +665,9 @@ The recorder. It reads a refresh's snapshot, differences it against the last rea
     - `func record(_ snapshot: ProviderSnapshot, kind: ProviderKind, at now: Date)`
     - `func flush(at now: Date)`
     - `static func readings(from snapshot: ProviderSnapshot, kind: ProviderKind, at now: Date) -> [RhythmReading]`
-    - `var pendingSeries: [RhythmSeriesRecord]` — for tests, what is waiting to be written
+    - `var pendingSeries: [RhythmSeriesRecord]` — for tests, the series whose buckets changed since
+      the last write. The recorder keeps the whole day in memory and writes all of it, because the
+      store's `save` replaces the day's file rather than adding to it.
   - `Sources/OpenUsage/Stores/RhythmSettings.swift` — `@MainActor final class RhythmSettings` with `static let key`, `static let retentionDays = 90`, `var isEnabled: Bool`, `init(defaults:)`
 
 **Note on the reset rule:** the reliable signal that a window reset is `resetsAt`. When the previous reading's `resetsAt` falls at or before the current reading's moment, the two readings describe different windows, so the difference between them is not consumption. Only when a provider reports no `resetsAt` does the recorder fall back to "the reading went down, so the window reset".
@@ -954,6 +956,12 @@ final class RhythmSettings {
 
 - [ ] **Step 4: Write the recorder**
 
+The recorder holds the **whole day** in memory and writes all of it, because the store's `save`
+replaces the day's file rather than adding to it — a recorder that wrote only what was new would
+drop the earlier part of the day. It tracks what was last written so it knows what has changed
+since, and when the day rolls over it continues from the record the store already holds, so a
+restart does not lose the part of the day that came before it.
+
 Create `Sources/OpenUsage/Rhythm/RhythmRecorder.swift`:
 
 ```swift
@@ -1005,7 +1013,15 @@ enum RhythmDifferencer {
 /// Records how fast each account's window fills up, and keeps the last so many days of it.
 ///
 /// The recorder holds the day's buckets in memory and writes them every few minutes, so a refresh
-/// does not touch the disk every time.
+/// does not touch the disk every time. What is in memory is the whole day, so writing it twice
+/// does not lose the part that was written first, and a day another run of the app started is
+/// continued from what was written.
+///
+/// A delta belongs to the day of the **later** reading. An interval that crosses midnight
+/// therefore leaves the part before midnight in no bucket, and an interval that *begins* before
+/// the day's midnight — a reading at 23:58 and the next one at 00:02 — lands in no bucket at all.
+/// Both losses are bounded by one refresh interval per day boundary, the same order as the use
+/// before a provider's window resets that the recorder also does not see.
 @MainActor
 @Observable
 final class RhythmRecorder {
@@ -1015,13 +1031,15 @@ final class RhythmRecorder {
 
     /// The last reading of every series, so the next one can be differenced against it.
     @ObservationIgnored private var lastReading: [String: RhythmReading] = [:]
-    /// The buckets of the day being recorded, waiting to be written.
-    @ObservationIgnored private var pending: [String: RhythmSeriesRecord] = [:]
-    /// The day the pending buckets belong to.
-    @ObservationIgnored private var pendingDay: Date?
-    /// When the pending buckets were last written.
+    /// The day's buckets as they stand.
+    @ObservationIgnored private var buckets: [String: RhythmSeriesRecord] = [:]
+    /// The day's buckets as they were last written, so the recorder knows what has changed since.
+    @ObservationIgnored private var written: [String: RhythmSeriesRecord] = [:]
+    /// The day the buckets belong to.
+    @ObservationIgnored private var recordedDay: Date?
+    /// When the day's buckets were last written.
     @ObservationIgnored private var lastFlush: Date?
-    /// How long the pending buckets are kept in memory before they are written.
+    /// How long the day's buckets are kept in memory before they are written.
     @ObservationIgnored private let flushInterval: TimeInterval
     /// How many writes have failed in a row.
     @ObservationIgnored private var failures = 0
@@ -1041,9 +1059,12 @@ final class RhythmRecorder {
     /// The store the history is kept in. The chart reads the days it holds.
     var store: any RhythmStore { history }
 
-    /// The buckets waiting to be written. The tests read this; the app does not.
+    /// The buckets waiting to be written: the series whose buckets have changed since the last
+    /// write. The tests read this; the app does not.
     var pendingSeries: [RhythmSeriesRecord] {
-        pending.values.sorted { $0.key < $1.key }
+        buckets.values
+            .filter { written[$0.key] != $0 }
+            .sorted { $0.key < $1.key }
     }
 
     /// The readings a snapshot carries: the session-sized metrics of one account.
@@ -1072,23 +1093,28 @@ final class RhythmRecorder {
     /// covered stay empty rather than showing as no usage.
     func record(_ snapshot: ProviderSnapshot, kind: ProviderKind, at now: Date) {
         guard settings.isEnabled else { return }
+        // The day's buckets are written before the new reading is folded in, so what is on disk is
+        // always a whole number of readings and the newest one is still waiting to be written.
+        checkpointIfDue(at: now)
         for reading in Self.readings(from: snapshot, kind: kind, at: now) {
             apply(reading, at: now)
         }
-        flushIfDue(at: now)
     }
 
-    /// Writes the pending buckets.
+    /// Writes the day's buckets, and remembers them as written so only what changed since is
+    /// waiting to be written again.
     func flush(at now: Date) {
-        guard let day = pendingDay, !pending.isEmpty else { return }
-        let record = RhythmDayRecord(day: day, series: pendingSeries)
+        guard let day = recordedDay, !buckets.isEmpty else { return }
+        guard !pendingSeries.isEmpty else { return }
+        let record = RhythmDayRecord(day: day, series: buckets.values.sorted { $0.key < $1.key })
         do {
             try history.save(record)
             failures = 0
             lastFlush = now
+            written = buckets
         } catch {
             failures += 1
-            AppLog.warn(.rhythm, "could not write the rhythm history for \(RhythmClock.fileName(for: day)): \(error.localizedDescription)")
+            AppLog.warn(.rhythm, "could not write the rhythm history for \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
             if failures >= 5 {
                 AppLog.error(.rhythm, "the rhythm history stopped being written after \(failures) failures in a row")
             }
@@ -1097,12 +1123,14 @@ final class RhythmRecorder {
 
     private func apply(_ reading: RhythmReading, at now: Date) {
         let day = calendar.startOfDay(for: now)
-        if pendingDay != day {
+        if recordedDay != day {
             flush(at: now)
-            pending.removeAll()
-            pendingDay = day
+            buckets.removeAll()
+            written.removeAll()
+            recordedDay = day
+            continueFromStore(on: day)
         }
-        var record = pending[reading.key] ?? RhythmSeriesRecord(
+        var record = buckets[reading.key] ?? RhythmSeriesRecord(
             key: reading.key,
             kind: reading.kind,
             label: reading.label,
@@ -1120,22 +1148,47 @@ final class RhythmRecorder {
            index < record.samples.count {
             record.samples[index] += 1
         }
-        pending[reading.key] = record
+        buckets[reading.key] = record
         lastReading[reading.key] = reading
     }
 
-    private func flushIfDue(at now: Date) {
-        if let pendingDay, calendar.startOfDay(for: now) != pendingDay {
-            flush(at: now)
-            pending.removeAll()
-            pendingDay = nil
-        }
+    private func checkpointIfDue(at now: Date) {
         guard let lastFlush else {
             lastFlush = now
             return
         }
         guard now.timeIntervalSince(lastFlush) >= flushInterval else { return }
         flush(at: now)
+    }
+
+    /// A day another run of the app started: the recorder continues from what was written, so the
+    /// part of the day before the restart is not lost when the day is written again.
+    private func continueFromStore(on day: Date) {
+        let stored: RhythmDayRecord?
+        do {
+            stored = try history.load(day: day)
+        } catch {
+            AppLog.warn(.rhythm, "could not read the rhythm history for \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
+            return
+        }
+        guard let stored else { return }
+        let count = RhythmClock.bucketCount(on: day, calendar: calendar)
+        for series in stored.series {
+            var points = [Double](repeating: 0, count: count)
+            var samples = [Int](repeating: 0, count: count)
+            for bucket in 0..<min(count, series.points.count) { points[bucket] = series.points[bucket] }
+            for bucket in 0..<min(count, series.samples.count) { samples[bucket] = series.samples[bucket] }
+            let continued = RhythmSeriesRecord(
+                key: series.key,
+                kind: series.kind,
+                label: series.label,
+                windowMs: series.windowMs,
+                points: points,
+                samples: samples
+            )
+            buckets[series.key] = continued
+            written[series.key] = continued
+        }
     }
 }
 ```
