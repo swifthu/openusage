@@ -24,7 +24,10 @@ struct RhythmContextStrip: View {
                 windowView(width: geo.size.width, height: geo.size.height)
             }
             .contentShape(Rectangle())
-            .gesture(
+            // The strip sits in the panel's scroll view, where the scroll view's pan competes
+            // with the drag. The reorder grips of the same scroll view take the gesture first, so
+            // the window moves instead of the panel scrolling.
+            .highPriorityGesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         // The mark moves to where the pointer is, not by how far the pointer

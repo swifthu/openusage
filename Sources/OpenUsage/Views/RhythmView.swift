@@ -26,6 +26,12 @@ struct RhythmView: View {
         var label: String { "\(rawValue) Days" }
     }
 
+    /// What reading the history gave.
+    private enum ReadOutcome: Sendable {
+        case read(records: [RhythmDayRecord], recordedDays: [Date])
+        case failed(String)
+    }
+
     @State private var mode: Mode = .day
     @State private var day = Date()
     @State private var span: Span = .month
@@ -36,6 +42,8 @@ struct RhythmView: View {
     /// Whether the history holds any day at all, which is what tells "nothing yet" apart from
     /// "not on that day".
     @State private var hasHistory = false
+    /// What went wrong while reading the history, if anything.
+    @State private var readError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.l) {
@@ -47,9 +55,14 @@ struct RhythmView: View {
             // The history grows while the tab is open, so it reloads on a timer as well as when
             // the day, the mode or the zoom changes.
             while !Task.isCancelled {
-                load()
+                await load()
                 try? await Task.sleep(for: .seconds(30))
             }
+        }
+        .onChange(of: day) { _, _ in
+            // The day on show decides how long it is, so a window that fitted yesterday's length
+            // can stick out past the end of today's.
+            clampOffset()
         }
     }
 
@@ -72,12 +85,12 @@ struct RhythmView: View {
     private var chart: some View {
         VStack(alignment: .leading, spacing: 6) {
             header
-            if bars.isEmpty {
-                Text(emptyText)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 24)
+            if let readError {
+                message("The rhythm history could not be read: \(readError)")
+            } else if bars.isEmpty {
+                message(emptyText)
+            } else if averageHasNoReadings {
+                message("No readings were taken in this range.")
             } else {
                 if zoom != .day {
                     RhythmContextStrip(
@@ -93,7 +106,16 @@ struct RhythmView: View {
             }
         }
         .padding(10)
-        .background { Theme.cardShape.fill(Theme.cardFill) }
+        .cardSurface()
+    }
+
+    /// A line of text where the chart would be.
+    private func message(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 24)
     }
 
     private var header: some View {
@@ -186,6 +208,12 @@ struct RhythmView: View {
         return mode == .day ? "Nothing was recorded on this day." : "Nothing was recorded in this range."
     }
 
+    /// Whether the average is of days that hold no reading at all. The chart would be an empty
+    /// grid then, with nothing on it to say why.
+    private var averageHasNoReadings: Bool {
+        mode == .average && !bars.isEmpty && bars.allSatisfy { $0.samples == 0 }
+    }
+
     private var dayTitle: String {
         if Calendar.current.isDateInToday(day) { return "Today" }
         return day.formatted(.dateTime.month(.abbreviated).day())
@@ -221,6 +249,13 @@ struct RhythmView: View {
     private func axisLabel(at step: Int) -> String {
         // Five labels over 24 bars: every sixth bar.
         let start = bars.first?.start ?? Calendar.current.startOfDay(for: day)
+        guard step < 4 else {
+            // The last label is the end of the window. A whole day ends at the next midnight,
+            // which would print "00:00" and read exactly like the first label, so it is marked
+            // "24:00" instead.
+            guard zoom != .day else { return "24:00" }
+            return start.addingTimeInterval(zoom.window).formatted(date: .omitted, time: .shortened)
+        }
         return start.addingTimeInterval(Double(step) * 6 * zoom.barDuration).formatted(date: .omitted, time: .shortened)
     }
 
@@ -252,22 +287,46 @@ struct RhythmView: View {
         offset = (offset / zoom.barDuration).rounded(.down) * zoom.barDuration
     }
 
-    /// Reads the days the chart needs: the selected day, or the days the chosen range covers.
-    private func load() {
+    /// The days the chart needs: the selected day, or the days the chosen range covers.
+    private var daysToRead: ClosedRange<Date> {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
         // The store compares days, so the range covers whole days: a range that starts in the
         // afternoon would otherwise leave that day's record out.
-        let days: ClosedRange<Date>
         switch mode {
         case .day:
             let selected = calendar.startOfDay(for: day)
-            days = selected...selected
+            return selected...selected
         case .average:
             let start = calendar.date(byAdding: .day, value: -(span.rawValue - 1), to: today) ?? today
-            days = start...today
+            return start...today
         }
-        records = (try? container.rhythm.store.load(days: days)) ?? []
-        hasHistory = !((try? container.rhythm.store.recordedDays()) ?? []).isEmpty
+    }
+
+    /// Reads the history off the main thread: the file store decodes up to ninety day files, and
+    /// the tab reloads every thirty seconds, so the reading does not belong on the main thread.
+    private func load() async {
+        let store = container.rhythm.store
+        let days = daysToRead
+        let outcome = await Task.detached(priority: .userInitiated) {
+            do {
+                let records = try store.load(days: days)
+                let recorded = try store.recordedDays()
+                return ReadOutcome.read(records: records, recordedDays: recorded)
+            } catch {
+                return ReadOutcome.failed(error.localizedDescription)
+            }
+        }.value
+        switch outcome {
+        case .read(let loaded, let recorded):
+            records = loaded
+            hasHistory = !recorded.isEmpty
+            readError = nil
+        case .failed(let message):
+            // A history that cannot be read is not a history that was never written: the user has
+            // to be told, and the log has to say what happened.
+            AppLog.error(.rhythm, "could not read the rhythm history: \(message)")
+            readError = message
+        }
     }
 }

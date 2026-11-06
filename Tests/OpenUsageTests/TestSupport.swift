@@ -342,6 +342,8 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
         var byDay: [Date: RhythmDayRecord] = [:]
         var saveAttempts = 0
         var failsSave = false
+        var failsLoad = false
+        var requestedRanges: [ClosedRange<Date>] = []
     }
 
     private let lock = OSAllocatedUnfairLock(initialState: Records())
@@ -350,10 +352,17 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
     var saved: [RhythmDayRecord] { lock.withLock { $0.byDay.values.sorted { $0.day < $1.day } } }
     /// How often the recorder tried to write, whether the write succeeded or not.
     var saveAttempts: Int { lock.withLock { $0.saveAttempts } }
+    /// The ranges the recorder was asked for, oldest first.
+    var requestedRanges: [ClosedRange<Date>] { lock.withLock { $0.requestedRanges } }
 
     /// Makes every following write fail, the way a disk that cannot be written does.
     func setFailing(_ failing: Bool) {
         lock.withLock { $0.failsSave = failing }
+    }
+
+    /// Makes every following read fail, the way a history folder that cannot be read does.
+    func setFailingLoad(_ failing: Bool) {
+        lock.withLock { $0.failsLoad = failing }
     }
 
     func save(_ record: RhythmDayRecord) throws {
@@ -371,9 +380,10 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
     func load(days: ClosedRange<Date>) throws -> [RhythmDayRecord] {
         let first = calendar.startOfDay(for: days.lowerBound)
         let last = calendar.startOfDay(for: days.upperBound)
-        return lock.withLock {
-            records in
-            records.byDay.values.filter { $0.day >= first && $0.day <= last }.sorted { $0.day < $1.day }
+        return try lock.withLock { records in
+            records.requestedRanges.append(days)
+            if records.failsLoad { throw RecordingRhythmStoreError.readFailed }
+            return records.byDay.values.filter { $0.day >= first && $0.day <= last }.sorted { $0.day < $1.day }
         }
     }
 
@@ -385,11 +395,17 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
     }
 }
 
-/// A write that did not land.
+/// A write that did not land, or a read that failed.
 enum RecordingRhythmStoreError: LocalizedError {
     case writeFailed
+    case readFailed
 
     var errorDescription: String? {
-        "The rhythm history could not be written."
+        switch self {
+        case .writeFailed:
+            "The rhythm history could not be written."
+        case .readFailed:
+            "The rhythm history could not be read."
+        }
     }
 }
