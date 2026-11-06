@@ -109,6 +109,9 @@ final class RhythmRecorder {
         days.keys.filter { !pendingSeries(on: $0).isEmpty }.sorted()
     }
 
+    /// The days the recorder holds in memory. The tests read this; the app does not.
+    var heldDays: [Date] { days.keys.sorted() }
+
     /// The readings a snapshot carries: the session-sized metrics of one account.
     static func readings(from snapshot: ProviderSnapshot, kind: ProviderKind, at now: Date) -> [RhythmReading] {
         snapshot.lines.compactMap { line in
@@ -136,8 +139,9 @@ final class RhythmRecorder {
     func record(_ snapshot: ProviderSnapshot, kind: ProviderKind, at now: Date) {
         guard settings.isEnabled else {
             // Turning the recording off stops the readings, but what was already recorded is
-            // written out rather than thrown away.
-            if canWrite(at: now) { flush(at: now) }
+            // written out rather than thrown away. The write is not held back by the backoff of
+            // a failed write: turning the recording off is the user's own request.
+            flush(at: now)
             return
         }
         // The day's buckets are written before the new reading is folded in, so what is on disk is
@@ -158,7 +162,15 @@ final class RhythmRecorder {
         var failed = false
         for day in days.keys.sorted() {
             let series = days[day] ?? [:]
-            guard !pendingSeries(on: day).isEmpty else { continue }
+            guard !pendingSeries(on: day).isEmpty else {
+                if day != recordedDay {
+                    // The day is on disk and nothing is waiting to be written, so the recorder
+                    // does not need to hold it any more.
+                    days.removeValue(forKey: day)
+                    written.removeValue(forKey: day)
+                }
+                continue
+            }
             let record = RhythmDayRecord(day: day, series: series.values.sorted { $0.key < $1.key })
             do {
                 try history.save(record)

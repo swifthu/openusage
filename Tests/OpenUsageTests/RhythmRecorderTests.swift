@@ -327,6 +327,50 @@ final class RhythmRecorderTests: XCTestCase {
         XCTAssertEqual(series.samples[168], 2)
     }
 
+    func testADayThatIsAlreadyOnDiskIsLetGoWhenTheDayTurnsOver() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: moment(0))!
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(23, 58))
+        recorder.flush(at: moment(23, 59))
+        // The day is on disk now, so nothing of it is waiting to be written.
+        XCTAssertEqual(store.saved.count, 1)
+
+        recorder.record(snapshot(fraction: 0.3), kind: .claude, at: nextDay)
+
+        // The day that ended is on disk and has nothing new, so the recorder lets it go.
+        XCTAssertFalse(recorder.heldDays.contains(moment(0)))
+        // The day that is being recorded is still held, because it is still being added to.
+        XCTAssertTrue(recorder.heldDays.contains(nextDay))
+    }
+
+    func testAFailedWriteDoesNotStopTheRecordingFromBeingTurnedOff() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        store.setFailing(true)
+        let settings = RhythmSettings(defaults: isolatedDefaults())
+        let recorder = RhythmRecorder(store: store, settings: settings, calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        recorder.record(snapshot(fraction: 0.35), kind: .claude, at: moment(14, 5))
+        // The write that was due failed, and it is not tried again right away.
+        XCTAssertEqual(store.saveAttempts, 1)
+        XCTAssertTrue(store.saved.isEmpty)
+
+        store.setFailing(false)
+        settings.isEnabled = false
+        recorder.record(snapshot(fraction: 0.5), kind: .claude, at: moment(14, 6))
+
+        // Turning the recording off writes what was already recorded, even though the last write
+        // failed a moment ago.
+        let series = try XCTUnwrap(store.saved.first?.series.first)
+        XCTAssertEqual(series.samples[168], 1)
+        XCTAssertEqual(series.samples[169], 1)
+        XCTAssertEqual(series.points[168], 0.15, accuracy: 0.0001)
+        // The reading that arrived after the recording was turned off is not recorded.
+        XCTAssertEqual(series.samples[170], 0)
+    }
+
     func testTheStoreListsEveryDayOnce() throws {
         let store = RecordingRhythmStore(calendar: calendar)
 
