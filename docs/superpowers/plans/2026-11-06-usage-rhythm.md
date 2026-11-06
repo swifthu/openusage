@@ -1335,14 +1335,14 @@ final class RhythmWiringTests: XCTestCase {
         return calendar
     }()
 
-    private func isolatedDefaults() -> UserDefaults {
-        let suite = "rhythm-wiring-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        return defaults
+    /// Twelve buckets an hour, so 14:00 UTC is the bucket 168 of the day.
+    private let afternoonBucket = 168
+
+    private func moment(_ hour: Int, _ minute: Int = 0) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: hour, minute: minute))!
     }
 
-    private func snapshot(fraction: Double) -> ProviderSnapshot {
+    private func snapshot(fraction: Double, at now: Date) -> ProviderSnapshot {
         ProviderSnapshot(
             providerID: "account-1",
             displayName: "Claude",
@@ -1351,49 +1351,133 @@ final class RhythmWiringTests: XCTestCase {
                 used: fraction * 100,
                 limit: 100,
                 format: .percent,
-                resetsAt: Date().addingTimeInterval(3600),
+                resetsAt: now.addingTimeInterval(3600),
                 periodDurationMs: MetricPeriod.sessionMs
             )]
         )
     }
 
-    func testASuccessfulRefreshFeedsTheRecorder() async {
+    private func recorder(_ store: RecordingRhythmStore) -> RhythmRecorder {
+        RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+    }
+
+    func testASuccessfulRefreshFeedsTheRecorder() async throws {
         let store = RecordingRhythmStore(calendar: calendar)
-        let recorder = RhythmRecorder(
-            store: store,
-            settings: RhythmSettings(defaults: isolatedDefaults()),
-            calendar: calendar
-        )
+        let recorder = recorder(store)
+        let clock = TestClock(moment(14, 0))
         let runtime = StubRuntime(
             provider: Provider(id: "account-1", kind: .claude),
             descriptors: [],
-            snapshot: snapshot(fraction: 0.2)
+            snapshot: snapshot(fraction: 0.2, at: moment(14, 0))
         )
-        let dataStore = WidgetDataStore.forTesting([runtime], defaults: isolatedDefaults(), rhythm: recorder)
+        let dataStore = WidgetDataStore.forTesting(
+            [runtime],
+            defaults: isolatedDefaults(),
+            now: { clock.now },
+            rhythm: recorder
+        )
 
         await dataStore.refresh(providerID: runtime.provider.id, force: true)
+        recorder.flush(at: clock.now)
 
-        XCTAssertEqual(recorder.pendingSeries.count, 1)
-        XCTAssertEqual(recorder.pendingSeries[0].key, "account-1/Session")
+        // What landed in the store is what the refresh found.
+        XCTAssertEqual(store.saved.count, 1)
+        let series = try XCTUnwrap(store.saved.first?.series.first)
+        XCTAssertEqual(series.key, "account-1/Session")
+        // The reading is a sample in the bucket of the moment the refresh happened.
+        XCTAssertEqual(series.samples[afternoonBucket], 1)
+        XCTAssertEqual(series.samples.reduce(0, +), 1)
+        // It burned nothing: it had no predecessor to be differenced against.
+        XCTAssertEqual(series.points.reduce(0, +), 0, accuracy: 0.0001)
     }
 
-    func testAFailedRefreshFeedsTheRecorderNothing() async {
+    func testAFailedRefreshFeedsTheRecorderNothing() async throws {
         let store = RecordingRhythmStore(calendar: calendar)
-        let recorder = RhythmRecorder(
-            store: store,
-            settings: RhythmSettings(defaults: isolatedDefaults()),
-            calendar: calendar
-        )
+        let recorder = recorder(store)
+        let clock = TestClock(moment(14, 0))
         let runtime = StubRuntime(
             provider: Provider(id: "account-1", kind: .claude),
             descriptors: [],
             failure: RefreshFailure(message: "Unreachable", kind: .unreachable)
         )
-        let dataStore = WidgetDataStore.forTesting([runtime], defaults: isolatedDefaults(), rhythm: recorder)
+        let dataStore = WidgetDataStore.forTesting(
+            [runtime],
+            defaults: isolatedDefaults(),
+            now: { clock.now },
+            rhythm: recorder
+        )
 
         await dataStore.refresh(providerID: runtime.provider.id, force: true)
+        recorder.flush(at: clock.now)
 
+        XCTAssertTrue(store.saved.isEmpty)
         XCTAssertTrue(recorder.pendingSeries.isEmpty)
+    }
+
+    func testAReplacedRuntimeDoesNotRecordTheJumpAsConsumption() async throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = recorder(store)
+        let clock = TestClock(moment(14, 0))
+        let provider = Provider(id: "account-1", kind: .claude)
+        let runtime = StubRuntime(
+            provider: provider,
+            descriptors: [],
+            snapshot: snapshot(fraction: 0.2, at: moment(14, 0))
+        )
+        let dataStore = WidgetDataStore.forTesting(
+            [runtime],
+            defaults: isolatedDefaults(),
+            now: { clock.now },
+            rhythm: recorder
+        )
+
+        await dataStore.refresh(providerID: provider.id, force: true)
+
+        // The account is signed in again, so the new runtime measures a window that is nearly full.
+        clock.set(moment(14, 5))
+        let replacement = StubRuntime(
+            provider: provider,
+            descriptors: [],
+            snapshot: snapshot(fraction: 0.9, at: moment(14, 5))
+        )
+        dataStore.replaceProvider(replacement, snapshot: snapshot(fraction: 0.9, at: moment(14, 5)))
+        recorder.flush(at: clock.now)
+
+        let series = try XCTUnwrap(store.saved.first?.series.first)
+        XCTAssertEqual(series.key, "account-1/Session")
+        // Both readings are samples.
+        XCTAssertEqual(series.samples.reduce(0, +), 2)
+        // The jump between the old window and the new one is not consumption: nothing burned.
+        XCTAssertEqual(series.points.reduce(0, +), 0, accuracy: 0.0001)
+    }
+
+    func testARefreshThroughTheContainerReachesItsRecorder() async throws {
+        let defaults = isolatedDefaults()
+        let accounts = AccountStore(defaults: defaults, vault: InMemoryCredentialVault())
+        let http = RoutingHTTPClient { _ in
+            HTTPResponse.json("""
+            {"model_remains":[{"model_name":"general","current_interval_remaining_percent":80,\
+            "current_weekly_remaining_percent":100,"remains_time":7200000}],\
+            "base_resp":{"status_code":0,"status_msg":"success"}}
+            """)
+        }
+        // The account is added before the container, so the container starts no refresh of its own
+        // and the reading this test counts is the one it asks for.
+        let account = accounts.add(kind: .minimax, label: "Work", credential: .apiKey("key"))
+        let container = AppContainer.forTesting(accounts: accounts, defaults: defaults, http: http)
+
+        // The tests keep the rhythm in memory: the file store would read and write the developer's
+        // own history folder.
+        XCTAssertTrue(container.rhythm.store is RecordingRhythmStore)
+
+        await container.dataStore.refresh(providerID: account.cardID, force: true)
+        container.rhythm.flush(at: Date())
+
+        let store = try XCTUnwrap(container.rhythm.store as? RecordingRhythmStore)
+        XCTAssertEqual(store.saved.count, 1)
+        let series = try XCTUnwrap(store.saved.first?.series.first)
+        XCTAssertEqual(series.key, "\(account.cardID)/Session")
+        XCTAssertEqual(series.samples.reduce(0, +), 1)
     }
 }
 ```
@@ -1450,6 +1534,44 @@ In `private func store(_ snapshot: ProviderSnapshot, for providerID: String)`:
     }
 ```
 
+A replaced runtime breaks the baseline. `replaceProvider` stores a snapshot taken from a **new**
+runtime, and the series key — `"\(cardID)/<metric label>"` — does not change when the credential
+does, so the previous reading is still there and the new window's percentage would be differenced
+against the old one. That books a jump that never happened as consumption. The recorder forgets the
+provider's last readings instead:
+
+```swift
+    /// Forgets the last reading of a provider's series, so its next reading starts a new
+    /// baseline. A runtime that was replaced may be measuring a different window now, and the
+    /// jump between the old reading and the new one is not consumption.
+    func forgetReadings(for providerID: String) {
+        let prefix = "\(providerID)/"
+        let stale = lastReading.keys.filter { $0.hasPrefix(prefix) }
+        for key in stale {
+            lastReading.removeValue(forKey: key)
+        }
+    }
+```
+
+The keys are filtered into an array first: mutating the dictionary while iterating its keys traps.
+
+And `replaceProvider` calls it before the snapshot is stored:
+
+```swift
+    func replaceProvider(_ provider: ProviderRuntime, snapshot: ProviderSnapshot) {
+        let id = provider.provider.id
+        inFlight.removeValue(forKey: id)?.cancel()
+        providersByID[id] = provider
+        // The runtime that measured this account may be measuring a different window now, so the
+        // old reading is not a baseline for the new one.
+        rhythm?.forgetReadings(for: id)
+        store(snapshot, for: id)
+    }
+```
+
+The replacement's own reading is still recorded — as a sample, with no burn, because it has no
+predecessor. That is right: the new window's state is worth knowing.
+
 - [ ] **Step 4: Let the test helper take a recorder**
 
 In `Tests/OpenUsageTests/TestSupport.swift`, add the parameter to `WidgetDataStore.forTesting`:
@@ -1478,6 +1600,27 @@ In `Tests/OpenUsageTests/TestSupport.swift`, add the parameter to `WidgetDataSto
 
 - [ ] **Step 5: Build the recorder in `AppContainer`**
 
+First the folder the history lives in. `Sources/OpenUsage/Rhythm/RhythmStore.swift`:
+
+```swift
+    static var defaultDirectory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        return base
+            .appendingPathComponent("OpenUsage", isDirectory: true)
+            .appendingPathComponent("rhythm", isDirectory: true)
+            // The app is not sandboxed, so Application Support is shared by every build of it.
+            // The bundle identifier keeps the development build and the installed one apart.
+            .appendingPathComponent(Bundle.main.bundleIdentifier ?? "default", isDirectory: true)
+    }
+```
+
+The app is not sandboxed — `script/OpenUsage.local.entitlements.plist` carries only
+`com.apple.security.get-task-allow` — so `~/Library/Application Support` is the same folder for the
+installed app and for the development build. `UserDefaults` is per bundle id, but this folder is
+not, and `save` replaces the whole day's file. Both builds hold the day in memory and write it
+every few minutes, so without the bundle identifier in the path they overwrite each other.
+
 In `Sources/OpenUsage/App/AppContainer.swift`, add the two stored properties:
 
 ```swift
@@ -1491,7 +1634,7 @@ The recorder has to exist before the data store is built, because the data store
 ```swift
         let rhythmSettings = RhythmSettings(defaults: defaults)
         let rhythm = RhythmRecorder(
-            store: FileRhythmStore(directory: FileRhythmStore.defaultDirectory, calendar: .current),
+            store: rhythmStore ?? FileRhythmStore(directory: FileRhythmStore.defaultDirectory, calendar: .current),
             settings: rhythmSettings,
             calendar: .current
         )
@@ -1502,6 +1645,22 @@ The recorder has to exist before the data store is built, because the data store
 `RhythmRecorder.init` takes an explicit calendar and has no default for it — the recorder and the
 store have to agree on which day a moment belongs to, or the file name and the bucket index drift
 apart.
+
+`init` takes the store as a parameter, so the tests do not touch the disk:
+
+```swift
+        telemetryDefaults: UserDefaults,
+        rhythmStore: (any RhythmStore)? = nil
+```
+
+`RhythmStore` is `Sendable`, so this is fine. `AppContainer.forTesting` in
+`Tests/OpenUsageTests/TestSupport.swift` passes an in-memory store — otherwise every one of the
+nineteen test files that build a container would record into the developer's own history folder,
+because `RhythmSettings.isEnabled` is on by default:
+
+```swift
+            rhythmStore: RecordingRhythmStore(calendar: .current)
+```
 
 and pass the recorder into the data store:
 

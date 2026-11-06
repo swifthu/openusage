@@ -77,7 +77,7 @@ provider API
               ├─ 只取 .progress 且 periodDurationMs ≤ 24h 的行
               ├─ 与上次采样做差 → 这一段的消耗百分点
               └─ RhythmStore.append(当日 5 分钟桶)
-                    └─ Application Support/OpenUsage/rhythm/2026-11-06.json
+                    └─ Application Support/OpenUsage/rhythm/<bundle id>/2026-11-06.json
 
 读取：RhythmStore.load(days:) → RhythmAnalytics → RhythmView
 ```
@@ -92,7 +92,9 @@ provider API
 
 ### 一天的记录 = 一个文件
 
-`~/Library/Application Support/OpenUsage/rhythm/2026-11-06.json`
+`~/Library/Application Support/OpenUsage/rhythm/<bundle id>/2026-11-06.json`
+
+> 目录里带 bundle id：这个 app 没有沙盒，Application Support 是所有构建共用的，dev 版和正式版会互相覆盖同一整天的文件。
 
 ```json
 {
