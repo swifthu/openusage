@@ -2584,7 +2584,6 @@ git commit -m "feat(rhythm): show the rhythm in a dashboard tab"
 - Modify: `docs/dashboard.md`
 - Modify: `docs/settings.md`
 - Modify: `docs/privacy.md`
-- Modify: `docs/README.md`
 
 **Interfaces:**
 - Consumes: `RhythmSettings`, `AppContainer.rhythm` from Tasks 2 and 3.
@@ -2668,9 +2667,11 @@ your busy hours are.
 
 Every refresh, the app notes how much of each limit's window has been used and when. From those
 notes it builds a five-minute history of the last 90 days, kept in
-`~/Library/Application Support/OpenUsage/rhythm/`, one file per local day.
+`~/Library/Application Support/OpenUsage/rhythm/`, one file per local day. The app's bundle
+identifier is in the path, so a development build and the installed app never write over each
+other's history.
 
-What a file holds is the provider's own reported percentage, the provider it came from, the name of
+What a file holds is the share of the window that was used, the provider it came from, the name of
 the metric and a local account id. It never holds a token count, a price, an account name or an
 email address. Nothing leaves this Mac: the history is never uploaded, and the app never reads the
 logs of other tools.
@@ -2748,7 +2749,9 @@ See [Usage Rhythm](rhythm.md).
 
 - The **Rhythm** tab keeps a five-minute history of how fast each account's limits fill up, in
   `~/Library/Application Support/OpenUsage/rhythm/`, one file per local day, for the last 90 days.
-- A file holds the provider's own reported percentage, the provider, the metric name and a local
+  The app's bundle identifier is in the path, so a development build and the installed app keep
+  separate histories.
+- A file holds the share of each window that was used, the provider, the metric name and a local
   account id. It holds no token count, no price, no account name and no email address.
 - The history never leaves this Mac. It is not uploaded, and it is not part of the telemetry the
   app sends — see [Anonymous telemetry](#anonymous-telemetry).
@@ -2780,15 +2783,16 @@ renumber the sync-cadence section to six:
 Upstream has none of this; the fork keeps it across a sync.
 
 - The **Rhythm** tab records how fast each account's provider-reported window fills up, and shows
-  when the peak hours are. It records the provider's own reported percentage, sampled on every
-  refresh and differenced between readings — no log scanning, no spend estimate, no pricing and no
-  token count anywhere in it, which is what section 3's body bans.
+  when the peak hours are. It records the share of each window that was used — the provider's own
+  reported number against its own limit — sampled on every refresh and differenced between
+  readings. No log scanning, no spend estimate, no pricing and no absolute token count anywhere
+  in it, which is what section 3's body bans.
 - Section 3's heading also says "no trend". The rhythm is a time series, so this is the fork's
   deliberate reading of that heading: the ban is on trends of *spend*, and the rhythm charts the
-  provider's own reported percentage. It is recorded here so that a sync does not quietly drop it.
-- The history lives in `~/Library/Application Support/OpenUsage/rhythm/`, one file per local day,
-  and is never uploaded. Section 3 also forbids reading other tools' credentials, files and logs;
-  the rhythm reads none of them.
+  provider's own reported window. It is recorded here so that a sync does not quietly drop it.
+- The history lives in `~/Library/Application Support/OpenUsage/rhythm/<bundle id>/`, one file per
+  local day, and is never uploaded. Section 3 also forbids reading other tools' credentials, files
+  and logs; the rhythm reads none of them.
 - Keep the recording and the analysis in `Sources/OpenUsage/Rhythm/`, and the views in
   `Sources/OpenUsage/Views/Rhythm*.swift`. A future cloud store is one more `RhythmStore`
   implementation, not a change to the recorder or the chart — and it needs its own stable identity
