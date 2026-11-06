@@ -104,7 +104,7 @@ final class RhythmWiringTests: XCTestCase {
         XCTAssertTrue(recorder.pendingSeries.isEmpty)
     }
 
-    func testAReplacedRuntimeOnTheSameWindowKeepsTheConsumption() async throws {
+    func testAReplacedRuntimeOnTheSameAccountKeepsTheConsumption() async throws {
         let store = RecordingRhythmStore(calendar: calendar)
         let recorder = recorder(store)
         let clock = TestClock(moment(14, 0))
@@ -123,23 +123,23 @@ final class RhythmWiringTests: XCTestCase {
 
         await dataStore.refresh(providerID: provider.id, force: true)
 
-        // The sign-in expired and the account signed in again. It is the same account and the
-        // same window — the window ends at the same moment — so what was burned in between is
-        // real consumption and belongs in the chart.
+        // The sign-in expired and the account signed in again. It is the same account, so the
+        // sign-in carries the same identity and the account behind the slot did not change:
+        // what was burned in between is real consumption and belongs in the chart.
         clock.set(moment(14, 5))
         let reading = snapshot(fraction: 0.35, at: moment(14, 5), resetsAt: moment(19, 0))
         let replacement = StubRuntime(provider: provider, descriptors: [], snapshot: reading)
-        dataStore.replaceProvider(replacement, snapshot: reading)
+        dataStore.replaceProvider(replacement, snapshot: reading, accountMayHaveChanged: false)
         recorder.flush(at: clock.now)
 
         let recorded = try XCTUnwrap(series(store.saved.first, "account-1/Session"))
         // Both readings are samples.
         XCTAssertEqual(recorded.samples.reduce(0, +), 2)
-        // The 0.15 that was burned between 14:00 and 14:05 is booked: the window did not change.
+        // The 0.15 that was burned between 14:00 and 14:05 is booked: the account did not change.
         XCTAssertEqual(recorded.points.reduce(0, +), 0.15, accuracy: 0.0001)
     }
 
-    func testAReplacedRuntimeDoesNotRecordTheJumpAsConsumption() async throws {
+    func testASlotThatMayHoldAnotherAccountBooksNoJump() async throws {
         let store = RecordingRhythmStore(calendar: calendar)
         let recorder = recorder(store)
         let clock = TestClock(moment(14, 0))
@@ -158,12 +158,14 @@ final class RhythmWiringTests: XCTestCase {
 
         await dataStore.refresh(providerID: provider.id, force: true)
 
-        // A different account was pasted into the same slot, so the new runtime measures another
-        // window altogether: it ends at another moment.
+        // A key of another account was pasted into the same slot, so the new runtime measures
+        // another account's window. The two windows even end at the same moment — the daily
+        // limit of a provider ends at the same calendar boundary for every account — so the
+        // recorder cannot tell them apart from the timestamps and is told instead.
         clock.set(moment(14, 5))
-        let reading = snapshot(fraction: 0.9, at: moment(14, 5), resetsAt: anotherDay(19, 0))
+        let reading = snapshot(fraction: 0.9, at: moment(14, 5), resetsAt: moment(19, 0))
         let replacement = StubRuntime(provider: provider, descriptors: [], snapshot: reading)
-        dataStore.replaceProvider(replacement, snapshot: reading)
+        dataStore.replaceProvider(replacement, snapshot: reading, accountMayHaveChanged: true)
         recorder.flush(at: clock.now)
 
         let recorded = try XCTUnwrap(series(store.saved.first, "account-1/Session"))
@@ -190,7 +192,7 @@ final class RhythmWiringTests: XCTestCase {
             descriptors: [],
             results: [
                 .success(snapshot(fraction: 0.1, at: moment(14, 0), resetsAt: moment(19, 0), providerID: "account-2")),
-                .success(snapshot(fraction: 0.25, at: moment(14, 10), resetsAt: moment(19, 0), providerID: "account-2"))
+                .success(snapshot(fraction: 0.25, at: moment(14, 10), resetsAt: anotherDay(19, 0), providerID: "account-2"))
             ]
         )
         let dataStore = WidgetDataStore.forTesting(
@@ -203,16 +205,18 @@ final class RhythmWiringTests: XCTestCase {
         await dataStore.refresh(providerID: first.id, force: true)
         await dataStore.refresh(providerID: second.id, force: true)
 
-        // The first account is signed in again and now measures another window.
+        // The first account is signed in again and now holds another account's key.
         clock.set(moment(14, 5))
         let reading = snapshot(fraction: 0.9, at: moment(14, 5), resetsAt: anotherDay(19, 0))
         dataStore.replaceProvider(
             StubRuntime(provider: first, descriptors: [], snapshot: reading),
-            snapshot: reading
+            snapshot: reading,
+            accountMayHaveChanged: true
         )
 
         // The second account is not touched by that, so its next reading is still differenced
-        // against its own previous one.
+        // against its own previous one. It measures another window, so a wrongly dropped
+        // baseline would lose its consumption instead of booking it.
         clock.set(moment(14, 10))
         await dataStore.refresh(providerID: second.id, force: true)
         recorder.flush(at: clock.now)
@@ -223,8 +227,44 @@ final class RhythmWiringTests: XCTestCase {
         XCTAssertEqual(secondSeries.samples.reduce(0, +), 2)
 
         let firstSeries = try XCTUnwrap(series(store.saved.first, "account-1/Session"))
-        // The first account's jump into the other window is not consumption.
+        // The first account's jump into the other account's window is not consumption.
         XCTAssertEqual(firstSeries.points.reduce(0, +), 0, accuracy: 0.0001)
+    }
+
+    func testTheSameOAuthIdentityMeansTheSameAccount() {
+        let saved = AccountCredential.oauth(OAuthTokens(accessToken: "old", extras: [OAuthTokens.identityKey: "work"]))
+        let fresh = AccountCredential.oauth(OAuthTokens(accessToken: "new", extras: [OAuthTokens.identityKey: "work"]))
+
+        XCTAssertFalse(AppContainer.accountMayHaveChanged(fresh, saved: saved))
+    }
+
+    func testADifferentOAuthIdentityMeansAnotherAccount() {
+        let saved = AccountCredential.oauth(OAuthTokens(accessToken: "old", extras: [OAuthTokens.identityKey: "work"]))
+        let fresh = AccountCredential.oauth(OAuthTokens(accessToken: "new", extras: [OAuthTokens.identityKey: "other"]))
+
+        XCTAssertTrue(AppContainer.accountMayHaveChanged(fresh, saved: saved))
+    }
+
+    func testTheSameAPIKeyMeansTheSameAccount() {
+        let saved = AccountCredential.apiKey("key")
+        let fresh = AccountCredential.apiKey("key")
+
+        XCTAssertFalse(AppContainer.accountMayHaveChanged(fresh, saved: saved))
+    }
+
+    func testADifferentAPIKeyMayBeAnotherAccount() {
+        let saved = AccountCredential.apiKey("key")
+        let fresh = AccountCredential.apiKey("another key")
+
+        XCTAssertTrue(AppContainer.accountMayHaveChanged(fresh, saved: saved))
+    }
+
+    func testASignInWithoutAnIdentityMeansTheSameAccount() {
+        let saved = AccountCredential.oauth(OAuthTokens(accessToken: "old"))
+        let fresh = AccountCredential.oauth(OAuthTokens(accessToken: "new"))
+
+        XCTAssertFalse(AppContainer.accountMayHaveChanged(fresh, saved: saved))
+        XCTAssertFalse(AppContainer.accountMayHaveChanged(fresh, saved: nil))
     }
 
     func testARefreshThroughTheContainerReachesItsRecorder() async throws {

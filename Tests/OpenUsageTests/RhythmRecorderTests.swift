@@ -409,60 +409,50 @@ final class RhythmRecorderTests: XCTestCase {
         XCTAssertEqual(try store.recordedDays(), [moment(0)])
     }
 
-    func testTwoReadingsOfOneWindowAreTheSameWindow() {
-        let previous = reading(fraction: 0.2, at: moment(14, 0), resetsAt: moment(19, 0))
-        let current = reading(fraction: 0.35, at: moment(14, 5), resetsAt: moment(19, 0))
+    func testForgettingTheReadingsStartsANewBaseline() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
 
-        XCTAssertTrue(RhythmRecorder.sameWindow(previous, current))
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        // The account behind the slot may be a different one now, so its old reading is dropped.
+        recorder.forgetReadings(for: "account-1")
+        recorder.record(snapshot(fraction: 0.9), kind: .claude, at: moment(14, 5))
+
+        let pending = try XCTUnwrap(recorder.pendingSeries.first)
+        // The jump is that other account's state, not consumption, so nothing is booked.
+        XCTAssertEqual(pending.points.reduce(0, +), 0, accuracy: 0.0001)
+        // Both readings are samples.
+        XCTAssertEqual(pending.samples.reduce(0, +), 2)
+
+        // The reading after the new baseline is differenced against it.
+        recorder.record(snapshot(fraction: 0.95), kind: .claude, at: moment(14, 10))
+        XCTAssertEqual(recorder.pendingSeries.first?.points.reduce(0, +) ?? 0, 0.05, accuracy: 0.0001)
     }
 
-    func testTwoReadingsOfDifferentWindowsAreNotTheSameWindow() {
-        let previous = reading(fraction: 0.2, at: moment(14, 0), resetsAt: moment(19, 0))
-        let current = reading(
-            fraction: 0.9,
-            at: moment(14, 5),
-            resetsAt: calendar.date(byAdding: .day, value: 1, to: moment(19, 0))!
-        )
+    func testForgettingTheReadingsOfOneProviderLeavesTheOther() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
 
-        XCTAssertFalse(RhythmRecorder.sameWindow(previous, current))
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        recorder.record(snapshot(fraction: 0.1, providerID: "account-2"), kind: .claude, at: moment(14, 0))
+
+        recorder.forgetReadings(for: "account-1")
+
+        recorder.record(snapshot(fraction: 0.9), kind: .claude, at: moment(14, 5))
+        recorder.record(snapshot(fraction: 0.25, providerID: "account-2"), kind: .claude, at: moment(14, 5))
+
+        let series = recorder.pendingSeries
+        let first = try XCTUnwrap(series.first { $0.key == "account-1/Session" })
+        let second = try XCTUnwrap(series.first { $0.key == "account-2/Session" })
+        // The forgotten provider booked nothing.
+        XCTAssertEqual(first.points.reduce(0, +), 0, accuracy: 0.0001)
+        // The other provider still books the 0.15 it burned.
+        XCTAssertEqual(second.points.reduce(0, +), 0.15, accuracy: 0.0001)
     }
 
-    func testAWindowThatReportsTheTimeLeftIsTheSameWindowDespiteTheJitter() {
-        // Some providers report the time left instead of the instant, which moves by a second
-        // between readings.
-        let previous = reading(fraction: 0.2, at: moment(14, 0), resetsAt: moment(19, 0))
-        let current = reading(fraction: 0.35, at: moment(14, 5), resetsAt: moment(19, 0).addingTimeInterval(30))
-
-        XCTAssertTrue(RhythmRecorder.sameWindow(previous, current))
-    }
-
-    func testAReadingThatDoesNotKnowWhenTheWindowResetsIsTheSameWindowAsAnother() {
-        let previous = reading(fraction: 0.2, at: moment(14, 0))
-        let current = reading(fraction: 0.35, at: moment(14, 5))
-
-        XCTAssertTrue(RhythmRecorder.sameWindow(previous, current))
-        // One that knows and one that does not cannot be compared, so they are not the same.
-        XCTAssertFalse(RhythmRecorder.sameWindow(previous, reading(fraction: 0.35, at: moment(14, 5), resetsAt: moment(19, 0))))
-    }
-
-    func testTwoWindowsOfDifferentLengthsAreNotTheSameWindow() {
-        let previous = reading(fraction: 0.2, at: moment(14, 0), resetsAt: moment(19, 0))
-        let current = RhythmReading(
-            key: "account-1/Session",
-            kind: .claude,
-            label: "Session",
-            windowMs: MetricPeriod.dayMs,
-            fraction: 0.35,
-            resetsAt: moment(19, 0),
-            at: moment(14, 5)
-        )
-
-        XCTAssertFalse(RhythmRecorder.sameWindow(previous, current))
-    }
-
-    private func snapshot(fraction: Double, resetsAt: Date? = nil) -> ProviderSnapshot {
+    private func snapshot(fraction: Double, resetsAt: Date? = nil, providerID: String = "account-1") -> ProviderSnapshot {
         ProviderSnapshot(
-            providerID: "account-1",
+            providerID: providerID,
             displayName: "Claude",
             lines: [.progress(
                 label: "Session",

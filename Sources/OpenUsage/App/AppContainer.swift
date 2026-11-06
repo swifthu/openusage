@@ -101,10 +101,15 @@ final class AppContainer {
     func replaceCredential(_ credential: AccountCredential, for providerID: String) async throws {
         guard let runtime = providers.first(where: { $0.provider.id == providerID }) else { return }
         let account = runtime.account
+        let saved = try? accounts.credential(for: account.id)
         if case .oauth = credential, let signedIn = credential.identity,
-           let saved = (try? accounts.credential(for: account.id))?.identity, saved != signedIn {
+           let savedIdentity = saved?.identity, savedIdentity != signedIn {
             throw ProviderError.unavailable("That's a different account. Sign in to this one, or use Add New Account.")
         }
+        // Whether the account behind this slot may be a different one now. It has to be worked out
+        // here, before the new sign-in is saved: afterwards the saved credential is the new one and
+        // the comparison would always say "the same account".
+        let accountMayHaveChanged = Self.accountMayHaveChanged(credential, saved: saved)
         try accounts.checkForDuplicate(credential, kind: account.kind, organization: account.organization, excluding: account.id)
         // The new sign-in reads into its own runtime and vault: the previous sign-in's history and plan
         // can't be reused, and a refused token can't fall back on the stored one.
@@ -130,11 +135,23 @@ final class AppContainer {
             replacement.adopt(accounts.credentialVault)
             replacement.update(runtime.account) // The account may have been renamed during the read.
             providers[index] = replacement
-            dataStore.replaceProvider(replacement, snapshot: snapshot)
+            dataStore.replaceProvider(replacement, snapshot: snapshot, accountMayHaveChanged: accountMayHaveChanged)
         } catch {
             runtime.resumeRenewals()
             throw error
         }
+    }
+
+    /// Whether the new sign-in may belong to a different account than the one that was saved.
+    ///
+    /// An OAuth sign-in carries the account's identity, and `replaceCredential` refuses one whose
+    /// identity differs from the saved one, so a different identity never reaches this. An API key
+    /// carries a hash of itself: the same key is the same account, and a different key may be
+    /// somebody else's. A sign-in that carries no identity at all is taken for the same account,
+    /// which is what the app does everywhere else.
+    static func accountMayHaveChanged(_ credential: AccountCredential, saved: AccountCredential?) -> Bool {
+        guard let fresh = credential.identity, let old = saved?.identity else { return false }
+        return fresh != old
     }
 
     /// Once the new sign-in reads usage, the sign-in sheet closes and the panel shows the Default Tab.

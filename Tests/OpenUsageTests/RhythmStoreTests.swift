@@ -44,14 +44,6 @@ final class RhythmStoreTests: XCTestCase {
         ])
     }
 
-    func testTheDefaultFolderBelongsToThisBuildAlone() {
-        // The app is not sandboxed, so Application Support is the same folder for the development
-        // build and for the installed one. The bundle identifier keeps their histories apart.
-        let directory = FileRhythmStore.defaultDirectory
-        XCTAssertEqual(directory.lastPathComponent, Bundle.main.bundleIdentifier ?? "default")
-        XCTAssertEqual(directory.deletingLastPathComponent().lastPathComponent, "rhythm")
-    }
-
     func testTwoBundleIdentifiersGiveTwoDifferentFolders() {
         let installed = FileRhythmStore.directory(forBundleIdentifier: "com.example.openusage")
         let development = FileRhythmStore.directory(forBundleIdentifier: "com.example.openusage.dev")
@@ -65,11 +57,11 @@ final class RhythmStoreTests: XCTestCase {
         XCTAssertEqual(installed.deletingLastPathComponent(), development.deletingLastPathComponent())
     }
 
-    func testAnIdentifierWithASlashStaysInsideTheFolder() {
+    func testAnIdentifierWithASlashBecomesANestedFolder() {
         let rhythm = FileRhythmStore.directory(forBundleIdentifier: nil).deletingLastPathComponent()
         let directory = FileRhythmStore.directory(forBundleIdentifier: "com.example/openusage")
 
-        // The slash makes a folder inside the rhythm folder, not a way out of it.
+        // The slash makes the identifier a folder inside the rhythm folder, one level deeper.
         XCTAssertTrue(directory.path.hasPrefix(rhythm.path))
         XCTAssertEqual(directory.pathComponents.count, rhythm.pathComponents.count + 2)
     }

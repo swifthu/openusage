@@ -246,14 +246,15 @@ final class WidgetDataStore {
 
     /// Installs a validated key's runtime and snapshot together. Reads started by the previous
     /// runtime can finish later, but the runtime identity check discards their results.
-    func replaceProvider(_ provider: ProviderRuntime, snapshot: ProviderSnapshot) {
+    func replaceProvider(_ provider: ProviderRuntime, snapshot: ProviderSnapshot, accountMayHaveChanged: Bool = false) {
         let id = provider.provider.id
         inFlight.removeValue(forKey: id)?.cancel()
         providersByID[id] = provider
-        // The runtime that measured this account may be measuring a different window now — a
-        // different account behind the same key. The recorder decides that from the next
-        // reading, so the consumption of an unchanged window is not lost.
-        rhythm?.replaceRuntime(for: id)
+        if accountMayHaveChanged {
+            // The account behind this slot may be a different one, so the jump between the old
+            // reading and the new one is that account's state, not consumption.
+            rhythm?.forgetReadings(for: id)
+        }
         store(snapshot, for: id)
     }
 
