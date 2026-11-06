@@ -29,6 +29,17 @@ protocol RhythmStore: Sendable {
     func delete(before date: Date) throws
 }
 
+extension RhythmStore {
+    /// Removes every recorded day, today's own record included.
+    ///
+    /// The store deletes the days *before* the cutoff, so the cutoff has to be tomorrow's
+    /// midnight to take today's record with it.
+    func deleteAll(now: Date = Date(), calendar: Calendar = .current) throws {
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now)) ?? now
+        try delete(before: tomorrow)
+    }
+}
+
 /// The rhythm history as one file per day under Application Support.
 struct FileRhythmStore: RhythmStore {
     /// The folder the day files live in.
@@ -36,10 +47,14 @@ struct FileRhythmStore: RhythmStore {
     /// The calendar the days are measured in. It decides which file a moment belongs to, so it has
     /// to be the same one the recorder writes with.
     let calendar: Calendar
+    /// How many days of history are kept. The days older than that are removed when a day is
+    /// written, so the history does not grow without end.
+    let retentionDays: Int
 
-    init(directory: URL = FileRhythmStore.defaultDirectory, calendar: Calendar) {
+    init(directory: URL = FileRhythmStore.defaultDirectory, calendar: Calendar, retentionDays: Int = RhythmSettings.retentionDays) {
         self.directory = directory
         self.calendar = calendar
+        self.retentionDays = retentionDays
     }
 
     static var defaultDirectory: URL {
@@ -68,6 +83,26 @@ struct FileRhythmStore: RhythmStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         try encoder.encode(payload).write(to: url(for: record.day), options: .atomic)
+        trimOldDays(around: record.day)
+    }
+
+    /// Removes the days that are older than the retention length, so the history does not grow
+    /// without end. The days are counted from the day that was just written: that day and the
+    /// `retentionDays - 1` days before it are kept.
+    ///
+    /// A day that cannot be removed is left in place and warned about: the history that is there
+    /// is better than a history that is gone.
+    private func trimOldDays(around day: Date) {
+        let today = calendar.startOfDay(for: day)
+        guard let cutoff = calendar.date(byAdding: .day, value: -(retentionDays - 1), to: today) else { return }
+        guard let days = try? recordedDays() else { return }
+        for old in days where old < cutoff {
+            do {
+                try FileManager.default.removeItem(at: url(for: old))
+            } catch {
+                AppLog.warn(.rhythm, "could not remove the rhythm history of \(RhythmClock.fileName(for: old, calendar: calendar)): \(error.localizedDescription)")
+            }
+        }
     }
 
     func load(day: Date) throws -> RhythmDayRecord? {

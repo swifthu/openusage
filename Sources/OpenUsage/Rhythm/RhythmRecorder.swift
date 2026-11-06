@@ -163,6 +163,19 @@ final class RhythmRecorder {
         }
     }
 
+    /// Removes the whole history: the days on disk and the ones the recorder still holds.
+    ///
+    /// The recorder writes the day it is on again on the next refresh, so a history that was only
+    /// deleted from the store would come back the same afternoon.
+    func deleteHistory(now: Date = Date(), calendar: Calendar = .current) throws {
+        try history.deleteAll(now: now, calendar: calendar)
+        days.removeAll()
+        written.removeAll()
+        // The baselines go with it: the next reading starts a new day rather than booking the
+        // jump between the last reading and it as consumption.
+        lastReading.removeAll()
+    }
+
     /// Tells the recorder that the account behind a provider's slot may be a different one now —
     /// another account's key was pasted into it. The jump between the old reading and the new one
     /// is then that account's state and not consumption, so the old reading is dropped and the

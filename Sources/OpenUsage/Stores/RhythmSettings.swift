@@ -7,8 +7,8 @@ import Observation
 @Observable
 final class RhythmSettings {
     static let key = "recordsUsageRhythm"
-    /// How many days of history are kept.
-    static let retentionDays = 90
+    /// How many days of history are kept. The store trims the days older than this.
+    nonisolated static let retentionDays = 90
     /// The longest window the rhythm history records: a day. A longer window sampled every few
     /// minutes is a slow drift, and its hourly rate says nothing about when the account is used.
     static let shortWindowMs = MetricPeriod.dayMs

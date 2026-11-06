@@ -27,6 +27,10 @@ final class RhythmStoreTests: XCTestCase {
         FileRhythmStore(directory: directory, calendar: calendar)
     }
 
+    private func makeStore(retentionDays: Int) -> FileRhythmStore {
+        FileRhythmStore(directory: directory, calendar: calendar, retentionDays: retentionDays)
+    }
+
     private func fileName(_ month: Int, _ dayNumber: Int) -> String {
         RhythmClock.fileName(for: day(month, dayNumber), calendar: calendar)
     }
@@ -125,6 +129,18 @@ final class RhythmStoreTests: XCTestCase {
         }
 
         XCTAssertThrowsError(try store.delete(before: day(11, 7)))
+    }
+
+    func testTheDaysOlderThanTheRetentionAreRemovedWhenADayIsWritten() throws {
+        let store = makeStore(retentionDays: 3)
+
+        try store.save(record(day(11, 1), points: []))
+        try store.save(record(day(11, 2), points: []))
+        try store.save(record(day(11, 3), points: []))
+        try store.save(record(day(11, 4), points: []))
+
+        // Three days are kept, the day that was written and the two before it.
+        XCTAssertEqual(try store.recordedDays(), [day(11, 2), day(11, 3), day(11, 4)])
     }
 
     func testTheRecordsBeforeADateAreDeleted() throws {

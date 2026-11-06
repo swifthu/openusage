@@ -46,6 +46,19 @@ always stays under Warning: moving one onto the other pushes the other 5% along.
 
 Click a limit's amount or reset on the dashboard to flip either one.
 
+## Usage rhythm
+
+Both of these are under **Settings → Display → Usage**.
+
+- **Record Usage Rhythm.** Keeps how fast your limits fill up, so the **Rhythm** tab can show when
+  your busy hours are. On by default. Turning it off stops the recording and keeps what was already
+  recorded.
+- **Delete Rhythm History.** Removes the recorded history from this Mac. The button is greyed out
+  when there is no history to remove. Stopping the recording and deleting the history are two
+  different things, and this is the second one.
+
+See [Usage Rhythm](rhythm.md).
+
 ## Notifications
 
 All off by default. Turning the first one on asks macOS for permission.

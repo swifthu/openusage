@@ -64,6 +64,8 @@ OpenRouter's balance needs a Management key; MiniMax needs a Token Plan subscrip
 - **Priority.** What's running low, what's used up, and which accounts need you.
 - **All Usage.** Every account and limit in one place, with resets, your pace, and an optional mark
   where an even pace would be.
+- **[Usage rhythm](docs/rhythm.md).** A third tab that records how fast your limits fill up and
+  shows when your busy hours are.
 - **Your layout.** Pin the metrics you care about, hide the rest, and drag everything into your order.
 - **Rate-limit resets.** See and spend Claude and ChatGPT resets.
 - **Share.** Copy a picture of your usage to the clipboard.
@@ -81,6 +83,7 @@ OpenRouter's balance needs a Management key; MiniMax needs a Token Plan subscrip
 How everything works, in [docs/](docs/README.md):
 
 - [Dashboard](docs/dashboard.md)
+- [Usage rhythm](docs/rhythm.md)
 - [Accounts](docs/accounts.md) and [CLIProxyAPI hubs](docs/cliproxyapi.md)
 - [Providers](docs/providers.md)
 - [Menu bar](docs/menu-bar.md)

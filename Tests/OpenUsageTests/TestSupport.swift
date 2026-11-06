@@ -381,7 +381,7 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
 
     func delete(before date: Date) throws {
         let cutoff = calendar.startOfDay(for: date)
-        lock.withLock { $0.byDay = $0.byDay.filter { $0.key < cutoff } }
+        lock.withLock { $0.byDay = $0.byDay.filter { $0.key >= cutoff } }
     }
 }
 
