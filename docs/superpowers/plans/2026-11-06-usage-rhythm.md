@@ -2847,6 +2847,7 @@ and the tab puts them together.
 - Modify: `Sources/OpenUsage/Models/DashboardTab.swift`
 - Modify: `Sources/OpenUsage/Views/DashboardContentView.swift`
 - Test: `Tests/OpenUsageTests/RhythmChartTests.swift`
+- Test: `Tests/OpenUsageTests/RhythmViewTests.swift`
 
 **Interfaces:**
 - Consumes: `RhythmBar`, `RhythmZoom`, `RhythmAnalytics` from Task 4; `RhythmRecorder`, `RhythmSettings`,
@@ -3058,7 +3059,7 @@ struct RhythmContextStrip: View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 dayBarsView(height: geo.size.height)
-                windowView(width: geo.size.width)
+                windowView(width: geo.size.width, height: geo.size.height)
             }
             .contentShape(Rectangle())
             .gesture(
@@ -3092,14 +3093,15 @@ struct RhythmContextStrip: View {
         }
     }
 
-    private func windowView(width: CGFloat) -> some View {
+    private func windowView(width: CGFloat, height: CGFloat) -> some View {
         RoundedRectangle(cornerRadius: 4, style: .continuous)
             .fill(Theme.severityColor(.normal).opacity(0.14))
             .overlay {
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
                     .strokeBorder(Theme.severityColor(.normal).opacity(0.5), lineWidth: 1.5)
             }
-            .frame(width: width * (window.upperBound - window.lowerBound))
+            // The mark spans the whole strip, so the window it shows is read at a glance.
+            .frame(width: width * (window.upperBound - window.lowerBound), height: height)
             .offset(x: width * window.lowerBound)
     }
 }
@@ -3224,7 +3226,7 @@ struct RhythmView: View {
                 // last Tuesday.
                 Text(dayTitle)
                     .font(.system(size: 12, weight: .semibold))
-                    .onLongPressGesture(minimumDuration: 0.4) { _ in isPickingDay = true }
+                    .onLongPressGesture(minimumDuration: 0.4) { isPickingDay = true }
 
                 Button {
                     moveDay(by: 1)
