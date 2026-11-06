@@ -113,6 +113,14 @@ final class RhythmAnalyticsTests: XCTestCase {
         return calendar
     }
 
+    /// The timezone that has daylight saving, so the days that are 23 and 25 hours long can be
+    /// checked.
+    private var newYork: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        return calendar
+    }
+
     private func day(_ dayNumber: Int) -> Date {
         calendar.date(from: DateComponents(year: 2026, month: 11, day: dayNumber))!
     }
@@ -231,6 +239,21 @@ final class RhythmAnalyticsTests: XCTestCase {
         XCTAssertEqual(bars[14].points, 10, accuracy: 0.0001)
     }
 
+    func testADayThatWasNotReadDoesNotRaiseTheAverage() {
+        let busy = record(6, points: [Double](repeating: 0, count: 288))
+        var one = busy
+        one.series[0].points[168] = 10
+        var two = record(7, points: [Double](repeating: 0, count: 288))
+        two.series[0].points[168] = 10
+        // The second day burned in that hour but has no reading of its own there, so it is not a
+        // day that was read and must not count in the average.
+        two.series[0].samples = []
+
+        let bars = RhythmAnalytics.averageBars(for: [one, two], zoom: .day, offset: 0, calendar: calendar)
+
+        XCTAssertEqual(bars[14].points, 10, accuracy: 0.0001)
+    }
+
     func testThePeakIsTheRunAroundTheTallestBar() {
         var bars = [RhythmBar](repeating: RhythmBar(index: 0, points: 0, samples: 1, start: Date()), count: 24)
         bars[13].points = 2
@@ -240,8 +263,8 @@ final class RhythmAnalyticsTests: XCTestCase {
 
         let peak = RhythmAnalytics.peakBars(in: bars)
 
-        // The run stays above 60% of the tallest bar. The bar before it (2) is below that, so the
-        // peak is the two bars from the tallest one.
+        // The run stays at or above 60% of the tallest bar. The bar before it (2) is below that,
+        // so the peak is the two bars from the tallest one.
         XCTAssertEqual(peak, 14...15)
     }
 
@@ -251,6 +274,121 @@ final class RhythmAnalyticsTests: XCTestCase {
         XCTAssertNil(RhythmAnalytics.peakBars(in: bars))
     }
 
+    // MARK: - Daylight saving
+
+    /// The slice a bucket falls in, worked out by the analytics' arithmetic, has to be the slice
+    /// the clock's own start time gives — on the days that are 23 and 25 hours long as well.
+    func testTheSliceArithmeticAgreesWithTheClockOnADaylightSavingDay() {
+        // The clocks go back: the day is 25 hours long and has 300 buckets.
+        let long = newYork.date(from: DateComponents(year: 2026, month: 11, day: 1))!
+        XCTAssertEqual(RhythmClock.bucketCount(on: long, calendar: newYork), 300)
+        assertSlicesAgree(withTheClock: long, buckets: 300, zoom: .day, offset: 0, calendar: newYork)
+        assertSlicesAgree(withTheClock: long, buckets: 300, zoom: .sixHours, offset: 12 * 3600, calendar: newYork)
+
+        // The clocks go forward: the day is 23 hours long and has 276 buckets.
+        let short = newYork.date(from: DateComponents(year: 2026, month: 3, day: 8))!
+        XCTAssertEqual(RhythmClock.bucketCount(on: short, calendar: newYork), 276)
+        assertSlicesAgree(withTheClock: short, buckets: 276, zoom: .day, offset: 0, calendar: newYork)
+        assertSlicesAgree(withTheClock: short, buckets: 276, zoom: .halfDay, offset: 6 * 3600, calendar: newYork)
+    }
+
+    /// The day the clocks go back is 25 hours long. The window is still 24 hours from the
+    /// midnight, so the day's last hour falls outside it and is not in the chart, and the axis
+    /// shows 01:00 twice.
+    func testTheDayTheClocksGoBackStillHasTwentyFourBars() {
+        let day = newYork.date(from: DateComponents(year: 2026, month: 11, day: 1))!
+        let record = recordWithAPointInEveryBucket(day: day, buckets: 300)
+
+        let bars = RhythmAnalytics.bars(for: record, zoom: .day, offset: 0, calendar: newYork)
+
+        XCTAssertEqual(bars.count, 24)
+        XCTAssertEqual(bars[0].start, newYork.startOfDay(for: day))
+        // The first hour of the day is shown twice, because the clocks went back in it.
+        XCTAssertEqual(newYork.component(.hour, from: bars[1].start), 1)
+        XCTAssertEqual(newYork.component(.hour, from: bars[2].start), 1)
+        XCTAssertNotEqual(bars[1].start, bars[2].start)
+        // The window is 24 hours long, so it ends at 23:00 — an hour before the day does, because
+        // the clocks went back inside it. The hour from 23:00 to the midnight is outside the
+        // window, so the last twelve buckets are not in the chart: 288 of the day's 300 buckets
+        // are.
+        XCTAssertEqual(newYork.component(.hour, from: bars[23].start), 22)
+        XCTAssertEqual(bars[23].points, 12, accuracy: 0.0001)
+        XCTAssertEqual(bars.reduce(0) { $0 + $1.points }, 288, accuracy: 0.0001)
+    }
+
+    /// The day the clocks go forward is 23 hours long. The window is still 24 hours from the
+    /// midnight, so its last bar has nothing in it and its label is the next day's midnight.
+    func testTheDayTheClocksGoForwardHasAnEmptyLastBar() {
+        let day = newYork.date(from: DateComponents(year: 2026, month: 3, day: 8))!
+        let record = recordWithAPointInEveryBucket(day: day, buckets: 276)
+
+        let bars = RhythmAnalytics.bars(for: record, zoom: .day, offset: 0, calendar: newYork)
+
+        XCTAssertEqual(bars.count, 24)
+        XCTAssertEqual(bars[0].start, newYork.startOfDay(for: day))
+        // The day is an hour shorter than the window, so the last bar is empty.
+        XCTAssertEqual(bars[22].points, 12, accuracy: 0.0001)
+        XCTAssertEqual(bars[23].points, 0, accuracy: 0.0001)
+        XCTAssertEqual(bars.reduce(0) { $0 + $1.points }, 276, accuracy: 0.0001)
+        // The empty bar starts at the next day's midnight.
+        XCTAssertEqual(bars[23].start, newYork.date(from: DateComponents(year: 2026, month: 3, day: 9))!)
+    }
+
+    /// A record with a point and a reading in every bucket of the day.
+    private func recordWithAPointInEveryBucket(day: Date, buckets: Int) -> RhythmDayRecord {
+        RhythmDayRecord(day: day, series: [
+            RhythmSeriesRecord(
+                key: "account-1/Session",
+                kind: .claude,
+                label: "Session",
+                windowMs: MetricPeriod.sessionMs,
+                points: [Double](repeating: 1, count: buckets),
+                samples: [Int](repeating: 1, count: buckets)
+            )
+        ])
+    }
+
+    /// Every bucket of the day has to land in the slice the clock's own start time gives it.
+    private func assertSlicesAgree(
+        withTheClock day: Date,
+        buckets: Int,
+        zoom: RhythmZoom,
+        offset: TimeInterval,
+        calendar: Calendar,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let windowStart = calendar.startOfDay(for: day).addingTimeInterval(offset)
+        for index in 0..<buckets {
+            var points = [Double](repeating: 0, count: buckets)
+            var samples = [Int](repeating: 0, count: buckets)
+            points[index] = 1
+            samples[index] = 1
+            let record = RhythmDayRecord(day: day, series: [
+                RhythmSeriesRecord(
+                    key: "account-1/Session",
+                    kind: .claude,
+                    label: "Session",
+                    windowMs: MetricPeriod.sessionMs,
+                    points: points,
+                    samples: samples
+                )
+            ])
+
+            let bars = RhythmAnalytics.bars(for: record, zoom: zoom, offset: offset, calendar: calendar)
+
+            // The clock's own answer: where the bucket's start falls in the window.
+            let bucketStart = RhythmClock.start(of: index, on: day, calendar: calendar)
+            let expected = Int((bucketStart.timeIntervalSince(windowStart) / zoom.barDuration).rounded(.down))
+            let drawn = bars.firstIndex { $0.points > 0 }
+            if expected >= 0, expected < 24 {
+                XCTAssertEqual(drawn, expected, "bucket \(index)", file: file, line: line)
+                XCTAssertEqual(bars[expected].samples, 1, "bucket \(index)", file: file, line: line)
+            } else {
+                XCTAssertNil(drawn, "bucket \(index)", file: file, line: line)
+            }
+        }
+    }
 }
 ```
 
@@ -273,11 +411,13 @@ struct RhythmBar: Hashable, Sendable, Identifiable {
     var id: Int { index }
     /// The bar's place in the window, 0...23.
     var index: Int
-    /// The share of the window the slice burned, in points.
+    /// The window points the slice burned. Several series are added together, so the sum can be
+    /// more than one.
     var points: Double
-    /// How many readings the slice holds. Zero means nothing was read, which is not the same as
-    /// nothing being used. On an averaged bar it is the total number of readings behind the
-    /// average, not the number of days.
+    /// The readings that landed in the slice. Zero means no reading landed here, which is not the
+    /// same as nothing having been used: a burn spread over a bucket leaves its reading in the
+    /// next one. On an averaged bar it is the total number of readings behind the average, not
+    /// the number of days.
     var samples: Int
     /// When the slice starts.
     var start: Date
@@ -319,8 +459,16 @@ enum RhythmZoom: Int, CaseIterable, Sendable {
 enum RhythmAnalytics {
     /// The bars of one day at a zoom level, starting at an offset into the day.
     ///
-    /// The offset is a time into the day and only makes sense for a window shorter than the day.
-    /// A whole day starts at the day's midnight and takes no offset.
+    /// The offset is a time into the day and only makes sense for a window shorter than the day:
+    /// it is meaningful up to the day's length minus the window, and the caller clamps it. A whole
+    /// day starts at the day's midnight and takes no offset.
+    ///
+    /// The window is a fixed 24 hours from the day's local midnight, and the 24 bars each stand
+    /// for an hour of it. A day that is 25 hours long does not fit in that: the hour past the
+    /// window is not in the chart, and the axis shows `01:00` twice. A day that is 23 hours long
+    /// has an empty last bar, whose label is the next day's midnight. This is deliberate — the
+    /// window means the same thing every day, so the days an average is made of line up — and the
+    /// daylight-saving tests pin it.
     static func bars(
         for record: RhythmDayRecord,
         zoom: RhythmZoom,
@@ -335,8 +483,10 @@ enum RhythmAnalytics {
                 // A file written by another version can have two arrays of different lengths, so
                 // the samples are read defensively: a missing sample counts as none.
                 let sampleCount = index < series.samples.count ? series.samples[index] : 0
-                let bucketStart = RhythmClock.start(of: index, on: record.day, calendar: calendar)
-                let slice = Int((bucketStart.timeIntervalSince(windowStart) / zoom.barDuration).rounded(.down))
+                // The bucket starts at the day's midnight plus its index in five-minute steps, so
+                // the slice it falls in is arithmetic — no calendar call per bucket.
+                let seconds = Double(index) * RhythmClock.bucketSeconds - offset
+                let slice = Int((seconds / zoom.barDuration).rounded(.down))
                 guard slice >= 0, slice < 24 else { continue }
                 points[slice] += value
                 samples[slice] += sampleCount
@@ -353,7 +503,12 @@ enum RhythmAnalytics {
     }
 
     /// The bars of several days averaged, slice for slice. A slice is divided by the days that
-    /// were read in it, so a day the app was closed does not pull the average down.
+    /// were read in it, so a day the app was closed does not pull the average down. A day whose
+    /// points are in a slice but whose readings are not does not contribute at all: the numerator
+    /// and the denominator have to agree.
+    ///
+    /// An empty input returns no bars at all, where `bars(for:)` always returns 24. That is on
+    /// purpose: the view shows its "nothing recorded yet" message when there are no bars.
     static func averageBars(
         for records: [RhythmDayRecord],
         zoom: RhythmZoom,
@@ -366,8 +521,11 @@ enum RhythmAnalytics {
         var samples = [Int](repeating: 0, count: 24)
         for record in records {
             for bar in bars(for: record, zoom: zoom, offset: offset, calendar: calendar) {
+                // Only a day that was read in this slice contributes, on both sides: a day whose
+                // points are here but whose readings are not would raise the average.
+                guard bar.samples > 0 else { continue }
                 totals[bar.index] += bar.points
-                readings[bar.index] += bar.samples > 0 ? 1 : 0
+                readings[bar.index] += 1
                 samples[bar.index] += bar.samples
             }
         }
@@ -382,7 +540,8 @@ enum RhythmAnalytics {
         }
     }
 
-    /// The bars that make up the peak: the run around the tallest bar that stays above 60% of it.
+    /// The bars that make up the peak: the run around the tallest bar that stays at or above 60%
+    /// of it. A flat day — every bar the same height — makes the peak the whole chart.
     static func peakBars(in bars: [RhythmBar]) -> ClosedRange<Int>? {
         guard let tallest = bars.map(\.points).max(), tallest > 0,
               let peak = bars.firstIndex(where: { $0.points == tallest })
@@ -394,7 +553,6 @@ enum RhythmAnalytics {
         while last < bars.count - 1, bars[last + 1].points >= threshold { last += 1 }
         return first...last
     }
-
 }
 ```
 
