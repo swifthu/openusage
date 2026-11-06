@@ -38,6 +38,12 @@ enum RhythmClock {
     /// An interval that ends exactly on the next midnight still belongs to the day it started in:
     /// its last instant is that day's last bucket, and dropping it would lose the share the day
     /// burned in its final minutes.
+    ///
+    /// The shares cover only the part of the interval that falls inside `day`. A share is a
+    /// fraction of the **whole** interval, so when the interval crosses midnight the shares of
+    /// one day sum to less than one: the part that fell in the next day is in no bucket of the day
+    /// it was asked about and is not represented. The caller is expected to lose at most one
+    /// refresh interval of consumption per day boundary as a result.
     static func shares(
         from start: Date,
         to end: Date,

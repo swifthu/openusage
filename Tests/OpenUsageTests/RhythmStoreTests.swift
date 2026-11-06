@@ -84,6 +84,27 @@ final class RhythmStoreTests: XCTestCase {
         XCTAssertEqual(try store.recordedDays(), [day(11, 6), day(11, 7), day(11, 8)])
     }
 
+    func testAFolderThatWasNeverCreatedHasNoDays() throws {
+        let store = makeStore()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+
+        XCTAssertEqual(try store.recordedDays(), [])
+    }
+
+    func testAFailedRemovalIsThrownRatherThanSwallowed() throws {
+        try XCTSkipIf(getuid() == 0, "root ignores the folder's permissions")
+        let store = makeStore()
+        try store.save(record(day(11, 1), points: []))
+        // A folder that cannot be written to refuses the removal, which the caller has to hear
+        // about: it would otherwise log a deletion that did not happen.
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        }
+
+        XCTAssertThrowsError(try store.delete(before: day(11, 7)))
+    }
+
     func testTheRecordsBeforeADateAreDeleted() throws {
         let store = makeStore()
         try store.save(record(day(11, 1), points: []))
@@ -93,6 +114,17 @@ final class RhythmStoreTests: XCTestCase {
         try store.delete(before: day(11, 7))
 
         XCTAssertEqual(try store.recordedDays(), [day(11, 8)])
+    }
+
+    func testACutoffInTheAfternoonLeavesThatDayAlone() throws {
+        let store = makeStore()
+        try store.save(record(day(11, 1), points: []))
+        try store.save(record(day(11, 6), points: []))
+
+        let cutoff = calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: 15))!
+        try store.delete(before: cutoff)
+
+        XCTAssertEqual(try store.recordedDays(), [day(11, 6)])
     }
 
     func testTheRecordsOfARangeComeBackOldestFirst() throws {

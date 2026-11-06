@@ -21,9 +21,11 @@ protocol RhythmStore: Sendable {
     func load(day: Date) throws -> RhythmDayRecord?
     /// The records of a range of days, oldest first.
     func load(days: ClosedRange<Date>) throws -> [RhythmDayRecord]
-    /// The days that have a record, oldest first.
+    /// The days that have a record, oldest first. A history that does not exist yet is empty; a
+    /// history that cannot be read is an error.
     func recordedDays() throws -> [Date]
-    /// Deletes the records before a date.
+    /// Deletes the records before a date. The date names a day, so it is compared as one: a cutoff
+    /// in the afternoon leaves that day's own record alone.
     func delete(before date: Date) throws
 }
 
@@ -35,7 +37,7 @@ struct FileRhythmStore: RhythmStore {
     /// to be the same one the recorder writes with.
     let calendar: Calendar
 
-    init(directory: URL = FileRhythmStore.defaultDirectory, calendar: Calendar = .current) {
+    init(directory: URL = FileRhythmStore.defaultDirectory, calendar: Calendar) {
         self.directory = directory
         self.calendar = calendar
     }
@@ -90,17 +92,22 @@ struct FileRhythmStore: RhythmStore {
     }
 
     func recordedDays() throws -> [Date] {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else {
-            return []
-        }
+        // A folder that was never created means the app has no history yet, which is not a problem.
+        // A folder that exists but cannot be read is a problem the user has to know about, so it is
+        // thrown instead of being read as an empty history.
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
         return names
             .compactMap { RhythmClock.day(fromFileName: $0, calendar: calendar) }
             .sorted()
     }
 
     func delete(before date: Date) throws {
-        for day in try recordedDays() where day < date {
-            try? FileManager.default.removeItem(at: url(for: day))
+        // The cutoff names a day, so it is compared as days: a cutoff in the afternoon does not
+        // take the record of that same day with it.
+        let cutoff = calendar.startOfDay(for: date)
+        for day in try recordedDays() where day < cutoff {
+            try FileManager.default.removeItem(at: url(for: day))
         }
     }
 
