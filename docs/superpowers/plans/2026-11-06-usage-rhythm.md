@@ -2286,7 +2286,7 @@ ignored here — the recorder has already logged a warning if the write failed.
 
 Run: `script/test_quiet.sh --filter RhythmWiringTests`
 
-Expected: PASS — 7 tests, 0 failures.
+Expected: PASS — 12 tests, 0 failures.
 
 Run: `script/test_quiet.sh --filter RhythmRecorderTests`
 
