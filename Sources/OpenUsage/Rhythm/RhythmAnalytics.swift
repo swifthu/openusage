@@ -9,9 +9,10 @@ struct RhythmBar: Hashable, Sendable, Identifiable {
     /// more than one.
     var points: Double
     /// The readings that landed in the slice. Zero means no reading landed here, which is not the
-    /// same as nothing having been used: a burn spread over a bucket leaves its reading in the
-    /// next one. On an averaged bar it is the total number of readings behind the average, not
-    /// the number of days.
+    /// same as nothing having been used: a burn is spread over every bucket the interval
+    /// covered, while the reading itself lands in the last of them — so a Mac that slept for two
+    /// hours leaves two dozen buckets holding a burn and no reading of their own. On an averaged
+    /// bar it is the total number of readings behind the average, not the number of days.
     var samples: Int
     /// When the slice starts.
     var start: Date
