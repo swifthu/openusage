@@ -142,13 +142,15 @@ final class RhythmStoreTests: XCTestCase {
     func testTheDaysOlderThanTheRetentionAreRemovedWhenADayIsWritten() throws {
         let store = makeStore(retentionDays: 3)
 
-        try store.save(record(day(11, 1), points: []))
-        try store.save(record(day(11, 2), points: []))
-        try store.save(record(day(11, 3), points: []))
-        try store.save(record(day(11, 4), points: []))
+        // The days are counted from today rather than written out, so the test does not depend on
+        // what today's date is.
+        try store.save(record(daysFromToday(-3), points: []))
+        try store.save(record(daysFromToday(-2), points: []))
+        try store.save(record(daysFromToday(-1), points: []))
+        try store.save(record(today, points: []))
 
         // Three days are kept, the day that was written and the two before it.
-        XCTAssertEqual(try store.recordedDays(), [day(11, 2), day(11, 3), day(11, 4)])
+        XCTAssertEqual(try store.recordedDays(), [daysFromToday(-2), daysFromToday(-1), today])
     }
 
     func testWritingADayInThePastRemovesNothingThatIsInsideTheWindow() throws {
