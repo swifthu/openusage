@@ -48,6 +48,9 @@ struct FileRhythmStore: RhythmStore {
         return base
             .appendingPathComponent("OpenUsage", isDirectory: true)
             .appendingPathComponent("rhythm", isDirectory: true)
+            // The app is not sandboxed, so Application Support is shared by every build of it.
+            // The bundle identifier keeps the development build and the installed one apart.
+            .appendingPathComponent(Bundle.main.bundleIdentifier ?? "default", isDirectory: true)
     }
 
     private struct Payload: Codable {

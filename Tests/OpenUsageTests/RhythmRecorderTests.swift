@@ -1,5 +1,4 @@
 import XCTest
-import os
 @testable import OpenUsage
 
 /// The recorder differences one refresh against the last one, so the history says how much of a
@@ -423,73 +422,5 @@ final class RhythmRecorderTests: XCTestCase {
                 periodDurationMs: MetricPeriod.sessionMs
             )]
         )
-    }
-}
-
-/// A store that keeps what it was given instead of writing files.
-///
-/// It behaves like the file store: a write replaces the record of its day, and every day is
-/// listed once.
-final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
-    /// The calendar the days are measured in, as the file store's is.
-    private let calendar: Calendar
-
-    init(calendar: Calendar) {
-        self.calendar = calendar
-    }
-
-    private struct Records {
-        var byDay: [Date: RhythmDayRecord] = [:]
-        var saveAttempts = 0
-        var failsSave = false
-    }
-
-    private let lock = OSAllocatedUnfairLock(initialState: Records())
-
-    /// The record of every day, oldest first.
-    var saved: [RhythmDayRecord] { lock.withLock { $0.byDay.values.sorted { $0.day < $1.day } } }
-    /// How often the recorder tried to write, whether the write succeeded or not.
-    var saveAttempts: Int { lock.withLock { $0.saveAttempts } }
-
-    /// Makes every following write fail, the way a disk that cannot be written does.
-    func setFailing(_ failing: Bool) {
-        lock.withLock { $0.failsSave = failing }
-    }
-
-    func save(_ record: RhythmDayRecord) throws {
-        try lock.withLock { records in
-            records.saveAttempts += 1
-            if records.failsSave { throw RecordingRhythmStoreError.writeFailed }
-            records.byDay[record.day] = record
-        }
-    }
-
-    func load(day: Date) throws -> RhythmDayRecord? {
-        lock.withLock { $0.byDay[calendar.startOfDay(for: day)] }
-    }
-
-    func load(days: ClosedRange<Date>) throws -> [RhythmDayRecord] {
-        let first = calendar.startOfDay(for: days.lowerBound)
-        let last = calendar.startOfDay(for: days.upperBound)
-        return lock.withLock {
-            records in
-            records.byDay.values.filter { $0.day >= first && $0.day <= last }.sorted { $0.day < $1.day }
-        }
-    }
-
-    func recordedDays() throws -> [Date] { lock.withLock { $0.byDay.keys.sorted() } }
-
-    func delete(before date: Date) throws {
-        let cutoff = calendar.startOfDay(for: date)
-        lock.withLock { $0.byDay = $0.byDay.filter { $0.key < cutoff } }
-    }
-}
-
-/// A write that did not land.
-enum RecordingRhythmStoreError: LocalizedError {
-    case writeFailed
-
-    var errorDescription: String? {
-        "The rhythm history could not be written."
     }
 }

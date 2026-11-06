@@ -29,7 +29,8 @@ final class AppContainer {
         defaults: UserDefaults = .standard,
         http: any HTTPClient = URLSessionHTTPClient(),
         telemetry sink: any TelemetrySink,
-        telemetryDefaults: UserDefaults
+        telemetryDefaults: UserDefaults,
+        rhythmStore: (any RhythmStore)? = nil
     ) {
         self.accounts = accounts
         self.http = http
@@ -46,7 +47,7 @@ final class AppContainer {
         let layout = LayoutStore(registry: registry, defaults: defaults)
         let rhythmSettings = RhythmSettings(defaults: defaults)
         let rhythm = RhythmRecorder(
-            store: FileRhythmStore(directory: FileRhythmStore.defaultDirectory, calendar: .current),
+            store: rhythmStore ?? FileRhythmStore(directory: FileRhythmStore.defaultDirectory, calendar: .current),
             settings: rhythmSettings,
             calendar: .current
         )

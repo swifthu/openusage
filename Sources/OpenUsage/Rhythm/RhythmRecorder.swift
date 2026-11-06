@@ -163,6 +163,17 @@ final class RhythmRecorder {
         }
     }
 
+    /// Forgets the last reading of a provider's series, so its next reading starts a new
+    /// baseline. A runtime that was replaced may be measuring a different window now, and the
+    /// jump between the old reading and the new one is not consumption.
+    func forgetReadings(for providerID: String) {
+        let prefix = "\(providerID)/"
+        let stale = lastReading.keys.filter { $0.hasPrefix(prefix) }
+        for key in stale {
+            lastReading.removeValue(forKey: key)
+        }
+    }
+
     /// Writes the buckets that changed since the last write, and remembers them as written so only
     /// what changed since is waiting to be written again. Returns whether every day was written.
     ///

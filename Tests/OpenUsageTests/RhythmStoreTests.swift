@@ -44,6 +44,14 @@ final class RhythmStoreTests: XCTestCase {
         ])
     }
 
+    func testTheDefaultFolderBelongsToThisBuildAlone() {
+        // The app is not sandboxed, so Application Support is the same folder for the development
+        // build and for the installed one. The bundle identifier keeps their histories apart.
+        let directory = FileRhythmStore.defaultDirectory
+        XCTAssertEqual(directory.lastPathComponent, Bundle.main.bundleIdentifier ?? "default")
+        XCTAssertEqual(directory.deletingLastPathComponent().lastPathComponent, "rhythm")
+    }
+
     func testASavedDayComesBack() throws {
         let store = makeStore()
         let points = [Double](repeating: 1.5, count: 288)
