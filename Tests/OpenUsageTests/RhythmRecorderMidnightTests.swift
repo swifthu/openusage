@@ -290,4 +290,120 @@ final class RhythmRecorderMidnightTests: XCTestCase {
             "two fifths of the second account's burn fell before the midnight"
         )
     }
+
+    // MARK: - The midnight that ends in a day the store refuses
+
+    /// A moment of another day, so a test can put its days where it needs them.
+    private func moment(_ hour: Int, _ minute: Int = 0, day: Int) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 11, day: day, hour: hour, minute: minute))!
+    }
+
+    /// The day that ended is readable and the day that began is refused. The part of the burn
+    /// that fell before the midnight belongs to the day that ended, and that day is perfectly
+    /// able to hold it: the refusal of the day that followed it must not take it away.
+    func testTheReadableDayBeforeARefusedDayKeepsItsMidnightBurn() throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // The day that began is the one the store refuses: its buckets do not fit the day.
+        try writeRaw(directory, "2026-11-07.json", refusedPayload(day: "2026-11-07"))
+
+        let recorder = recorder(store)
+        recorder.record(snapshot(fraction: 0.4, at: moment(23, 50)), kind: .claude, at: moment(23, 50))
+        recorder.record(snapshot(fraction: 0.55, at: afterMidnight), kind: .claude, at: afterMidnight)
+        recorder.flush(at: afterMidnight)
+
+        // The day that ended kept the part of the burn that fell before the midnight: the burn
+        // was 0.15 over twenty minutes, and ten of those twenty minutes fell before it.
+        let ended = try XCTUnwrap(store.load(day: moment(0)))
+        let series = try XCTUnwrap(ended.series.first)
+        XCTAssertEqual(
+            series.points.reduce(0, +),
+            0.075,
+            accuracy: 0.0001,
+            "the readable day that ended keeps the part of the burn that fell before the midnight"
+        )
+    }
+
+    /// A file is replaced while the recorder holds the day: a restored backup, a file copied over
+    /// it, another version of the app. The recorder does not know what the new file holds, so it
+    /// leaves it alone rather than replacing it with what it has.
+    func testAFileThatBecomesUnreadableWhileItIsHeldIsLeftAlone() throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = recorder(store)
+
+        // The morning: the file is readable, so the recorder takes the day back from the store.
+        recorder.record(snapshot(fraction: 0.3, at: moment(10, 0)), kind: .claude, at: moment(10, 0))
+        recorder.flush(at: moment(10, 1))
+
+        // Something outside the app replaces the file with one the store refuses.
+        let refused = refusedPayload(day: "2026-11-06")
+        try writeRaw(directory, "2026-11-06.json", refused)
+
+        // The afternoon: the recorder still holds the day, and asks the store again before it
+        // writes.
+        recorder.record(snapshot(fraction: 0.4, at: moment(14, 0)), kind: .claude, at: moment(14, 0))
+        recorder.flush(at: moment(14, 1))
+
+        XCTAssertEqual(
+            try readRaw(directory, "2026-11-06.json"),
+            Data(refused.utf8),
+            "the file the store would refuse is left exactly as it is"
+        )
+    }
+
+    /// The app runs for three days across a day the store refuses. The refused day's file is left
+    /// alone, the days around it are recorded, and the burn into the day after the refused day is
+    /// measured from the last reading of the refused day.
+    func testThreeDaysAcrossARefusedDay() throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let refused = refusedPayload(day: "2026-11-06")
+        try writeRaw(directory, "2026-11-06.json", refused)
+
+        let recorder = recorder(store)
+        // The day before: 23:50 on 2026-11-05.
+        recorder.record(snapshot(fraction: 0.2, at: moment(23, 50, day: 5)), kind: .claude, at: moment(23, 50, day: 5))
+        recorder.flush(at: moment(23, 55, day: 5))
+        // The refused day: nothing is booked, but every reading is the baseline of the next one.
+        recorder.record(snapshot(fraction: 0.3, at: moment(0, 10, day: 6)), kind: .claude, at: moment(0, 10, day: 6))
+        recorder.record(snapshot(fraction: 0.4, at: moment(12, 0, day: 6)), kind: .claude, at: moment(12, 0, day: 6))
+        recorder.record(snapshot(fraction: 0.5, at: moment(23, 55, day: 6)), kind: .claude, at: moment(23, 55, day: 6))
+        recorder.flush(at: moment(23, 59, day: 6))
+        // The day after: 00:10 on 2026-11-07.
+        recorder.record(snapshot(fraction: 0.65, at: moment(0, 10, day: 7)), kind: .claude, at: moment(0, 10, day: 7))
+        recorder.flush(at: moment(0, 20, day: 7))
+
+        XCTAssertEqual(
+            try readRaw(directory, "2026-11-06.json"),
+            Data(refused.utf8),
+            "the refused file is left exactly as it was"
+        )
+        let after = try XCTUnwrap(store.load(day: moment(0, 0, day: 7)))
+        let afterSeries = try XCTUnwrap(after.series.first)
+        // The burn of 0.15 over the fifteen minutes from 23:55 to 00:10: ten of those fifteen
+        // minutes fell after the midnight, so a tenth of the burn is on the day that began.
+        XCTAssertEqual(afterSeries.points.reduce(0, +), 0.1, accuracy: 0.0001)
+        XCTAssertEqual(afterSeries.samples.reduce(0, +), 1)
+        let before = try XCTUnwrap(store.load(day: moment(0, 0, day: 5)))
+        let beforeSeries = try XCTUnwrap(before.series.first)
+        XCTAssertEqual(beforeSeries.samples.reduce(0, +), 1)
+    }
+
+    /// The app is terminated on a day the store refuses: the flush must not write over the file,
+    /// and it must not claim that every day was written.
+    func testTheFlushOnTerminationLeavesARefusedFileAlone() throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let refused = refusedPayload(day: "2026-11-07")
+        try writeRaw(directory, "2026-11-07.json", refused)
+
+        let recorder = recorder(store)
+        recorder.record(snapshot(fraction: 0.55, at: afterMidnight), kind: .claude, at: afterMidnight)
+        let wroteEverything = recorder.flush(at: afterMidnight)
+
+        XCTAssertEqual(try readRaw(directory, "2026-11-07.json"), Data(refused.utf8))
+        XCTAssertFalse(wroteEverything, "the flush says that not every day was written")
+        XCTAssertNil(recorder.lastWriteError, "a refused file is not a write error")
+    }
 }

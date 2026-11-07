@@ -1,59 +1,6 @@
 import Foundation
 import Observation
 
-/// The consumption between two readings of the same series.
-enum RhythmDifferencer {
-    /// What was burned between two readings, and the buckets it belongs to.
-    ///
-    /// A window that reset burns nothing: the use before the reset was never read, and the new
-    /// window's reading counts from its own zero. A gap longer than the window burns nothing for
-    /// the same reason — the two readings describe different windows.
-    ///
-    /// The buckets are the ones of the day that is asked about. An interval that crosses midnight
-    /// therefore has to be asked about twice — once for the day that ended and once for the day
-    /// that began — or the part of it that fell in the other day is lost.
-    static func delta(
-        from previous: RhythmReading,
-        to current: RhythmReading,
-        day: Date,
-        calendar: Calendar
-    ) -> RhythmDelta {
-        let interval = current.at.timeIntervalSince(previous.at)
-        guard interval > 0 else { return RhythmDelta(points: 0, buckets: [], clamped: false) }
-        guard interval <= Double(current.windowMs) / 1000 else {
-            return RhythmDelta(points: 0, buckets: [], clamped: false)
-        }
-        // The window the last reading described ended before this reading was taken, so the two
-        // are not two points on the same window's curve.
-        let reset: Bool
-        if let previousReset = previous.resetsAt {
-            reset = previousReset <= current.at
-        } else {
-            reset = current.fraction < previous.fraction
-        }
-        guard !reset else { return RhythmDelta(points: 0, buckets: [], clamped: false) }
-
-        let burned = current.fraction - previous.fraction
-        guard burned > 0 else { return RhythmDelta(points: 0, buckets: [], clamped: false) }
-        let points = min(burned, 1)
-        // More than the whole window burned in one interval: the provider's denominator changed —
-        // a new plan, a smaller limit — and the chart would show a full bar that nobody burned.
-        // The bar is drawn, so the log has to say that it is not a rate.
-        //
-        // The warning is logged once, for the day the reading belongs to: an interval that
-        // crosses midnight is asked about twice, and the clamp is one event.
-        if burned > 1, calendar.isDate(day, inSameDayAs: current.at) {
-            AppLog.warn(.rhythm, "the rhythm of \(current.key) burned \(String(format: "%.2f", burned)) points in \(Int(interval))s "
-                + "and was clamped to the whole window: the provider's limit probably changed")
-        }
-        return RhythmDelta(
-            points: points,
-            buckets: RhythmClock.shares(from: previous.at, to: current.at, day: day, calendar: calendar),
-            clamped: burned > 1
-        )
-    }
-}
-
 /// Records how fast each account's window fills up, and keeps the last so many days of it.
 ///
 /// The recorder holds the day's buckets in memory and writes them every few minutes, so a refresh
@@ -250,6 +197,11 @@ final class RhythmRecorder {
             wroteEverything = result.wrote && wroteEverything
             failed = failed || result.failed
         }
+        // A day the store refused is never written, so not every day was written. The recorder
+        // says so rather than claiming a history it does not have.
+        if !unreadableDays.isEmpty {
+            wroteEverything = false
+        }
         if !failed { failures = 0 }
         return wroteEverything
     }
@@ -265,6 +217,15 @@ final class RhythmRecorder {
         // holds, and replacing it with what the recorder has would destroy it.
         if unreadableDays.contains(day) {
             // The recorder lets the day go: it cannot write it and it must not hold it.
+            days.removeValue(forKey: day)
+            written.removeValue(forKey: day)
+            return (false, false)
+        }
+        // The file may have been replaced since the recorder took the day — a restored backup, a
+        // file copied over it. A file the app cannot read is left alone, because it holds data in
+        // a shape the app does not understand and that shape may become readable again. A file
+        // that is not even valid JSON holds nothing to keep, so it is replaced.
+        if !fileCanStillBeRead(day) {
             days.removeValue(forKey: day)
             written.removeValue(forKey: day)
             return (false, false)
@@ -329,37 +290,46 @@ final class RhythmRecorder {
         } else {
             recordedDay = day
         }
+        let previous = lastReading[reading.key]
+        var endedDay: Date?
+        if let previous {
+            let previousDay = calendar.startOfDay(for: previous.at)
+            if previousDay != day {
+                // This series crossed the midnight. The part of the burn that fell before it
+                // belongs to the day that ended, and it is booked first: that day may be whole
+                // even when the day that began is not, and its part of the burn must not be lost
+                // because of the day that followed it.
+                //
+                // The day that ended is taken back from the store before anything is booked into
+                // it: the recorder may not hold it at all — the app was closed across the
+                // midnight — and the write of the file store replaces the whole file, so a day
+                // that holds only a fragment would destroy the day that is on disk.
+                let endedBurn = RhythmDifferencer.delta(from: previous, to: reading, day: previousDay, calendar: calendar)
+                if !endedBurn.buckets.isEmpty, holdWholeDay(previousDay) {
+                    burn(endedBurn, of: reading, on: previousDay)
+                }
+                endedDay = previousDay
+            }
+        }
         // The day the reading belongs to is taken back from the store when the recorder does not
         // hold it, so the part another run of the app recorded is not lost.
         guard holdWholeDay(day) else {
             // The day's file cannot be read, so the recorder does not know what it holds.
             // Writing what it has would replace a file it could not read, so the reading is not
-            // booked and the file is left alone.
-            return nil
+            // booked and the file is left alone. The day that ended is still returned: its part
+            // of the burn was booked above, and it has to be written.
+            return endedDay
         }
-        var endedDay: Date?
-        if let previous = lastReading[reading.key] {
+        if let previous {
             let previousDay = calendar.startOfDay(for: previous.at)
-            if previousDay != day {
-                // This series crossed the midnight. The burn since its last reading may have
-                // crossed it too: the part before it belongs to the day that ended and the rest
-                // to the day that began. The rollover is decided per series, so every series that
-                // crosses the midnight books the part that fell before it.
-                let endedBurn = RhythmDifferencer.delta(from: previous, to: reading, day: previousDay, calendar: calendar)
+            if previousDay == day {
+                burn(from: previous, to: reading, on: day)
+            } else {
+                // The part of the burn that fell after the midnight belongs to the day that began.
                 let begunBurn = RhythmDifferencer.delta(from: previous, to: reading, day: day, calendar: calendar)
-                // The day that ended is taken back from the store before anything is booked into
-                // it: the recorder may not hold it at all — the app was closed across the
-                // midnight — and the write of the file store replaces the whole file, so a day
-                // that holds only a fragment would destroy the day that is on disk.
-                if !endedBurn.buckets.isEmpty, holdWholeDay(previousDay) {
-                    burn(endedBurn, of: reading, on: previousDay)
-                }
                 if !begunBurn.buckets.isEmpty {
                     burn(begunBurn, of: reading, on: day)
                 }
-                endedDay = previousDay
-            } else {
-                burn(from: previous, to: reading, on: day)
             }
         }
         var series = days[day] ?? [:]
@@ -429,6 +399,29 @@ final class RhythmRecorder {
     private func canWrite(at now: Date) -> Bool {
         guard let lastFailure else { return true }
         return now.timeIntervalSince(lastFailure) >= flushInterval
+    }
+
+    /// Whether the day's file can still be read.
+    ///
+    /// A day that has no file yet is fine: there is nothing to write over. A file the store
+    /// refuses — another schema, another day, buckets that do not fit — holds real data in a
+    /// shape the app does not understand, and it is left alone. A file that is not valid JSON
+    /// holds nothing to keep, and it is replaced.
+    ///
+    /// A day whose file cannot be read is marked, so the recorder stops booking into it and
+    /// stops writing it.
+    private func fileCanStillBeRead(_ day: Date) -> Bool {
+        do {
+            _ = try history.load(day: day)
+            return true
+        } catch let error as RhythmStoreError {
+            AppLog.warn(.rhythm, "the rhythm history of \(RhythmClock.fileName(for: day, calendar: calendar)) cannot be read: \(error.localizedDescription). The file is left alone and the day is not written.")
+            unreadableDays.insert(day)
+            return false
+        } catch {
+            // The file is not even valid JSON: there is nothing in it to keep.
+            return true
+        }
     }
 
     /// Makes sure the recorder holds the whole of a day before anything is booked into it.

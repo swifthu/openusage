@@ -26,7 +26,10 @@ window — a percentage or a count — and nothing else.
 The history is kept in the app's own format, and the app never writes over a file it cannot read.
 If a day's file cannot be read — after a change of time zone, for instance, its five-minute
 buckets no longer fit the day — that day records nothing, the file is left exactly as it is, and
-the chart says the day could not be read.
+the chart says the day could not be read. The app asks the file again before it writes, so a file
+that is replaced while the app is running — a restored backup, for instance — is left alone too.
+The one exception is a file that is not valid JSON at all: there is nothing in it to keep, so it
+is replaced.
 
 A burn that crosses the midnight belongs to both days it touches: the part before the midnight to
 the day that ended, the rest to the day that began. Nothing of it is lost, and neither day's
