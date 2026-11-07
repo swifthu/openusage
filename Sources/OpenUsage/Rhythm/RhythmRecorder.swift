@@ -63,7 +63,9 @@ enum RhythmDifferencer {
 ///
 /// A burn belongs to the days the interval covered. An interval that crosses midnight is booked
 /// on both days: the part before midnight on the day that ended, the rest on the day that began.
-/// The consumption before a provider's window resets is still not seen, and the recorder does not
+/// The rollover is decided per series — every series has a last reading of its own — so every
+/// series that crosses the midnight books the part of its burn that fell before it. The
+/// consumption before a provider's window resets is still not seen, and the recorder does not
 /// guess at it.
 @MainActor
 @Observable
@@ -78,7 +80,8 @@ final class RhythmRecorder {
     @ObservationIgnored private var days: [Date: [String: RhythmSeriesRecord]] = [:]
     /// What was written of each held day, by day.
     @ObservationIgnored private var written: [Date: [String: RhythmSeriesRecord]] = [:]
-    /// The day the readings belong to.
+    /// The day the recorder records on: the newest day a reading belongs to. A day that is not
+    /// the current one may be let go once it is on disk.
     @ObservationIgnored private var recordedDay: Date?
     /// When the day's buckets were last written.
     @ObservationIgnored private var lastFlush: Date?
@@ -86,6 +89,12 @@ final class RhythmRecorder {
     /// passed, so a disk that cannot be written does not fill the log with one warning per
     /// reading.
     @ObservationIgnored private var lastFailure: Date?
+    /// The day whose write failed. The error is only cleared when that day is written, so the
+    /// success of another day does not hide it from the user.
+    @ObservationIgnored private var failedDay: Date?
+    /// The days that could not be read back from the store. The recorder does not know what
+    /// their files hold, so it does not book a fragment of them over them.
+    @ObservationIgnored private var unreadableDays: Set<Date> = []
     /// How long the day's buckets are kept in memory before they are written.
     @ObservationIgnored private let flushInterval: TimeInterval
     /// How many writes have failed in a row.
@@ -175,8 +184,17 @@ final class RhythmRecorder {
         // The day's buckets are written before the new reading is folded in, so what is on disk is
         // always a whole number of readings and the newest one is still waiting to be written.
         checkpointIfDue(at: now)
+        // The days that ended are written after every series of the snapshot has booked its part,
+        // so the day on disk holds the part of every series that crossed the midnight and not
+        // only the part of the first one.
+        var ended: [Date] = []
         for reading in Self.readings(from: snapshot, kind: kind, at: now) {
-            apply(reading, at: now)
+            if let endedDay = apply(reading), !ended.contains(endedDay) {
+                ended.append(endedDay)
+            }
+        }
+        for day in ended {
+            write(day: day, at: now)
         }
     }
 
@@ -188,6 +206,7 @@ final class RhythmRecorder {
         try history.deleteAll(now: now, calendar: calendar)
         days.removeAll()
         written.removeAll()
+        unreadableDays.removeAll()
         // The baselines go with it: the next reading starts a new day rather than booking the
         // jump between the last reading and it as consumption.
         lastReading.removeAll()
@@ -227,75 +246,102 @@ final class RhythmRecorder {
         var wroteEverything = true
         var failed = false
         for day in days.keys.sorted() {
-            let series = days[day] ?? [:]
-            guard !pendingSeries(on: day).isEmpty else {
-                if day != recordedDay {
-                    // The day is on disk and nothing is waiting to be written, so the recorder
-                    // does not need to hold it any more.
-                    days.removeValue(forKey: day)
-                    written.removeValue(forKey: day)
-                }
-                continue
-            }
-            let record = RhythmDayRecord(day: day, series: series.values.sorted { $0.key < $1.key })
-            do {
-                try history.save(record)
-                written[day] = series
-                lastFlush = now
-                lastWriteError = nil
-                if day != recordedDay {
-                    // The day is on disk, so the recorder does not need to hold it any more.
-                    days.removeValue(forKey: day)
-                    written.removeValue(forKey: day)
-                }
-            } catch {
-                wroteEverything = false
-                failed = true
-                failures += 1
-                lastFailure = now
-                lastWriteError = error.localizedDescription
-                AppLog.warn(.rhythm, "could not write the rhythm history for \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
-                if failures >= 5 {
-                    AppLog.error(.rhythm, "the rhythm history stopped being written after \(failures) failures in a row")
-                }
-            }
+            let result = write(day: day, at: now)
+            wroteEverything = result.wrote && wroteEverything
+            failed = failed || result.failed
         }
         if !failed { failures = 0 }
         return wroteEverything
     }
 
-    private func apply(_ reading: RhythmReading, at now: Date) {
+    /// Writes one day, if it has something waiting to be written, and remembers what was written.
+    ///
+    /// A day that is on disk and has nothing waiting to be written is let go, unless it is the
+    /// day the recorder records on: that one is still being added to.
+    @discardableResult
+    private func write(day: Date, at now: Date) -> (wrote: Bool, failed: Bool) {
+        let series = days[day] ?? [:]
+        guard !pendingSeries(on: day).isEmpty else {
+            if day != recordedDay {
+                // The day is on disk and nothing is waiting to be written, so the recorder
+                // does not need to hold it any more.
+                days.removeValue(forKey: day)
+                written.removeValue(forKey: day)
+            }
+            return (true, false)
+        }
+        let record = RhythmDayRecord(day: day, series: series.values.sorted { $0.key < $1.key })
+        do {
+            try history.save(record)
+            written[day] = series
+            lastFlush = now
+            unreadableDays.remove(day)
+            if failedDay == day {
+                // The day that could not be written is on disk, so the user does not have to be
+                // told about it any more. The success of another day does not clear it.
+                lastWriteError = nil
+                failedDay = nil
+            }
+            if day != recordedDay {
+                // The day is on disk, so the recorder does not need to hold it any more.
+                days.removeValue(forKey: day)
+                written.removeValue(forKey: day)
+            }
+            return (true, false)
+        } catch {
+            failures += 1
+            lastFailure = now
+            failedDay = day
+            lastWriteError = error.localizedDescription
+            AppLog.warn(.rhythm, "could not write the rhythm history for \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
+            if failures >= 5 {
+                AppLog.error(.rhythm, "the rhythm history stopped being written after \(failures) failures in a row")
+            }
+            return (false, true)
+        }
+    }
+
+    /// Books a reading: the burn since this series' last reading, and the reading itself.
+    ///
+    /// Returns the day that ended, when this reading crossed the midnight. The part of the burn
+    /// that fell before the midnight belongs to that day, and the day is written once every
+    /// series of the snapshot has booked its part.
+    private func apply(_ reading: RhythmReading) -> Date? {
         let day = calendar.startOfDay(for: reading.at)
-        if recordedDay != day {
-            // The day rolled over. The burn since the last reading may have crossed midnight: the
-            // part before it belongs to the day that ended and the rest to the day that began. It
-            // is worked out first, while the day that ended is still in memory — writing that day
-            // before the burn is known would lose it.
-            let previous = lastReading[reading.key]
-            let endedDay = previous.map { calendar.startOfDay(for: $0.at) }
-            let endedBurn = previous.flatMap {
-                RhythmDifferencer.delta(from: $0, to: reading, day: calendar.startOfDay(for: $0.at), calendar: calendar)
+        // The day the reading belongs to is taken back from the store when the recorder does not
+        // hold it, so the part another run of the app recorded is not lost. A day that cannot be
+        // read is recorded anyway: the day the recorder is on is never left empty.
+        holdWholeDay(day)
+        var endedDay: Date?
+        if let previous = lastReading[reading.key] {
+            let previousDay = calendar.startOfDay(for: previous.at)
+            if previousDay != day {
+                // This series crossed the midnight. The burn since its last reading may have
+                // crossed it too: the part before it belongs to the day that ended and the rest
+                // to the day that began. The rollover is decided per series, so every series that
+                // crosses the midnight books the part that fell before it.
+                let endedBurn = RhythmDifferencer.delta(from: previous, to: reading, day: previousDay, calendar: calendar)
+                let begunBurn = RhythmDifferencer.delta(from: previous, to: reading, day: day, calendar: calendar)
+                // The day that ended is taken back from the store before anything is booked into
+                // it: the recorder may not hold it at all — the app was closed across the
+                // midnight — and the write of the file store replaces the whole file, so a day
+                // that holds only a fragment would destroy the day that is on disk.
+                if !endedBurn.buckets.isEmpty, holdWholeDay(previousDay) {
+                    burn(endedBurn, of: reading, on: previousDay)
+                }
+                if !begunBurn.buckets.isEmpty {
+                    burn(begunBurn, of: reading, on: day)
+                }
+                endedDay = previousDay
+            } else {
+                burn(from: previous, to: reading, on: day)
             }
-            let begunBurn = previous.flatMap {
-                RhythmDifferencer.delta(from: $0, to: reading, day: day, calendar: calendar)
-            }
-            if let endedBurn, let endedDay, endedDay != day {
-                burn(endedBurn, of: reading, on: endedDay)
-            }
-            // The day that just ended is written before the new reading is folded in, so what is on
-            // disk is always a whole number of readings. A day whose write failed stays in memory
-            // until it lands.
+        }
+        // The day the recorder records on is the newest day a reading belongs to.
+        if let current = recordedDay {
+            if day > current { recordedDay = day }
+        } else {
             recordedDay = day
-            days[day] = days[day] ?? [:]
-            flush(at: now)
-            continueFromStore(on: day)
-            // The day that began is continued from what was written, so the burn that belongs to
-            // it is added after that.
-            if let begunBurn {
-                burn(begunBurn, of: reading, on: day)
-            }
-        } else if let previous = lastReading[reading.key] {
-            burn(from: previous, to: reading, on: day)
         }
         var series = days[day] ?? [:]
         var record = series[reading.key] ?? RhythmSeriesRecord(
@@ -313,6 +359,7 @@ final class RhythmRecorder {
         series[reading.key] = record
         days[day] = series
         lastReading[reading.key] = reading
+        return endedDay
     }
 
     /// Adds the burn between two readings to the buckets of the day it is asked about.
@@ -366,17 +413,41 @@ final class RhythmRecorder {
         return now.timeIntervalSince(lastFailure) >= flushInterval
     }
 
+    /// Makes sure the recorder holds the whole of a day before anything is booked into it.
+    ///
+    /// A day another run of the app started is taken back from the store, the way the day the
+    /// recorder starts on is. The write of the file store replaces the whole file, so a day that
+    /// holds only a fragment of itself would destroy the day that is on disk.
+    ///
+    /// Returns whether the day is whole now. A day that cannot be read back is not whole: the
+    /// caller does not book a fragment of it over a file it cannot see.
+    @discardableResult
+    private func holdWholeDay(_ day: Date) -> Bool {
+        guard days[day]?.isEmpty ?? true else { return true }
+        guard !unreadableDays.contains(day) else { return false }
+        guard continueFromStore(on: day) else {
+            // The day is not read again and again: the file is the same one every time.
+            unreadableDays.insert(day)
+            return false
+        }
+        return true
+    }
+
     /// A day another run of the app started: the recorder continues from what was written, so the
     /// part of the day before the restart is not lost when the day is written again.
-    private func continueFromStore(on day: Date) {
+    ///
+    /// Returns whether the day could be read. A day that cannot be read is not continued: the
+    /// recorder does not know what the file holds, so it does not write over it.
+    @discardableResult
+    private func continueFromStore(on day: Date) -> Bool {
         let stored: RhythmDayRecord?
         do {
             stored = try history.load(day: day)
         } catch {
             AppLog.warn(.rhythm, "could not read the rhythm history for \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
-            return
+            return false
         }
-        guard let stored else { return }
+        guard let stored else { return true }
         let count = RhythmClock.bucketCount(on: day, calendar: calendar)
         var series = days[day] ?? [:]
         var writtenSeries = written[day] ?? [:]
@@ -398,5 +469,6 @@ final class RhythmRecorder {
         }
         days[day] = series
         written[day] = writtenSeries
+        return true
     }
 }

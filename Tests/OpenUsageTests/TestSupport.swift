@@ -343,6 +343,8 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
         var saveAttempts = 0
         var failsSave = false
         var failsLoad = false
+        /// The days whose writes fail, the way a disk that cannot be written fails for one day only.
+        var failingDays: Set<Date> = []
         var requestedRanges: [ClosedRange<Date>] = []
         /// How many reads were started.
         var readAttempts = 0
@@ -363,6 +365,19 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
     /// Makes every following write fail, the way a disk that cannot be written does.
     func setFailing(_ failing: Bool) {
         lock.withLock { $0.failsSave = failing }
+    }
+
+    /// Makes the writes of one day fail, the way a disk that cannot be written fails for one day
+    /// only. The other days are written as usual.
+    func setFailing(_ failing: Bool, on day: Date) {
+        let key = calendar.startOfDay(for: day)
+        lock.withLock { records in
+            if failing {
+                records.failingDays.insert(key)
+            } else {
+                records.failingDays.remove(key)
+            }
+        }
     }
 
     /// How many reads were started.
@@ -387,6 +402,9 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
         try lock.withLock { records in
             records.saveAttempts += 1
             if records.failsSave { throw RecordingRhythmStoreError.writeFailed }
+            if records.failingDays.contains(calendar.startOfDay(for: record.day)) {
+                throw RecordingRhythmStoreError.writeFailed
+            }
             records.byDay[record.day] = record
         }
     }

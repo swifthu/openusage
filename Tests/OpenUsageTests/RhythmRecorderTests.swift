@@ -363,6 +363,30 @@ final class RhythmRecorderTests: XCTestCase {
         XCTAssertEqual(second.points.reduce(0, +), 0.15, accuracy: 0.0001)
     }
 
+    /// The error of a failed write is only cleared when the day that failed is written. The
+    /// success of another day does not hide it from the user.
+    func testTheErrorOfAFailedWriteIsNotClearedByAnotherDaysSuccess() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: moment(0))!
+
+        // The write of the day that ended fails.
+        store.setFailing(true, on: moment(0))
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(23, 50))
+        recorder.flush(at: moment(23, 51))
+        XCTAssertNotNil(recorder.lastWriteError)
+
+        // The next day is written and its write lands.
+        recorder.record(snapshot(fraction: 0.3), kind: .claude, at: nextDay)
+        recorder.flush(at: nextDay)
+        XCTAssertNotNil(recorder.lastWriteError, "the day that could not be written is still not on disk")
+
+        // The day that failed is written, so the error goes away.
+        store.setFailing(false, on: moment(0))
+        recorder.flush(at: nextDay.addingTimeInterval(600))
+        XCTAssertNil(recorder.lastWriteError)
+    }
+
     private func snapshot(fraction: Double, resetsAt: Date? = nil, providerID: String = "account-1") -> ProviderSnapshot {
         ProviderSnapshot(
             providerID: providerID,
