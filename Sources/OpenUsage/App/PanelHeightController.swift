@@ -159,7 +159,12 @@ final class PanelHeightController {
     /// Each tab has its own, or opening on Priority would start at All Usage's height and shrink.
     private static func heightKey(for screen: PopoverScreen, tab: DashboardTab) -> String {
         switch screen {
-        case .dashboard: tab == .priority ? "openusage.panel.height.dashboard" : "openusage.panel.height.dashboard.allUsage"
+        case .dashboard:
+            switch tab {
+            case .priority: "openusage.panel.height.dashboard"
+            case .allUsage: "openusage.panel.height.dashboard.allUsage"
+            case .rhythm: "openusage.panel.height.dashboard.rhythm"
+            }
         case .accounts: "openusage.panel.height.accounts"
         case .settings: "openusage.panel.height.settings"
         }

@@ -196,6 +196,13 @@ enum CodexUsageMapper {
     }
 
     /// The credit limit a workspace sets on the member; ChatGPT sends its numbers as decimal strings.
+    ///
+    /// This is `spend_control`'s budget in cents, so the number is money and not a count of
+    /// credits — `.count(suffix: "credits")` below says what the label says, not what the number
+    /// is. It stays out of the rhythm chart today only because this line carries no window
+    /// length, and the chart skips a window it cannot measure. The day this line is given a
+    /// window, it has to be marked as money (`.dollars`), or the rate at which money is spent goes
+    /// back into the chart.
     private static func creditLimitLine(body: [String: Any]) -> MetricLine? {
         guard let limit = (body["spend_control"] as? [String: Any])?["individual_limit"] as? [String: Any],
               let used = ProviderParse.number(limit["used"]), used >= 0,

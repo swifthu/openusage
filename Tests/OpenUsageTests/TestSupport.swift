@@ -124,14 +124,18 @@ extension AppContainer {
         accounts: AccountStore,
         defaults: UserDefaults,
         http: any HTTPClient = URLSessionHTTPClient(),
-        telemetry: RecordingTelemetrySink = RecordingTelemetrySink()
+        telemetry: RecordingTelemetrySink = RecordingTelemetrySink(),
+        rhythmStore: (any RhythmStore)? = nil
     ) -> AppContainer {
         AppContainer(
             accounts: accounts,
             defaults: defaults,
             http: http,
             telemetry: telemetry,
-            telemetryDefaults: defaults
+            telemetryDefaults: defaults,
+            // The tests record the rhythm, so they need a store of their own: the file store would
+            // read and write the developer's real history folder.
+            rhythmStore: rhythmStore ?? RecordingRhythmStore(calendar: .current)
         )
     }
 }
@@ -143,7 +147,8 @@ extension WidgetDataStore {
         cache: ProviderSnapshotCache? = nil,
         defaults: UserDefaults,
         now: @escaping () -> Date = Date.init,
-        providerRefreshTimeout: TimeInterval = WidgetDataStore.defaultProviderRefreshTimeout
+        providerRefreshTimeout: TimeInterval = WidgetDataStore.defaultProviderRefreshTimeout,
+        rhythm: RhythmRecorder? = nil
     ) -> WidgetDataStore {
         WidgetDataStore(
             registry: registry ?? .from(runtimes),
@@ -151,7 +156,8 @@ extension WidgetDataStore {
             cache: cache ?? ProviderSnapshotCache(userDefaults: defaults, storageKey: "snapshots"),
             defaults: defaults,
             now: now,
-            providerRefreshTimeout: providerRefreshTimeout
+            providerRefreshTimeout: providerRefreshTimeout,
+            rhythm: rhythm
         )
     }
 }
@@ -317,5 +323,164 @@ actor HeldResponse {
         released = true
         for continuation in held { continuation.resume() }
         held = []
+    }
+}
+
+/// A store that keeps what it was given instead of writing files.
+///
+/// It behaves like the file store: a write replaces the record of its day, and every day is
+/// listed once.
+final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
+    /// The calendar the days are measured in, as the file store's is.
+    private let calendar: Calendar
+
+    init(calendar: Calendar) {
+        self.calendar = calendar
+    }
+
+    private struct Records {
+        var byDay: [Date: RhythmDayRecord] = [:]
+        var saveAttempts = 0
+        var failsSave = false
+        var failsLoad = false
+        /// The days whose writes fail, the way a disk that cannot be written fails for one day only.
+        var failingDays: Set<Date> = []
+        var requestedRanges: [ClosedRange<Date>] = []
+        /// The days the store holds but cannot read, the way a file whose buckets do not fit its
+        /// day is held and refused.
+        var refusedDays: Set<Date> = []
+        /// How many reads were started.
+        var readAttempts = 0
+        /// Whether the next read is the slow failing one.
+        var firstLoadPending = false
+        var firstLoadDelay: TimeInterval = 0
+    }
+
+    private let lock = OSAllocatedUnfairLock(initialState: Records())
+
+    /// The record of every day, oldest first.
+    var saved: [RhythmDayRecord] { lock.withLock { $0.byDay.values.sorted { $0.day < $1.day } } }
+    /// How often the recorder tried to write, whether the write succeeded or not.
+    var saveAttempts: Int { lock.withLock { $0.saveAttempts } }
+    /// The ranges the recorder was asked for, in the order the reads finished.
+    var requestedRanges: [ClosedRange<Date>] { lock.withLock { $0.requestedRanges } }
+
+    /// Makes every following write fail, the way a disk that cannot be written does.
+    func setFailing(_ failing: Bool) {
+        lock.withLock { $0.failsSave = failing }
+    }
+
+    /// Makes the writes of one day fail, the way a disk that cannot be written fails for one day
+    /// only. The other days are written as usual.
+    func setFailing(_ failing: Bool, on day: Date) {
+        let key = calendar.startOfDay(for: day)
+        lock.withLock { records in
+            if failing {
+                records.failingDays.insert(key)
+            } else {
+                records.failingDays.remove(key)
+            }
+        }
+    }
+
+    /// How many reads were started.
+    var readAttempts: Int { lock.withLock { $0.readAttempts } }
+
+    /// Makes one day unreadable, the way a file whose buckets do not fit its day is refused: the
+    /// day is there, and reading it fails.
+    func setRefusing(_ refusing: Bool, on day: Date) {
+        let key = calendar.startOfDay(for: day)
+        lock.withLock { records in
+            if refusing {
+                records.refusedDays.insert(key)
+            } else {
+                records.refusedDays.remove(key)
+            }
+        }
+    }
+
+    /// Makes every following read fail, the way a history folder that cannot be read does.
+    func setFailingLoad(_ failing: Bool) {
+        lock.withLock { $0.failsLoad = failing }
+    }
+
+    /// Makes the next read take its time and then fail, the way a slow disk that cannot be read
+    /// does. Only that one read is slow and failing: the reads after it are ordinary ones, so a
+    /// late failure can be told apart from an ordinary one.
+    func setFirstLoadFailing(after delay: TimeInterval) {
+        lock.withLock {
+            $0.firstLoadPending = true
+            $0.firstLoadDelay = delay
+        }
+    }
+
+    func save(_ record: RhythmDayRecord) throws {
+        try lock.withLock { records in
+            records.saveAttempts += 1
+            if records.failsSave { throw RecordingRhythmStoreError.writeFailed }
+            if records.failingDays.contains(calendar.startOfDay(for: record.day)) {
+                throw RecordingRhythmStoreError.writeFailed
+            }
+            records.byDay[record.day] = record
+        }
+    }
+
+    func load(day: Date) throws -> RhythmDayRecord? {
+        let key = calendar.startOfDay(for: day)
+        return try lock.withLock { records in
+            if records.refusedDays.contains(key) { throw RecordingRhythmStoreError.readFailed }
+            return records.byDay[key]
+        }
+    }
+
+    func load(days: ClosedRange<Date>) throws -> [RhythmDayRecord] {
+        let slow = lock.withLock { records -> (Bool, TimeInterval) in
+            records.readAttempts += 1
+            guard records.firstLoadPending else { return (false, 0) }
+            records.firstLoadPending = false
+            return (true, records.firstLoadDelay)
+        }
+        if slow.0 {
+            // The read takes its time and then fails, the way a slow disk does.
+            Thread.sleep(forTimeInterval: slow.1)
+            throw RecordingRhythmStoreError.readFailed
+        }
+        let first = calendar.startOfDay(for: days.lowerBound)
+        let last = calendar.startOfDay(for: days.upperBound)
+        let found = try lock.withLock { records -> [RhythmDayRecord] in
+            if records.failsLoad { throw RecordingRhythmStoreError.readFailed }
+            return records.byDay.values
+                .filter { $0.day >= first && $0.day <= last }
+                .filter { !records.refusedDays.contains($0.day) }
+                .sorted { $0.day < $1.day }
+        }
+        // The read is appended when it finishes: the reads run in the background, so the order is
+        // the order of completion, not the order of the requests.
+        lock.withLock { $0.requestedRanges.append(days) }
+        return found
+    }
+
+    func recordedDays() throws -> [Date] {
+        lock.withLock { records in Set(records.byDay.keys).union(records.refusedDays).sorted() }
+    }
+
+    func delete(before date: Date) throws {
+        let cutoff = calendar.startOfDay(for: date)
+        lock.withLock { $0.byDay = $0.byDay.filter { $0.key >= cutoff } }
+    }
+}
+
+/// A write that did not land, or a read that failed.
+enum RecordingRhythmStoreError: LocalizedError {
+    case writeFailed
+    case readFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .writeFailed:
+            "The rhythm history could not be written."
+        case .readFailed:
+            "The rhythm history could not be read."
+        }
     }
 }

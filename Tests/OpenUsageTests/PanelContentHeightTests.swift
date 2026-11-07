@@ -59,7 +59,9 @@ final class PanelContentHeightTests: QuietWindowTestCase {
         }
         defer { NotificationCenter.default.removeObserver(observer) }
 
-        let segmentWidth = (PanelMetrics.width - 2 * PanelMetrics.margin) / 2
+        // The tab bar splits its width between the tabs it has, so the click lands on the tab
+        // under test whichever tabs there are.
+        let segmentWidth = (PanelMetrics.width - 2 * PanelMetrics.margin) / CGFloat(DashboardTab.allCases.count)
         let index = CGFloat(DashboardTab.allCases.firstIndex(of: to) ?? 0)
         click(CGPoint(x: PanelMetrics.margin + segmentWidth * (index + 0.5), y: PanelMetrics.margin + 14), hosted.panel, hosted.host)
         try await waitUntil { hosted.popover.dashboardTab == to && abs(hosted.panel.frame.height - start) > 1 }

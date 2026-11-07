@@ -17,6 +17,17 @@ enum ProgressFormat: Hashable, Sendable, Codable {
         }
     }
 
+    /// Whether the metric counts money. The share of a money budget is the rate at which money is
+    /// spent, which this fork does not chart.
+    var isMoney: Bool {
+        switch self {
+        case .dollars, .currency:
+            return true
+        case .percent, .count:
+            return false
+        }
+    }
+
     var currencyCode: String? {
         guard case .currency(let code) = self else { return nil }
         return code

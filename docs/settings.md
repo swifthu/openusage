@@ -6,7 +6,7 @@ Alerts, and Advanced. Changes apply at once. Hover the ⓘ beside a setting to s
 ## General
 
 - **Launch at Login.** Starts OpenUsage when you sign in to your Mac.
-- **Default Tab.** Priority or All Usage, the tab the panel opens to.
+- **Default Tab.** Priority, All Usage or Rhythm, the tab the panel opens to.
 - **Global Shortcut.** Opens and closes the panel from any app. Click the field and press the keys.
 - **Refresh Interval.** How often OpenUsage asks every account for fresh usage, from 30 seconds to
   5 minutes. 5 minutes by default. A shorter interval keeps the menu bar fresher and asks the
@@ -45,6 +45,21 @@ always stays under Warning: moving one onto the other pushes the other 5% along.
   the window. Off by default.
 
 Click a limit's amount or reset on the dashboard to flip either one.
+
+## Usage rhythm
+
+Both of these are under **Settings → Display → Usage**.
+
+- **Record Usage Rhythm.** Keeps how fast your limits fill up, so the **Rhythm** tab can show when
+  your busy hours are. On by default. Turning it off stops the recording and keeps what was already
+  recorded.
+- **Delete Rhythm History.** Removes the recorded history from this Mac, after asking for a
+  confirmation. The button is greyed out when there is no history to remove; it is checked when the
+  screen is opened, so a history that is recorded afterwards is only removed once the screen is
+  opened again. Stopping the recording and deleting the history are two different things, and this
+  is the second one.
+
+See [Usage Rhythm](rhythm.md).
 
 ## Notifications
 

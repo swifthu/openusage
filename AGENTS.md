@@ -193,7 +193,31 @@ Upstream has none of these; the fork keeps them across a sync.
 - **No yellow of the project's own.** `SeverityPaletteTests` keeps the sources from inventing a
   yellow the app does not use: take the warning colour from `Theme.severityColor`.
 
-### 5. Sync cadence
+### 5. The fork records usage rhythm
+
+Upstream has none of this; the fork keeps it across a sync.
+
+- The **Rhythm** tab records how fast each account's provider-reported window fills up, and shows
+  when the peak hours are. It records the share of each window that was used — the provider's own
+  reported number against its own limit — sampled on every refresh and differenced between
+  readings. No log scanning, no spend estimate, no pricing and no absolute token count anywhere
+  in it, which is what section 3's body bans.
+- The chart carries the share of each **recorded** window, and a provider's money is not one of
+  them: a dollar budget is the rate at which money is spent, and section 3's body bans spend, so
+  a metric whose unit is money is not recorded at all. The shares that are recorded are added up,
+  including the windows of different lengths.
+- Section 3's heading also says "no trend". The rhythm is a time series, so this is the fork's
+  deliberate reading of that heading: the ban is on trends of *spend*, and the rhythm charts the
+  provider's own reported window. It is recorded here so that a sync does not quietly drop it.
+- The history lives in `~/Library/Application Support/OpenUsage/rhythm/<bundle id>/`, one file per
+  local day, and is never uploaded. The Architecture section further up also forbids reading other
+  tools' credentials, files and logs; the rhythm reads none of them.
+- Keep the recording and the analysis in `Sources/OpenUsage/Rhythm/`, and the views in
+  `Sources/OpenUsage/Views/Rhythm*.swift`. A future cloud store is one more `RhythmStore`
+  implementation, not a change to the recorder or the chart — and it needs its own stable identity
+  for an account, because the account's card id is local to this Mac.
+
+### 6. Sync cadence
 
 - Sync with upstream every 2–4 weeks. Upstream's `main` moves fast and rewrites whole subsystems.
 - Before syncing, read `docs/superpowers/plans/` — the migration assessment and the MiniMax design

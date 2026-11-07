@@ -20,6 +20,14 @@ struct SettingsScreen: View {
     @State private var notificationsDenied = false
     @State private var scrollPosition = ScrollPosition(edge: .top)
 
+    /// Whether there is any rhythm history to delete. It is state, not a computed property, so
+    /// the button can go back to being disabled after the history is gone.
+    @State private var hasRhythmHistory = false
+    /// What to tell the user when the history could not be deleted.
+    @State private var rhythmErrorMessage: String?
+    /// Whether the user is asked to confirm the deletion of the history.
+    @State private var isConfirmingRhythmDeletion = false
+
     /// How far a grouped `Form` already sets its cards in from every edge.
     private static let formRowInset: CGFloat = 20
 
@@ -91,6 +99,7 @@ struct SettingsScreen: View {
     @ViewBuilder
     private var displayTab: some View {
         @Bindable var dataStore = dataStore
+        @Bindable var rhythmSettings = container.rhythmSettings
         Section {
             PriorityIconsPreview()
             picker("Show In Menu Bar", selection: $dataStore.menuBarLimit, options: MenuBarLimit.allCases.map { ($0, $0.label) })
@@ -123,13 +132,37 @@ struct SettingsScreen: View {
                 .onChange(of: appearance) { AppearanceSetting.applyCurrent() }
             picker("Time Format", selection: $timeFormat, options: TimeFormatSetting.allCases.map { ($0, $0.label) })
         }
-        Section("Usage") {
+        Section {
             picker("Show Usage As", selection: $dataStore.meterStyle, options: WidgetDisplayMode.allCases.map { ($0, $0.label) })
             picker("Reset Times", selection: $dataStore.resetDisplayMode, options: ResetDisplayMode.allCases.map { ($0, $0.label) })
             Toggle(isOn: $dataStore.showsPaceMarks) {
                 titled("Pace Marks", info: "Where usage would be at an even pace")
             }
+            Toggle(isOn: $rhythmSettings.isEnabled) {
+                titled("Record Usage Rhythm", info: "Keeps how fast your limits fill up, on this Mac")
+            }
+            Button("Delete Rhythm History") {
+                isConfirmingRhythmDeletion = true
+            }
+            .disabled(!hasRhythmHistory)
+            .confirmationDialog(
+                "Delete Rhythm History?",
+                isPresented: $isConfirmingRhythmDeletion,
+                titleVisibility: .visible
+            ) {
+                Button("Delete Rhythm History", role: .destructive) { deleteRhythmHistory() }
+            } message: {
+                Text("Every recorded day is deleted from this Mac. The recording stays on, and today's file is written again on the next refresh.")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: {
+            Text("Usage")
+        } footer: {
+            if let rhythmErrorMessage {
+                SettingsNote(rhythmErrorMessage, isWarning: true)
+            }
         }
+        .task { refreshRhythmHistoryState() }
     }
 
     /// The refresh cadence, adjustable from 30 seconds to 5 minutes. The value lives in
@@ -299,6 +332,38 @@ struct SettingsScreen: View {
 
     private func checkNotificationPermission() {
         Task { notificationsDenied = await !AppNotifications.shared.requestAuthorization() }
+    }
+
+    /// Whether there is anything to delete. The history is read from the store, not counted from
+    /// the settings, so the button is only enabled when there is a file to remove.
+    private func refreshRhythmHistoryState() {
+        do {
+            hasRhythmHistory = !(try container.rhythm.store.recordedDays().isEmpty)
+        } catch {
+            // A history that cannot be read is not an empty one: say so instead of offering a
+            // button that would fail the same way.
+            hasRhythmHistory = false
+            AppLog.warn(.rhythm, "the rhythm history could not be read: \(error.localizedDescription)")
+            rhythmErrorMessage = "The rhythm history could not be read: \(error.localizedDescription)"
+        }
+    }
+
+    private func deleteRhythmHistory() {
+        do {
+            // The recorder writes the day it is on again on the next refresh, so the history is
+            // deleted through the recorder, which lets go of what it holds as well.
+            try container.rhythm.deleteHistory()
+            AppLog.notice(.rhythm, "the rhythm history was deleted")
+            rhythmErrorMessage = nil
+            refreshRhythmHistoryState()
+        } catch {
+            // Say what happened rather than what was meant: the files are still there, so the
+            // button stays as it is. The message of the failed deletion is kept: a state refresh
+            // that failed as well must not hide it.
+            AppLog.warn(.rhythm, "the rhythm history could not be deleted: \(error.localizedDescription)")
+            rhythmErrorMessage = "The rhythm history could not be deleted: \(error.localizedDescription)"
+            hasRhythmHistory = true
+        }
     }
 }
 
