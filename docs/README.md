@@ -5,6 +5,7 @@ How the app behaves. If the app and a page here disagree, that is a bug.
 ## The app
 
 - [Dashboard](dashboard.md): the Priority, All Usage and Rhythm tabs, right-click menus, reordering, shortcuts
+- [Usage rhythm](rhythm.md): the Rhythm tab, what it records, and how to stop or remove it
 - [Accounts](accounts.md): adding, renaming, and removing accounts, and how sign-in works
 - [CLIProxyAPI hubs](cliproxyapi.md): the Claude, ChatGPT, Antigravity, Devin, and Grok logins of a
   CLIProxyAPI server
