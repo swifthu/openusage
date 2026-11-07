@@ -51,6 +51,7 @@
 - `Tests/OpenUsageTests/RhythmStoreTests.swift`
 - `Tests/OpenUsageTests/RhythmRecorderTests.swift`
 - `Tests/OpenUsageTests/RhythmRecorderTestsRules.swift`
+- `Tests/OpenUsageTests/RhythmRecorderMidnightTests.swift`
 - `Tests/OpenUsageTests/RhythmAnalyticsTests.swift`
 - `Tests/OpenUsageTests/RhythmChartTests.swift`
 - `Tests/OpenUsageTests/RhythmViewTests.swift`
@@ -1459,6 +1460,30 @@ final class RhythmRecorderTests: XCTestCase {
         XCTAssertEqual(second.points.reduce(0, +), 0.15, accuracy: 0.0001)
     }
 
+    /// The error of a failed write is only cleared when the day that failed is written. The
+    /// success of another day does not hide it from the user.
+    func testTheErrorOfAFailedWriteIsNotClearedByAnotherDaysSuccess() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: moment(0))!
+
+        // The write of the day that ended fails.
+        store.setFailing(true, on: moment(0))
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(23, 50))
+        recorder.flush(at: moment(23, 51))
+        XCTAssertNotNil(recorder.lastWriteError)
+
+        // The next day is written and its write lands.
+        recorder.record(snapshot(fraction: 0.3), kind: .claude, at: nextDay)
+        recorder.flush(at: nextDay)
+        XCTAssertNotNil(recorder.lastWriteError, "the day that could not be written is still not on disk")
+
+        // The day that failed is written, so the error goes away.
+        store.setFailing(false, on: moment(0))
+        recorder.flush(at: nextDay.addingTimeInterval(600))
+        XCTAssertNil(recorder.lastWriteError)
+    }
+
     private func snapshot(fraction: Double, resetsAt: Date? = nil, providerID: String = "account-1") -> ProviderSnapshot {
         ProviderSnapshot(
             providerID: providerID,
@@ -1475,6 +1500,760 @@ final class RhythmRecorderTests: XCTestCase {
     }
 }
 ```
+
+The rules of the difference are many, and the file that holds them grows: the plan splits them
+into their own file so that neither file passes five hundred lines.
+
+Create `Tests/OpenUsageTests/RhythmRecorderTestsRules.swift`:
+
+```swift
+import XCTest
+@testable import OpenUsage
+
+/// The rules of the difference: what a snapshot yields, and what two readings make of each other.
+///
+/// A window that reset, a gap longer than the window and a metric that is not a share of a window
+/// burn nothing: the use before the reset was never read, and money is not a window.
+@MainActor
+final class RhythmRecorderTestsRules: XCTestCase {
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        return calendar
+    }
+
+    private func moment(_ hour: Int, _ minute: Int = 0) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: hour, minute: minute))!
+    }
+
+    private func reading(
+        fraction: Double,
+        at: Date,
+        resetsAt: Date? = nil,
+        key: String = "account-1/Session"
+    ) -> RhythmReading {
+        RhythmReading(
+            key: key,
+            kind: .claude,
+            label: "Session",
+            windowMs: MetricPeriod.sessionMs,
+            fraction: fraction,
+            resetsAt: resetsAt,
+            at: at
+        )
+    }
+
+    func testTheDifferenceBetweenTwoReadingsIsTheBurnedShare() {
+        let delta = RhythmDifferencer.delta(
+            from: reading(fraction: 0.2, at: moment(14, 0)),
+            to: reading(fraction: 0.35, at: moment(14, 5)),
+            day: moment(0),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(delta.points, 0.15, accuracy: 0.0001)
+        XCTAssertEqual(delta.buckets.count, 1)
+        XCTAssertEqual(delta.buckets[0].index, 168)
+        XCTAssertEqual(delta.buckets[0].share, 1, accuracy: 0.0001)
+    }
+
+    func testAWindowThatResetBurnsNothing() {
+        let delta = RhythmDifferencer.delta(
+            from: reading(fraction: 0.8, at: moment(14, 0), resetsAt: moment(14, 1)),
+            to: reading(fraction: 0.05, at: moment(14, 5), resetsAt: moment(19, 0)),
+            day: moment(0),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(delta.points, 0)
+        XCTAssertTrue(delta.buckets.isEmpty)
+    }
+
+    func testAWindowThatResetIsNoticedEvenWhenTheReadingWentUp() {
+        // The old window was nearly empty and the new one is nearly full: the reading went up, but
+        // the window reset in between, so nothing was burned.
+        let delta = RhythmDifferencer.delta(
+            from: reading(fraction: 0.2, at: moment(14, 0), resetsAt: moment(14, 1)),
+            to: reading(fraction: 0.9, at: moment(14, 5), resetsAt: moment(19, 0)),
+            day: moment(0),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(delta.points, 0)
+    }
+
+    func testWithoutAResetInstantAFallingReadingMeansTheWindowReset() {
+        let delta = RhythmDifferencer.delta(
+            from: reading(fraction: 0.8, at: moment(14, 0)),
+            to: reading(fraction: 0.05, at: moment(14, 5)),
+            day: moment(0),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(delta.points, 0)
+    }
+
+    func testAGapLongerThanTheWindowBurnsNothing() {
+        let delta = RhythmDifferencer.delta(
+            from: reading(fraction: 0.2, at: moment(10, 0), resetsAt: moment(15, 0)),
+            to: reading(fraction: 0.4, at: moment(16, 0), resetsAt: moment(21, 0)),
+            day: moment(0),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(delta.points, 0)
+    }
+
+    func testTheBurnedShareNeverExceedsTheWholeWindow() {
+        let delta = RhythmDifferencer.delta(
+            from: reading(fraction: 0.0, at: moment(14, 0), resetsAt: moment(19, 0)),
+            to: reading(fraction: 4.0, at: moment(14, 5), resetsAt: moment(19, 0)),
+            day: moment(0),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(delta.points, 1, accuracy: 0.0001)
+    }
+
+    /// A burn that is bigger than the whole window was clamped, and the chart shows a full bar
+    /// that nobody burned. The recorder says so in the log, so the flag says it here.
+    func testABurnThatIsClampedIsMarkedAsClamped() {
+        let delta = RhythmDifferencer.delta(
+            from: reading(fraction: 0.0, at: moment(14, 0), resetsAt: moment(19, 0)),
+            to: reading(fraction: 4.0, at: moment(14, 5), resetsAt: moment(19, 0)),
+            day: moment(0),
+            calendar: calendar
+        )
+
+        XCTAssertTrue(delta.clamped, "the provider's limit probably changed")
+    }
+
+    func testABurnThatIsNotClampedIsNotMarkedAsClamped() {
+        let delta = RhythmDifferencer.delta(
+            from: reading(fraction: 0.2, at: moment(14, 0), resetsAt: moment(19, 0)),
+            to: reading(fraction: 0.35, at: moment(14, 5), resetsAt: moment(19, 0)),
+            day: moment(0),
+            calendar: calendar
+        )
+
+        XCTAssertFalse(delta.clamped)
+    }
+
+    /// The share of a money budget is the rate at which money is spent, and this fork does not
+    /// chart spending. A count is a share of a window like any other.
+    func testAMoneyMetricIsNotRecorded() {
+        let snapshot = ProviderSnapshot(
+            providerID: "account-1",
+            displayName: "OpenRouter",
+            lines: [
+                .progress(label: "Budget", used: 4, limit: 20, format: .dollars, resetsAt: moment(19, 0), periodDurationMs: MetricPeriod.dayMs),
+                .progress(label: "Key Limit", used: 2, limit: 10, format: .dollars, resetsAt: moment(19, 0), periodDurationMs: MetricPeriod.dayMs),
+                .progress(label: "Free Requests", used: 3, limit: 50, format: .count(suffix: "requests"), resetsAt: moment(19, 0), periodDurationMs: MetricPeriod.dayMs)
+            ]
+        )
+
+        let readings = RhythmRecorder.readings(from: snapshot, kind: .openrouter, at: moment(14, 0))
+
+        XCTAssertEqual(readings.count, 1, "only the count is a share of a window")
+        XCTAssertEqual(readings[0].label, "Free Requests")
+    }
+
+    func testOnlySessionSizedWindowsAreRecorded() {
+        let snapshot = ProviderSnapshot(
+            providerID: "account-1",
+            displayName: "Claude",
+            lines: [
+                .progress(label: "Session", used: 20, limit: 100, format: .percent, resetsAt: moment(19, 0), periodDurationMs: MetricPeriod.sessionMs),
+                .progress(label: "Weekly", used: 30, limit: 100, format: .percent, resetsAt: moment(100, 0), periodDurationMs: MetricPeriod.weekMs),
+                .progress(label: "No Window", used: 10, limit: 100, format: .percent),
+                .values(label: "Balance", values: []),
+                .badge(label: "Top Up", text: "Ready")
+            ]
+        )
+
+        let readings = RhythmRecorder.readings(from: snapshot, kind: .claude, at: moment(14, 0))
+
+        XCTAssertEqual(readings.count, 1)
+        XCTAssertEqual(readings[0].label, "Session")
+        XCTAssertEqual(readings[0].fraction, 0.2, accuracy: 0.0001)
+        XCTAssertEqual(readings[0].key, "account-1/Session")
+    }
+
+    func testAMetricWithoutALimitIsNotRecorded() {
+        let snapshot = ProviderSnapshot(
+            providerID: "account-1",
+            displayName: "Claude",
+            lines: [.progress(label: "Session", used: 20, limit: 0, format: .percent, resetsAt: moment(19, 0), periodDurationMs: MetricPeriod.sessionMs)]
+        )
+
+        XCTAssertTrue(RhythmRecorder.readings(from: snapshot, kind: .claude, at: moment(14, 0)).isEmpty)
+    }
+}
+```
+
+The midnight is the one moment the recorder cannot get wrong, so it gets a file of its own:
+the burn that crosses the midnight is booked on both days, and the day that ended is taken
+back from the store before anything is booked into it.
+
+Create `Tests/OpenUsageTests/RhythmRecorderMidnightTests.swift`:
+
+```swift
+import XCTest
+@testable import OpenUsage
+
+/// The midnight the recorder has to survive: a burn that crosses it, and a day that ended while
+/// the app was closed.
+///
+/// These tests write to a real file store in a temporary directory, because the bug they cover is
+/// the file being replaced: a store that only remembers what it was told would not show it.
+@MainActor
+final class RhythmRecorderMidnightTests: XCTestCase {
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        return calendar
+    }
+
+    /// A moment of the day the tests are about.
+    private func moment(_ hour: Int, _ minute: Int = 0) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: hour, minute: minute))!
+    }
+
+    /// The midnight that ends the day the tests are about.
+    private var nextDay: Date {
+        calendar.date(byAdding: .day, value: 1, to: moment(0))!
+    }
+
+    /// Ten minutes past the midnight.
+    private var afterMidnight: Date {
+        nextDay.addingTimeInterval(600)
+    }
+
+    private func store() -> (FileRhythmStore, URL) {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("rhythm-midnight-\(UUID().uuidString)", isDirectory: true)
+        return (FileRhythmStore(directory: directory, calendar: calendar), directory)
+    }
+
+    private func recorder(_ store: FileRhythmStore) -> RhythmRecorder {
+        RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+    }
+
+    /// A snapshot with one line per label. The window runs on past the midnight, so a reading
+    /// after it is a reading of the same window and not of a reset one.
+    private func snapshot(
+        fraction: Double,
+        at now: Date,
+        providerID: String = "account-1",
+        labels: [String] = ["Session"]
+    ) -> ProviderSnapshot {
+        ProviderSnapshot(
+            providerID: providerID,
+            displayName: "Claude",
+            lines: labels.map { label in
+                .progress(
+                    label: label,
+                    used: fraction * 100,
+                    limit: 100,
+                    format: .percent,
+                    resetsAt: nextDay.addingTimeInterval(19 * 3600),
+                    periodDurationMs: MetricPeriod.sessionMs
+                )
+            },
+            refreshedAt: now
+        )
+    }
+
+    /// The app was closed across the midnight and opened again: the recorder holds no part of the
+    /// day that ended, so it has to take that day back from the store before it books anything
+    /// into it. The write of the file store replaces the whole file, so a day that holds only a
+    /// fragment of itself would take the whole day with it.
+    func testTheDayThatEndedKeepsItsWholeDayOnDisk() throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let day = moment(0)
+        // The day that ended, with a whole day of readings on disk.
+        let whole = RhythmSeriesRecord(
+            key: "account-1/Session",
+            kind: .claude,
+            label: "Session",
+            windowMs: MetricPeriod.sessionMs,
+            points: Array(repeating: 0.01, count: 288),
+            samples: Array(repeating: 1, count: 288)
+        )
+        try store.save(RhythmDayRecord(day: day, series: [whole]))
+
+        let recorder = recorder(store)
+        // The app was closed at 23:50 and opened again at 00:10. The cache holds the reading of
+        // the moment it was closed, and it is the baseline of the first reading of this run.
+        recorder.adoptBaseline(snapshot(fraction: 0.4, at: moment(23, 50)), kind: .claude)
+        recorder.record(snapshot(fraction: 0.55, at: afterMidnight), kind: .claude, at: afterMidnight)
+
+        let written = try XCTUnwrap(store.load(day: day))
+        let series = try XCTUnwrap(written.series.first)
+        // The whole day is still there: every bucket of it still holds its reading.
+        XCTAssertEqual(series.samples.reduce(0, +), 288)
+        // And the part of the burn that crossed the midnight is added to it: ten of the twenty
+        // minutes fell before the midnight, so half of the 0.15 is on the day that ended.
+        XCTAssertEqual(series.points.reduce(0, +), 2.88 + 0.075, accuracy: 0.0001)
+        XCTAssertEqual(series.points[286], 0.01 + 0.0375, accuracy: 0.0001)
+        XCTAssertEqual(series.points[287], 0.01 + 0.0375, accuracy: 0.0001)
+    }
+
+    /// The rollover is decided per series: every series that crosses the midnight books the part
+    /// of its burn that fell before it, and not only the first one.
+    func testEverySeriesThatCrossesTheMidnightIsBooked() throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = recorder(store)
+
+        // The evening before the midnight: two series of the first account and the series of a
+        // second account are read.
+        recorder.record(
+            snapshot(fraction: 0.4, at: moment(23, 50), labels: ["Session", "Other"]),
+            kind: .claude,
+            at: moment(23, 50)
+        )
+        recorder.record(
+            snapshot(fraction: 0.2, at: moment(23, 50), providerID: "account-2"),
+            kind: .claude,
+            at: moment(23, 50)
+        )
+
+        // After the midnight every one of them crosses it.
+        recorder.record(
+            snapshot(fraction: 0.55, at: afterMidnight, labels: ["Session", "Other"]),
+            kind: .claude,
+            at: afterMidnight
+        )
+        recorder.record(
+            snapshot(fraction: 0.35, at: afterMidnight, providerID: "account-2"),
+            kind: .claude,
+            at: afterMidnight
+        )
+
+        let ended = try XCTUnwrap(store.load(day: moment(0)))
+        XCTAssertEqual(ended.series.count, 3)
+        for series in ended.series {
+            // Half of the burn fell before the midnight, so that half is on the day that ended —
+            // for every series, and not only for the first one that crossed.
+            XCTAssertEqual(series.points.reduce(0, +), 0.075, accuracy: 0.0001)
+        }
+
+        recorder.flush(at: nextDay.addingTimeInterval(3600))
+        let begun = try XCTUnwrap(store.load(day: nextDay))
+        XCTAssertEqual(begun.series.count, 3)
+        for series in begun.series {
+            // The other half is on the day that began, so nothing of the burn is lost.
+            XCTAssertEqual(series.points.reduce(0, +), 0.075, accuracy: 0.0001)
+        }
+    }
+}
+```
+import XCTest
+@testable import OpenUsage
+
+/// The recorder differences one refresh against the last one, so the history says how much of a
+/// window was burned and when. The rules of the difference themselves are in
+/// `RhythmRecorderTestsRules`.
+@MainActor
+final class RhythmRecorderTests: XCTestCase {
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        return calendar
+    }
+
+    private func moment(_ hour: Int, _ minute: Int = 0) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: hour, minute: minute))!
+    }
+
+    func testTheRecorderAccumulatesIntoTheHourOfTheReading() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        recorder.record(snapshot(fraction: 0.35), kind: .claude, at: moment(14, 5))
+
+        let pending = try XCTUnwrap(recorder.pendingSeries.first)
+        // The interval 14:00 - 14:05 lies wholly in the first bucket, so it carries all of it.
+        XCTAssertEqual(pending.points[168], 0.15, accuracy: 0.0001)
+        // Each reading is counted in the bucket it was taken in.
+        XCTAssertEqual(pending.samples[168], 1)
+        XCTAssertEqual(pending.samples[169], 1)
+    }
+
+    func testTheRecorderSplitsAGapAcrossTheBucketsItCovers() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        recorder.record(snapshot(fraction: 0.5), kind: .claude, at: moment(16, 0))
+
+        let pending = try XCTUnwrap(recorder.pendingSeries.first)
+        // The gap covers 14:00 to 16:00: 24 buckets, each carrying the same share of the 0.3
+        // that was burned, so the burn shows as a flat two hours rather than one tall bar.
+        XCTAssertEqual(pending.points[168], 0.0125, accuracy: 0.0001)
+        XCTAssertEqual(pending.points[180], 0.0125, accuracy: 0.0001)
+        XCTAssertEqual(pending.points[191], 0.0125, accuracy: 0.0001)
+        XCTAssertEqual(pending.points[168...191].reduce(0, +), 0.3, accuracy: 0.0001)
+    }
+
+    func testNothingIsRecordedWhileTheSettingIsOff() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let defaults = isolatedDefaults()
+        let settings = RhythmSettings(defaults: defaults)
+        settings.isEnabled = false
+        let recorder = RhythmRecorder(store: store, settings: settings, calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+
+        XCTAssertTrue(recorder.pendingSeries.isEmpty)
+        XCTAssertTrue(store.saved.isEmpty)
+    }
+
+    func testFlushingWritesTheDayAndClearsIt() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        recorder.flush(at: moment(14, 1))
+
+        XCTAssertEqual(store.saved.count, 1)
+        XCTAssertEqual(store.saved[0].day, moment(0))
+        XCTAssertTrue(recorder.pendingSeries.isEmpty)
+    }
+
+    func testANewDayFlushesTheOldOneFirst() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(23, 58))
+        recorder.record(snapshot(fraction: 0.3), kind: .claude, at: calendar.date(byAdding: .day, value: 1, to: moment(0))!)
+
+        XCTAssertEqual(store.saved.count, 1)
+        XCTAssertEqual(store.saved[0].day, moment(0))
+    }
+
+    func testTheWriteThatClosesTheDayCarriesTheDaysBurn() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2, resetsAt: moment(23, 59)), kind: .claude, at: moment(23, 50))
+        recorder.record(snapshot(fraction: 0.35, resetsAt: moment(23, 59)), kind: .claude, at: moment(23, 58))
+        recorder.record(snapshot(fraction: 0.1, resetsAt: moment(23, 59)), kind: .claude, at: calendar.date(byAdding: .day, value: 1, to: moment(0))!)
+
+        let written = try XCTUnwrap(store.saved.first { $0.day == moment(0) })
+        let series = try XCTUnwrap(written.series.first)
+        // The 0.15 that was burned between 23:50 and 23:58 went out with the day it belongs to:
+        // 300 of the 480 seconds fell into the bucket of 23:50 and 180 into the one of 23:55.
+        XCTAssertEqual(series.points[286], 0.09375, accuracy: 0.0001)
+        XCTAssertEqual(series.points[287], 0.05625, accuracy: 0.0001)
+        XCTAssertEqual(series.samples[286], 1)
+        XCTAssertEqual(series.samples[287], 1)
+    }
+
+    /// A burn that crosses midnight is booked on both days: the part before midnight on the day
+    /// that ended, the part after midnight on the day that began. The window did not reset in
+    /// between, so nothing of the burn is lost.
+    func testABurnThatCrossesMidnightIsBookedOnBothDays() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: moment(0))!
+        // The window runs on past the midnight, so the two readings describe the same window.
+        let resets = calendar.date(byAdding: .day, value: 1, to: moment(19, 0))!
+
+        recorder.record(snapshot(fraction: 0.4, resetsAt: resets), kind: .claude, at: moment(23, 50))
+        recorder.record(snapshot(fraction: 0.55, resetsAt: resets), kind: .claude, at: nextDay.addingTimeInterval(600))
+
+        // The part before the midnight belongs to the day that ended. Ten of the twenty minutes
+        // fell in it, so each of its two buckets carries a quarter of the 0.15 that was burned.
+        let ended = try XCTUnwrap(store.saved.first { $0.day == moment(0) })
+        let endedSeries = try XCTUnwrap(ended.series.first)
+        XCTAssertEqual(endedSeries.points[286], 0.0375, accuracy: 0.0001)
+        XCTAssertEqual(endedSeries.points[287], 0.0375, accuracy: 0.0001)
+
+        // The part after the midnight belongs to the day that began.
+        let begun = try XCTUnwrap(recorder.pendingSeries.first)
+        XCTAssertEqual(begun.points[0], 0.0375, accuracy: 0.0001)
+        XCTAssertEqual(begun.points[1], 0.0375, accuracy: 0.0001)
+
+        // The whole burn is booked, not one part of it.
+        XCTAssertEqual(
+            endedSeries.points.reduce(0, +) + begun.points.reduce(0, +),
+            0.15,
+            accuracy: 0.0001
+        )
+    }
+
+    func testTheDayIsKeptUntilItsWriteLands() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        store.setFailing(true)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: moment(0))!
+
+        recorder.record(snapshot(fraction: 0.2, resetsAt: moment(23, 59)), kind: .claude, at: moment(23, 50))
+        recorder.record(snapshot(fraction: 0.35, resetsAt: moment(23, 59)), kind: .claude, at: moment(23, 58))
+        recorder.record(snapshot(fraction: 0.1, resetsAt: moment(23, 59)), kind: .claude, at: nextDay)
+
+        // The write of the day that ended failed, so the day is still in memory.
+        XCTAssertTrue(store.saved.isEmpty)
+        XCTAssertTrue(recorder.pendingDays.contains(moment(0)))
+
+        store.setFailing(false)
+        recorder.record(
+            snapshot(fraction: 0.2, resetsAt: moment(23, 59)),
+            kind: .claude,
+            at: calendar.date(byAdding: .hour, value: 2, to: nextDay)!
+        )
+
+        // The day that could not be written is taken out by the next write that lands.
+        let written = try XCTUnwrap(store.saved.first { $0.day == moment(0) })
+        let series = try XCTUnwrap(written.series.first)
+        XCTAssertEqual(series.points[286], 0.09375, accuracy: 0.0001)
+        XCTAssertEqual(series.samples[286], 1)
+        XCTAssertEqual(series.samples[287], 1)
+    }
+
+    func testTurningTheRecordingOffWritesWhatWasAlreadyRecorded() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let settings = RhythmSettings(defaults: isolatedDefaults())
+        let recorder = RhythmRecorder(store: store, settings: settings, calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        settings.isEnabled = false
+        recorder.record(snapshot(fraction: 0.35), kind: .claude, at: moment(14, 5))
+
+        let series = try XCTUnwrap(store.saved.first?.series.first)
+        // What was recorded before the recording was turned off is on disk.
+        XCTAssertEqual(series.samples[168], 1)
+        XCTAssertEqual(series.points[168], 0, accuracy: 0.0001)
+        // The reading that arrived after the recording was turned off is not recorded.
+        XCTAssertEqual(series.samples[169], 0)
+    }
+
+    func testAFailedWriteIsNotTriedAgainForEveryReading() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        store.setFailing(true)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        recorder.record(snapshot(fraction: 0.35), kind: .claude, at: moment(14, 5))
+        XCTAssertEqual(store.saveAttempts, 1)
+
+        recorder.record(snapshot(fraction: 0.5), kind: .claude, at: moment(14, 6))
+        recorder.record(snapshot(fraction: 0.6), kind: .claude, at: moment(14, 7))
+        recorder.record(snapshot(fraction: 0.7), kind: .claude, at: moment(14, 8))
+
+        // The write that failed is not tried again for every reading that follows.
+        XCTAssertEqual(store.saveAttempts, 1)
+    }
+
+    func testWritingTheDayTwiceKeepsBothParts() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        recorder.flush(at: moment(14, 1))
+        recorder.record(snapshot(fraction: 0.35), kind: .claude, at: moment(14, 5))
+        recorder.flush(at: moment(14, 6))
+
+        // The second write replaces the record of the day, as the file store does.
+        XCTAssertEqual(store.saved.count, 1)
+        let series = try XCTUnwrap(store.saved.first?.series.first)
+        // The second write holds the burn of both readings, not only the one after the first write.
+        XCTAssertEqual(series.points[168], 0.15, accuracy: 0.0001)
+        XCTAssertEqual(series.samples[168], 1)
+        XCTAssertEqual(series.samples[169], 1)
+    }
+
+    func testTheRecorderContinuesADayAnotherRunStarted() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        var earlier = RhythmSeriesRecord(
+            key: "account-1/Session",
+            kind: .claude,
+            label: "Session",
+            windowMs: MetricPeriod.sessionMs,
+            points: Array(repeating: 0, count: 288),
+            samples: Array(repeating: 0, count: 288)
+        )
+        earlier.points[168] = 0.2
+        earlier.samples[168] = 1
+        try store.save(RhythmDayRecord(day: moment(0), series: [earlier]))
+
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        recorder.flush(at: moment(14, 1))
+
+        let series = try XCTUnwrap(store.saved.last?.series.first)
+        // The burn another run of the app recorded is still there.
+        XCTAssertEqual(series.points[168], 0.2, accuracy: 0.0001)
+        XCTAssertEqual(series.samples[168], 2)
+    }
+
+    func testADayThatIsAlreadyOnDiskIsLetGoWhenTheDayTurnsOver() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: moment(0))!
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(23, 58))
+        recorder.flush(at: moment(23, 59))
+        // The day is on disk now, so nothing of it is waiting to be written.
+        XCTAssertEqual(store.saved.count, 1)
+
+        recorder.record(snapshot(fraction: 0.3), kind: .claude, at: nextDay)
+
+        // The day that ended is on disk and has nothing new, so the recorder lets it go.
+        XCTAssertFalse(recorder.heldDays.contains(moment(0)))
+        // The day that is being recorded is still held, because it is still being added to.
+        XCTAssertTrue(recorder.heldDays.contains(nextDay))
+    }
+
+    func testAFailedWriteDoesNotStopTheRecordingFromBeingTurnedOff() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        store.setFailing(true)
+        let settings = RhythmSettings(defaults: isolatedDefaults())
+        let recorder = RhythmRecorder(store: store, settings: settings, calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        recorder.record(snapshot(fraction: 0.35), kind: .claude, at: moment(14, 5))
+        // The write that was due failed, and it is not tried again right away.
+        XCTAssertEqual(store.saveAttempts, 1)
+        XCTAssertTrue(store.saved.isEmpty)
+
+        store.setFailing(false)
+        settings.isEnabled = false
+        recorder.record(snapshot(fraction: 0.5), kind: .claude, at: moment(14, 6))
+
+        // Turning the recording off writes what was already recorded, even though the last write
+        // failed a moment ago.
+        XCTAssertEqual(store.saveAttempts, 2)
+        let series = try XCTUnwrap(store.saved.first?.series.first)
+        XCTAssertEqual(series.samples[168], 1)
+        XCTAssertEqual(series.samples[169], 1)
+        XCTAssertEqual(series.points[168], 0.15, accuracy: 0.0001)
+        // The reading that arrived after the recording was turned off is not recorded.
+        XCTAssertEqual(series.samples[170], 0)
+    }
+
+    func testADiskThatCannotBeWrittenIsNotWrittenOnEveryRefreshAfterTheRecordingIsTurnedOff() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        store.setFailing(true)
+        let settings = RhythmSettings(defaults: isolatedDefaults())
+        let recorder = RhythmRecorder(store: store, settings: settings, calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        XCTAssertEqual(store.saveAttempts, 0)
+
+        settings.isEnabled = false
+        recorder.record(snapshot(fraction: 0.35), kind: .claude, at: moment(14, 1))
+        // The first write after the switch is the user's own request, so it is tried even though
+        // the disk cannot be written.
+        XCTAssertEqual(store.saveAttempts, 1)
+
+        recorder.record(snapshot(fraction: 0.4), kind: .claude, at: moment(14, 2))
+        recorder.record(snapshot(fraction: 0.45), kind: .claude, at: moment(14, 3))
+        recorder.record(snapshot(fraction: 0.5), kind: .claude, at: moment(14, 4))
+
+        // The retries after the first one wait out the backoff, so a disk that cannot be written
+        // does not produce a warning for every refresh.
+        XCTAssertEqual(store.saveAttempts, 1)
+
+        // Once the backoff has passed, the write is tried again.
+        recorder.record(snapshot(fraction: 0.55), kind: .claude, at: moment(14, 7))
+        XCTAssertEqual(store.saveAttempts, 2)
+    }
+
+    func testTheStoreListsEveryDayOnce() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+
+        try store.save(RhythmDayRecord(day: moment(0), series: []))
+        try store.save(RhythmDayRecord(day: moment(0), series: []))
+
+        // A day that was written twice is one day, as it is for the file store.
+        XCTAssertEqual(try store.recordedDays(), [moment(0)])
+    }
+
+    func testForgettingTheReadingsStartsANewBaseline() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        // The account behind the slot may be a different one now, so its old reading is dropped.
+        recorder.forgetReadings(for: "account-1")
+        recorder.record(snapshot(fraction: 0.9), kind: .claude, at: moment(14, 5))
+
+        let pending = try XCTUnwrap(recorder.pendingSeries.first)
+        // The jump is that other account's state, not consumption, so nothing is booked.
+        XCTAssertEqual(pending.points.reduce(0, +), 0, accuracy: 0.0001)
+        // Both readings are samples.
+        XCTAssertEqual(pending.samples.reduce(0, +), 2)
+
+        // The reading after the new baseline is differenced against it.
+        recorder.record(snapshot(fraction: 0.95), kind: .claude, at: moment(14, 10))
+        XCTAssertEqual(recorder.pendingSeries.first?.points.reduce(0, +) ?? 0, 0.05, accuracy: 0.0001)
+    }
+
+    func testForgettingTheReadingsOfOneProviderLeavesTheOther() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        recorder.record(snapshot(fraction: 0.1, providerID: "account-2"), kind: .claude, at: moment(14, 0))
+
+        recorder.forgetReadings(for: "account-1")
+
+        recorder.record(snapshot(fraction: 0.9), kind: .claude, at: moment(14, 5))
+        recorder.record(snapshot(fraction: 0.25, providerID: "account-2"), kind: .claude, at: moment(14, 5))
+
+        let series = recorder.pendingSeries
+        let first = try XCTUnwrap(series.first { $0.key == "account-1/Session" })
+        let second = try XCTUnwrap(series.first { $0.key == "account-2/Session" })
+        // The forgotten provider booked nothing.
+        XCTAssertEqual(first.points.reduce(0, +), 0, accuracy: 0.0001)
+        // The other provider still books the 0.15 it burned.
+        XCTAssertEqual(second.points.reduce(0, +), 0.15, accuracy: 0.0001)
+    }
+
+    /// The error of a failed write is only cleared when the day that failed is written. The
+    /// success of another day does not hide it from the user.
+    func testTheErrorOfAFailedWriteIsNotClearedByAnotherDaysSuccess() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: moment(0))!
+
+        // The write of the day that ended fails.
+        store.setFailing(true, on: moment(0))
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(23, 50))
+        recorder.flush(at: moment(23, 51))
+        XCTAssertNotNil(recorder.lastWriteError)
+
+        // The next day is written and its write lands.
+        recorder.record(snapshot(fraction: 0.3), kind: .claude, at: nextDay)
+        recorder.flush(at: nextDay)
+        XCTAssertNotNil(recorder.lastWriteError, "the day that could not be written is still not on disk")
+
+        // The day that failed is written, so the error goes away.
+        store.setFailing(false, on: moment(0))
+        recorder.flush(at: nextDay.addingTimeInterval(600))
+        XCTAssertNil(recorder.lastWriteError)
+    }
+
+    private func snapshot(fraction: Double, resetsAt: Date? = nil, providerID: String = "account-1") -> ProviderSnapshot {
+        ProviderSnapshot(
+            providerID: providerID,
+            displayName: "Claude",
+            lines: [.progress(
+                label: "Session",
+                used: fraction * 100,
+                limit: 100,
+                format: .percent,
+                resetsAt: resetsAt ?? moment(19, 0),
+                periodDurationMs: MetricPeriod.sessionMs
+            )]
+        )
+    }
+}
 
 - [ ] **Step 2: Run the recorder tests to verify they fail**
 
@@ -1592,7 +2371,9 @@ enum RhythmDifferencer {
 ///
 /// A burn belongs to the days the interval covered. An interval that crosses midnight is booked
 /// on both days: the part before midnight on the day that ended, the rest on the day that began.
-/// The consumption before a provider's window resets is still not seen, and the recorder does not
+/// The rollover is decided per series — every series has a last reading of its own — so every
+/// series that crosses the midnight books the part of its burn that fell before it. The
+/// consumption before a provider's window resets is still not seen, and the recorder does not
 /// guess at it.
 @MainActor
 @Observable
@@ -1607,7 +2388,8 @@ final class RhythmRecorder {
     @ObservationIgnored private var days: [Date: [String: RhythmSeriesRecord]] = [:]
     /// What was written of each held day, by day.
     @ObservationIgnored private var written: [Date: [String: RhythmSeriesRecord]] = [:]
-    /// The day the readings belong to.
+    /// The day the recorder records on: the newest day a reading belongs to. A day that is not
+    /// the current one may be let go once it is on disk.
     @ObservationIgnored private var recordedDay: Date?
     /// When the day's buckets were last written.
     @ObservationIgnored private var lastFlush: Date?
@@ -1615,6 +2397,12 @@ final class RhythmRecorder {
     /// passed, so a disk that cannot be written does not fill the log with one warning per
     /// reading.
     @ObservationIgnored private var lastFailure: Date?
+    /// The day whose write failed. The error is only cleared when that day is written, so the
+    /// success of another day does not hide it from the user.
+    @ObservationIgnored private var failedDay: Date?
+    /// The days that could not be read back from the store. The recorder does not know what
+    /// their files hold, so it does not book a fragment of them over them.
+    @ObservationIgnored private var unreadableDays: Set<Date> = []
     /// How long the day's buckets are kept in memory before they are written.
     @ObservationIgnored private let flushInterval: TimeInterval
     /// How many writes have failed in a row.
@@ -1704,8 +2492,17 @@ final class RhythmRecorder {
         // The day's buckets are written before the new reading is folded in, so what is on disk is
         // always a whole number of readings and the newest one is still waiting to be written.
         checkpointIfDue(at: now)
+        // The days that ended are written after every series of the snapshot has booked its part,
+        // so the day on disk holds the part of every series that crossed the midnight and not
+        // only the part of the first one.
+        var ended: [Date] = []
         for reading in Self.readings(from: snapshot, kind: kind, at: now) {
-            apply(reading, at: now)
+            if let endedDay = apply(reading), !ended.contains(endedDay) {
+                ended.append(endedDay)
+            }
+        }
+        for day in ended {
+            write(day: day, at: now)
         }
     }
 
@@ -1717,6 +2514,7 @@ final class RhythmRecorder {
         try history.deleteAll(now: now, calendar: calendar)
         days.removeAll()
         written.removeAll()
+        unreadableDays.removeAll()
         // The baselines go with it: the next reading starts a new day rather than booking the
         // jump between the last reading and it as consumption.
         lastReading.removeAll()
@@ -1756,75 +2554,102 @@ final class RhythmRecorder {
         var wroteEverything = true
         var failed = false
         for day in days.keys.sorted() {
-            let series = days[day] ?? [:]
-            guard !pendingSeries(on: day).isEmpty else {
-                if day != recordedDay {
-                    // The day is on disk and nothing is waiting to be written, so the recorder
-                    // does not need to hold it any more.
-                    days.removeValue(forKey: day)
-                    written.removeValue(forKey: day)
-                }
-                continue
-            }
-            let record = RhythmDayRecord(day: day, series: series.values.sorted { $0.key < $1.key })
-            do {
-                try history.save(record)
-                written[day] = series
-                lastFlush = now
-                lastWriteError = nil
-                if day != recordedDay {
-                    // The day is on disk, so the recorder does not need to hold it any more.
-                    days.removeValue(forKey: day)
-                    written.removeValue(forKey: day)
-                }
-            } catch {
-                wroteEverything = false
-                failed = true
-                failures += 1
-                lastFailure = now
-                lastWriteError = error.localizedDescription
-                AppLog.warn(.rhythm, "could not write the rhythm history for \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
-                if failures >= 5 {
-                    AppLog.error(.rhythm, "the rhythm history stopped being written after \(failures) failures in a row")
-                }
-            }
+            let result = write(day: day, at: now)
+            wroteEverything = result.wrote && wroteEverything
+            failed = failed || result.failed
         }
         if !failed { failures = 0 }
         return wroteEverything
     }
 
-    private func apply(_ reading: RhythmReading, at now: Date) {
+    /// Writes one day, if it has something waiting to be written, and remembers what was written.
+    ///
+    /// A day that is on disk and has nothing waiting to be written is let go, unless it is the
+    /// day the recorder records on: that one is still being added to.
+    @discardableResult
+    private func write(day: Date, at now: Date) -> (wrote: Bool, failed: Bool) {
+        let series = days[day] ?? [:]
+        guard !pendingSeries(on: day).isEmpty else {
+            if day != recordedDay {
+                // The day is on disk and nothing is waiting to be written, so the recorder
+                // does not need to hold it any more.
+                days.removeValue(forKey: day)
+                written.removeValue(forKey: day)
+            }
+            return (true, false)
+        }
+        let record = RhythmDayRecord(day: day, series: series.values.sorted { $0.key < $1.key })
+        do {
+            try history.save(record)
+            written[day] = series
+            lastFlush = now
+            unreadableDays.remove(day)
+            if failedDay == day {
+                // The day that could not be written is on disk, so the user does not have to be
+                // told about it any more. The success of another day does not clear it.
+                lastWriteError = nil
+                failedDay = nil
+            }
+            if day != recordedDay {
+                // The day is on disk, so the recorder does not need to hold it any more.
+                days.removeValue(forKey: day)
+                written.removeValue(forKey: day)
+            }
+            return (true, false)
+        } catch {
+            failures += 1
+            lastFailure = now
+            failedDay = day
+            lastWriteError = error.localizedDescription
+            AppLog.warn(.rhythm, "could not write the rhythm history for \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
+            if failures >= 5 {
+                AppLog.error(.rhythm, "the rhythm history stopped being written after \(failures) failures in a row")
+            }
+            return (false, true)
+        }
+    }
+
+    /// Books a reading: the burn since this series' last reading, and the reading itself.
+    ///
+    /// Returns the day that ended, when this reading crossed the midnight. The part of the burn
+    /// that fell before the midnight belongs to that day, and the day is written once every
+    /// series of the snapshot has booked its part.
+    private func apply(_ reading: RhythmReading) -> Date? {
         let day = calendar.startOfDay(for: reading.at)
-        if recordedDay != day {
-            // The day rolled over. The burn since the last reading may have crossed midnight: the
-            // part before it belongs to the day that ended and the rest to the day that began. It
-            // is worked out first, while the day that ended is still in memory — writing that day
-            // before the burn is known would lose it.
-            let previous = lastReading[reading.key]
-            let endedDay = previous.map { calendar.startOfDay(for: $0.at) }
-            let endedBurn = previous.flatMap {
-                RhythmDifferencer.delta(from: $0, to: reading, day: calendar.startOfDay(for: $0.at), calendar: calendar)
+        // The day the reading belongs to is taken back from the store when the recorder does not
+        // hold it, so the part another run of the app recorded is not lost. A day that cannot be
+        // read is recorded anyway: the day the recorder is on is never left empty.
+        holdWholeDay(day)
+        var endedDay: Date?
+        if let previous = lastReading[reading.key] {
+            let previousDay = calendar.startOfDay(for: previous.at)
+            if previousDay != day {
+                // This series crossed the midnight. The burn since its last reading may have
+                // crossed it too: the part before it belongs to the day that ended and the rest
+                // to the day that began. The rollover is decided per series, so every series that
+                // crosses the midnight books the part that fell before it.
+                let endedBurn = RhythmDifferencer.delta(from: previous, to: reading, day: previousDay, calendar: calendar)
+                let begunBurn = RhythmDifferencer.delta(from: previous, to: reading, day: day, calendar: calendar)
+                // The day that ended is taken back from the store before anything is booked into
+                // it: the recorder may not hold it at all — the app was closed across the
+                // midnight — and the write of the file store replaces the whole file, so a day
+                // that holds only a fragment would destroy the day that is on disk.
+                if !endedBurn.buckets.isEmpty, holdWholeDay(previousDay) {
+                    burn(endedBurn, of: reading, on: previousDay)
+                }
+                if !begunBurn.buckets.isEmpty {
+                    burn(begunBurn, of: reading, on: day)
+                }
+                endedDay = previousDay
+            } else {
+                burn(from: previous, to: reading, on: day)
             }
-            let begunBurn = previous.flatMap {
-                RhythmDifferencer.delta(from: $0, to: reading, day: day, calendar: calendar)
-            }
-            if let endedBurn, let endedDay, endedDay != day {
-                burn(endedBurn, of: reading, on: endedDay)
-            }
-            // The day that just ended is written before the new reading is folded in, so what is on
-            // disk is always a whole number of readings. A day whose write failed stays in memory
-            // until it lands.
+        }
+        // The day the recorder records on is the newest day a reading belongs to.
+        if let current = recordedDay {
+            if day > current { recordedDay = day }
+        } else {
             recordedDay = day
-            days[day] = days[day] ?? [:]
-            flush(at: now)
-            continueFromStore(on: day)
-            // The day that began is continued from what was written, so the burn that belongs to
-            // it is added after that.
-            if let begunBurn {
-                burn(begunBurn, of: reading, on: day)
-            }
-        } else if let previous = lastReading[reading.key] {
-            burn(from: previous, to: reading, on: day)
         }
         var series = days[day] ?? [:]
         var record = series[reading.key] ?? RhythmSeriesRecord(
@@ -1842,6 +2667,7 @@ final class RhythmRecorder {
         series[reading.key] = record
         days[day] = series
         lastReading[reading.key] = reading
+        return endedDay
     }
 
     /// Adds the burn between two readings to the buckets of the day it is asked about.
@@ -1895,17 +2721,41 @@ final class RhythmRecorder {
         return now.timeIntervalSince(lastFailure) >= flushInterval
     }
 
+    /// Makes sure the recorder holds the whole of a day before anything is booked into it.
+    ///
+    /// A day another run of the app started is taken back from the store, the way the day the
+    /// recorder starts on is. The write of the file store replaces the whole file, so a day that
+    /// holds only a fragment of itself would destroy the day that is on disk.
+    ///
+    /// Returns whether the day is whole now. A day that cannot be read back is not whole: the
+    /// caller does not book a fragment of it over a file it cannot see.
+    @discardableResult
+    private func holdWholeDay(_ day: Date) -> Bool {
+        guard days[day]?.isEmpty ?? true else { return true }
+        guard !unreadableDays.contains(day) else { return false }
+        guard continueFromStore(on: day) else {
+            // The day is not read again and again: the file is the same one every time.
+            unreadableDays.insert(day)
+            return false
+        }
+        return true
+    }
+
     /// A day another run of the app started: the recorder continues from what was written, so the
     /// part of the day before the restart is not lost when the day is written again.
-    private func continueFromStore(on day: Date) {
+    ///
+    /// Returns whether the day could be read. A day that cannot be read is not continued: the
+    /// recorder does not know what the file holds, so it does not write over it.
+    @discardableResult
+    private func continueFromStore(on day: Date) -> Bool {
         let stored: RhythmDayRecord?
         do {
             stored = try history.load(day: day)
         } catch {
             AppLog.warn(.rhythm, "could not read the rhythm history for \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
-            return
+            return false
         }
-        guard let stored else { return }
+        guard let stored else { return true }
         let count = RhythmClock.bucketCount(on: day, calendar: calendar)
         var series = days[day] ?? [:]
         var writtenSeries = written[day] ?? [:]
@@ -1927,9 +2777,484 @@ final class RhythmRecorder {
         }
         days[day] = series
         written[day] = writtenSeries
+        return true
     }
 }
 ```
+import Foundation
+import Observation
+
+/// The consumption between two readings of the same series.
+enum RhythmDifferencer {
+    /// What was burned between two readings, and the buckets it belongs to.
+    ///
+    /// A window that reset burns nothing: the use before the reset was never read, and the new
+    /// window's reading counts from its own zero. A gap longer than the window burns nothing for
+    /// the same reason — the two readings describe different windows.
+    ///
+    /// The buckets are the ones of the day that is asked about. An interval that crosses midnight
+    /// therefore has to be asked about twice — once for the day that ended and once for the day
+    /// that began — or the part of it that fell in the other day is lost.
+    static func delta(
+        from previous: RhythmReading,
+        to current: RhythmReading,
+        day: Date,
+        calendar: Calendar
+    ) -> RhythmDelta {
+        let interval = current.at.timeIntervalSince(previous.at)
+        guard interval > 0 else { return RhythmDelta(points: 0, buckets: [], clamped: false) }
+        guard interval <= Double(current.windowMs) / 1000 else {
+            return RhythmDelta(points: 0, buckets: [], clamped: false)
+        }
+        // The window the last reading described ended before this reading was taken, so the two
+        // are not two points on the same window's curve.
+        let reset: Bool
+        if let previousReset = previous.resetsAt {
+            reset = previousReset <= current.at
+        } else {
+            reset = current.fraction < previous.fraction
+        }
+        guard !reset else { return RhythmDelta(points: 0, buckets: [], clamped: false) }
+
+        let burned = current.fraction - previous.fraction
+        guard burned > 0 else { return RhythmDelta(points: 0, buckets: [], clamped: false) }
+        let points = min(burned, 1)
+        // More than the whole window burned in one interval: the provider's denominator changed —
+        // a new plan, a smaller limit — and the chart would show a full bar that nobody burned.
+        // The bar is drawn, so the log has to say that it is not a rate.
+        //
+        // The warning is logged once, for the day the reading belongs to: an interval that
+        // crosses midnight is asked about twice, and the clamp is one event.
+        if burned > 1, calendar.isDate(day, inSameDayAs: current.at) {
+            AppLog.warn(.rhythm, "the rhythm of \(current.key) burned \(String(format: "%.2f", burned)) points in \(Int(interval))s "
+                + "and was clamped to the whole window: the provider's limit probably changed")
+        }
+        return RhythmDelta(
+            points: points,
+            buckets: RhythmClock.shares(from: previous.at, to: current.at, day: day, calendar: calendar),
+            clamped: burned > 1
+        )
+    }
+}
+
+/// Records how fast each account's window fills up, and keeps the last so many days of it.
+///
+/// The recorder holds the day's buckets in memory and writes them every few minutes, so a refresh
+/// does not touch the disk every time. What is in memory is the whole day, so writing it twice
+/// does not lose the part that was written first, and a day another run of the app started is
+/// continued from what was written.
+///
+/// A burn belongs to the days the interval covered. An interval that crosses midnight is booked
+/// on both days: the part before midnight on the day that ended, the rest on the day that began.
+/// The rollover is decided per series — every series has a last reading of its own — so every
+/// series that crosses the midnight books the part of its burn that fell before it. The
+/// consumption before a provider's window resets is still not seen, and the recorder does not
+/// guess at it.
+@MainActor
+@Observable
+final class RhythmRecorder {
+    private let history: any RhythmStore
+    private let settings: RhythmSettings
+    private let calendar: Calendar
+
+    /// The last reading of every series, so the next one can be differenced against it.
+    @ObservationIgnored private var lastReading: [String: RhythmReading] = [:]
+    /// The buckets of the days the recorder holds, by day. A day stays here until it is on disk.
+    @ObservationIgnored private var days: [Date: [String: RhythmSeriesRecord]] = [:]
+    /// What was written of each held day, by day.
+    @ObservationIgnored private var written: [Date: [String: RhythmSeriesRecord]] = [:]
+    /// The day the recorder records on: the newest day a reading belongs to. A day that is not
+    /// the current one may be let go once it is on disk.
+    @ObservationIgnored private var recordedDay: Date?
+    /// When the day's buckets were last written.
+    @ObservationIgnored private var lastFlush: Date?
+    /// When the last write failed. A failed write is not tried again before the interval has
+    /// passed, so a disk that cannot be written does not fill the log with one warning per
+    /// reading.
+    @ObservationIgnored private var lastFailure: Date?
+    /// The day whose write failed. The error is only cleared when that day is written, so the
+    /// success of another day does not hide it from the user.
+    @ObservationIgnored private var failedDay: Date?
+    /// The days that could not be read back from the store. The recorder does not know what
+    /// their files hold, so it does not book a fragment of them over them.
+    @ObservationIgnored private var unreadableDays: Set<Date> = []
+    /// How long the day's buckets are kept in memory before they are written.
+    @ObservationIgnored private let flushInterval: TimeInterval
+    /// How many writes have failed in a row.
+    @ObservationIgnored private var failures = 0
+    /// What went wrong the last time the history could not be written, if anything. The recorder
+    /// keeps retrying, but the user has to know that the chart is not being filled — a disk that
+    /// cannot be written leaves the chart empty with no explanation anywhere else.
+    private(set) var lastWriteError: String?
+    /// Whether a write was already attempted after the recording was turned off. The first such
+    /// write is the user's own request and is not held back by the backoff; the retries after it
+    /// are, so a disk that cannot be written does not warn on every refresh.
+    @ObservationIgnored private var wroteAfterSwitchingOff = false
+
+    init(
+        store: any RhythmStore,
+        settings: RhythmSettings,
+        calendar: Calendar,
+        flushInterval: TimeInterval = 5 * 60
+    ) {
+        self.history = store
+        self.settings = settings
+        self.calendar = calendar
+        self.flushInterval = flushInterval
+    }
+
+    /// The store the history is kept in. The chart reads the days it holds.
+    var store: any RhythmStore { history }
+
+    /// The buckets waiting to be written: the series whose buckets have changed since the last
+    /// write. The tests read this; the app does not.
+    var pendingSeries: [RhythmSeriesRecord] {
+        guard let day = recordedDay else { return [] }
+        return pendingSeries(on: day)
+    }
+
+    /// The days that are held in memory and are not on disk yet, oldest first. A day whose write
+    /// failed stays here until the write lands. The tests read this; the app does not.
+    var pendingDays: [Date] {
+        days.keys.filter { !pendingSeries(on: $0).isEmpty }.sorted()
+    }
+
+    /// The days the recorder holds in memory. The tests read this; the app does not.
+    var heldDays: [Date] { days.keys.sorted() }
+
+    /// The readings a snapshot carries: the session-sized metrics of one account.
+    static func readings(from snapshot: ProviderSnapshot, kind: ProviderKind, at now: Date) -> [RhythmReading] {
+        snapshot.lines.compactMap { line in
+            guard case .progress(let label, let used, let limit, let format, let resetsAt, let periodMs) = line else {
+                return nil
+            }
+            // The share of a money budget is the rate at which money is spent, and this fork does
+            // not chart spending. A count and a percentage are both shares of a window.
+            guard !format.isMoney else { return nil }
+            // Only a window that is short enough to have a rhythm inside a day. A weekly window
+            // sampled every few minutes is a slow drift, and its hourly rate says nothing.
+            guard let periodMs, periodMs > 0, periodMs <= RhythmSettings.shortWindowMs else { return nil }
+            guard limit > 0 else { return nil }
+            return RhythmReading(
+                key: "\(snapshot.providerID)/\(label)",
+                kind: kind,
+                label: label,
+                windowMs: periodMs,
+                fraction: min(max(used / limit, 0), 1),
+                resetsAt: resetsAt,
+                at: now
+            )
+        }
+    }
+
+    /// Records what a refresh found. A refresh that failed produces no reading, so the hours it
+    /// covered stay empty rather than showing as no usage.
+    func record(_ snapshot: ProviderSnapshot, kind: ProviderKind, at now: Date) {
+        guard settings.isEnabled else {
+            // Turning the recording off stops the readings, but what was already recorded is
+            // written out rather than thrown away. The first write after the switch is not held
+            // back by the backoff of a failed write — the user asked for it — but the retries
+            // after it are, so a disk that cannot be written does not warn on every refresh.
+            if !wroteAfterSwitchingOff || canWrite(at: now) {
+                wroteAfterSwitchingOff = true
+                flush(at: now)
+            }
+            return
+        }
+        // The recording is on, so the next time it is turned off its first write is again the
+        // user's own request.
+        wroteAfterSwitchingOff = false
+        // The day's buckets are written before the new reading is folded in, so what is on disk is
+        // always a whole number of readings and the newest one is still waiting to be written.
+        checkpointIfDue(at: now)
+        // The days that ended are written after every series of the snapshot has booked its part,
+        // so the day on disk holds the part of every series that crossed the midnight and not
+        // only the part of the first one.
+        var ended: [Date] = []
+        for reading in Self.readings(from: snapshot, kind: kind, at: now) {
+            if let endedDay = apply(reading), !ended.contains(endedDay) {
+                ended.append(endedDay)
+            }
+        }
+        for day in ended {
+            write(day: day, at: now)
+        }
+    }
+
+    /// Removes the whole history: the days on disk and the ones the recorder still holds.
+    ///
+    /// The recorder writes the day it is on again on the next refresh, so a history that was only
+    /// deleted from the store would come back the same afternoon.
+    func deleteHistory(now: Date = Date(), calendar: Calendar = .current) throws {
+        try history.deleteAll(now: now, calendar: calendar)
+        days.removeAll()
+        written.removeAll()
+        unreadableDays.removeAll()
+        // The baselines go with it: the next reading starts a new day rather than booking the
+        // jump between the last reading and it as consumption.
+        lastReading.removeAll()
+    }
+
+    /// Tells the recorder that the account behind a provider's slot may be a different one now —
+    /// another account's key was pasted into it. The jump between the old reading and the new one
+    /// is then that account's state and not consumption, so the old reading is dropped and the
+    /// next one starts a new baseline.
+    func forgetReadings(for providerID: String) {
+        let prefix = "\(providerID)/"
+        let keys = lastReading.keys.filter { $0.hasPrefix(prefix) }
+        guard !keys.isEmpty else { return }
+        AppLog.info(.rhythm, "the rhythm of \(providerID) starts a new baseline: \(keys.count) readings dropped, the account behind it may be a different one")
+        for key in keys {
+            lastReading.removeValue(forKey: key)
+        }
+    }
+
+    /// Takes the readings of a snapshot as the baseline of the next ones, without booking a burn.
+    ///
+    /// The app's cache holds the last snapshot of every provider, so the consumption between it
+    /// and the first reading of this run — a whole night, for a provider with a day-long window —
+    /// is not lost.
+    func adoptBaseline(_ snapshot: ProviderSnapshot, kind: ProviderKind) {
+        for reading in Self.readings(from: snapshot, kind: kind, at: snapshot.refreshedAt) {
+            lastReading[reading.key] = reading
+        }
+    }
+
+    /// Writes the buckets that changed since the last write, and remembers them as written so only
+    /// what changed since is waiting to be written again. Returns whether every day was written.
+    ///
+    /// A day whose write fails stays in memory, so the next write takes it out as well.
+    @discardableResult
+    func flush(at now: Date) -> Bool {
+        var wroteEverything = true
+        var failed = false
+        for day in days.keys.sorted() {
+            let result = write(day: day, at: now)
+            wroteEverything = result.wrote && wroteEverything
+            failed = failed || result.failed
+        }
+        if !failed { failures = 0 }
+        return wroteEverything
+    }
+
+    /// Writes one day, if it has something waiting to be written, and remembers what was written.
+    ///
+    /// A day that is on disk and has nothing waiting to be written is let go, unless it is the
+    /// day the recorder records on: that one is still being added to.
+    @discardableResult
+    private func write(day: Date, at now: Date) -> (wrote: Bool, failed: Bool) {
+        let series = days[day] ?? [:]
+        guard !pendingSeries(on: day).isEmpty else {
+            if day != recordedDay {
+                // The day is on disk and nothing is waiting to be written, so the recorder
+                // does not need to hold it any more.
+                days.removeValue(forKey: day)
+                written.removeValue(forKey: day)
+            }
+            return (true, false)
+        }
+        let record = RhythmDayRecord(day: day, series: series.values.sorted { $0.key < $1.key })
+        do {
+            try history.save(record)
+            written[day] = series
+            lastFlush = now
+            unreadableDays.remove(day)
+            if failedDay == day {
+                // The day that could not be written is on disk, so the user does not have to be
+                // told about it any more. The success of another day does not clear it.
+                lastWriteError = nil
+                failedDay = nil
+            }
+            if day != recordedDay {
+                // The day is on disk, so the recorder does not need to hold it any more.
+                days.removeValue(forKey: day)
+                written.removeValue(forKey: day)
+            }
+            return (true, false)
+        } catch {
+            failures += 1
+            lastFailure = now
+            failedDay = day
+            lastWriteError = error.localizedDescription
+            AppLog.warn(.rhythm, "could not write the rhythm history for \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
+            if failures >= 5 {
+                AppLog.error(.rhythm, "the rhythm history stopped being written after \(failures) failures in a row")
+            }
+            return (false, true)
+        }
+    }
+
+    /// Books a reading: the burn since this series' last reading, and the reading itself.
+    ///
+    /// Returns the day that ended, when this reading crossed the midnight. The part of the burn
+    /// that fell before the midnight belongs to that day, and the day is written once every
+    /// series of the snapshot has booked its part.
+    private func apply(_ reading: RhythmReading) -> Date? {
+        let day = calendar.startOfDay(for: reading.at)
+        // The day the reading belongs to is taken back from the store when the recorder does not
+        // hold it, so the part another run of the app recorded is not lost. A day that cannot be
+        // read is recorded anyway: the day the recorder is on is never left empty.
+        holdWholeDay(day)
+        var endedDay: Date?
+        if let previous = lastReading[reading.key] {
+            let previousDay = calendar.startOfDay(for: previous.at)
+            if previousDay != day {
+                // This series crossed the midnight. The burn since its last reading may have
+                // crossed it too: the part before it belongs to the day that ended and the rest
+                // to the day that began. The rollover is decided per series, so every series that
+                // crosses the midnight books the part that fell before it.
+                let endedBurn = RhythmDifferencer.delta(from: previous, to: reading, day: previousDay, calendar: calendar)
+                let begunBurn = RhythmDifferencer.delta(from: previous, to: reading, day: day, calendar: calendar)
+                // The day that ended is taken back from the store before anything is booked into
+                // it: the recorder may not hold it at all — the app was closed across the
+                // midnight — and the write of the file store replaces the whole file, so a day
+                // that holds only a fragment would destroy the day that is on disk.
+                if !endedBurn.buckets.isEmpty, holdWholeDay(previousDay) {
+                    burn(endedBurn, of: reading, on: previousDay)
+                }
+                if !begunBurn.buckets.isEmpty {
+                    burn(begunBurn, of: reading, on: day)
+                }
+                endedDay = previousDay
+            } else {
+                burn(from: previous, to: reading, on: day)
+            }
+        }
+        // The day the recorder records on is the newest day a reading belongs to.
+        if let current = recordedDay {
+            if day > current { recordedDay = day }
+        } else {
+            recordedDay = day
+        }
+        var series = days[day] ?? [:]
+        var record = series[reading.key] ?? RhythmSeriesRecord(
+            key: reading.key,
+            kind: reading.kind,
+            label: reading.label,
+            windowMs: reading.windowMs,
+            points: Array(repeating: 0, count: RhythmClock.bucketCount(on: day, calendar: calendar)),
+            samples: Array(repeating: 0, count: RhythmClock.bucketCount(on: day, calendar: calendar))
+        )
+        if let index = RhythmClock.bucketIndex(for: reading.at, on: day, calendar: calendar),
+           index < record.samples.count {
+            record.samples[index] += 1
+        }
+        series[reading.key] = record
+        days[day] = series
+        lastReading[reading.key] = reading
+        return endedDay
+    }
+
+    /// Adds the burn between two readings to the buckets of the day it is asked about.
+    private func burn(from previous: RhythmReading, to current: RhythmReading, on day: Date) {
+        let delta = RhythmDifferencer.delta(from: previous, to: current, day: day, calendar: calendar)
+        burn(delta, of: current, on: day)
+    }
+
+    /// Adds a burn to the buckets of the day it belongs to.
+    private func burn(_ delta: RhythmDelta, of reading: RhythmReading, on day: Date) {
+        guard !delta.buckets.isEmpty else { return }
+        var series = days[day] ?? [:]
+        var record = series[reading.key] ?? RhythmSeriesRecord(
+            key: reading.key,
+            kind: reading.kind,
+            label: reading.label,
+            windowMs: reading.windowMs,
+            points: Array(repeating: 0, count: RhythmClock.bucketCount(on: day, calendar: calendar)),
+            samples: Array(repeating: 0, count: RhythmClock.bucketCount(on: day, calendar: calendar))
+        )
+        for share in delta.buckets where share.index < record.points.count {
+            record.points[share.index] += delta.points * share.share
+        }
+        series[reading.key] = record
+        days[day] = series
+    }
+
+    private func pendingSeries(on day: Date) -> [RhythmSeriesRecord] {
+        let series = days[day] ?? [:]
+        let writtenSeries = written[day] ?? [:]
+        return series.values
+            .filter { writtenSeries[$0.key] != $0 }
+            .sorted { $0.key < $1.key }
+    }
+
+    private func checkpointIfDue(at now: Date) {
+        guard let lastFlush else {
+            lastFlush = now
+            return
+        }
+        guard now.timeIntervalSince(lastFlush) >= flushInterval else { return }
+        guard canWrite(at: now) else { return }
+        flush(at: now)
+    }
+
+    /// Whether a write may be attempted. A write that failed is not tried again before the
+    /// interval has passed, so a disk that cannot be written does not produce a warning for
+    /// every reading.
+    private func canWrite(at now: Date) -> Bool {
+        guard let lastFailure else { return true }
+        return now.timeIntervalSince(lastFailure) >= flushInterval
+    }
+
+    /// Makes sure the recorder holds the whole of a day before anything is booked into it.
+    ///
+    /// A day another run of the app started is taken back from the store, the way the day the
+    /// recorder starts on is. The write of the file store replaces the whole file, so a day that
+    /// holds only a fragment of itself would destroy the day that is on disk.
+    ///
+    /// Returns whether the day is whole now. A day that cannot be read back is not whole: the
+    /// caller does not book a fragment of it over a file it cannot see.
+    @discardableResult
+    private func holdWholeDay(_ day: Date) -> Bool {
+        guard days[day]?.isEmpty ?? true else { return true }
+        guard !unreadableDays.contains(day) else { return false }
+        guard continueFromStore(on: day) else {
+            // The day is not read again and again: the file is the same one every time.
+            unreadableDays.insert(day)
+            return false
+        }
+        return true
+    }
+
+    /// A day another run of the app started: the recorder continues from what was written, so the
+    /// part of the day before the restart is not lost when the day is written again.
+    ///
+    /// Returns whether the day could be read. A day that cannot be read is not continued: the
+    /// recorder does not know what the file holds, so it does not write over it.
+    @discardableResult
+    private func continueFromStore(on day: Date) -> Bool {
+        let stored: RhythmDayRecord?
+        do {
+            stored = try history.load(day: day)
+        } catch {
+            AppLog.warn(.rhythm, "could not read the rhythm history for \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
+            return false
+        }
+        guard let stored else { return true }
+        let count = RhythmClock.bucketCount(on: day, calendar: calendar)
+        var series = days[day] ?? [:]
+        var writtenSeries = written[day] ?? [:]
+        for storedSeries in stored.series {
+            var points = [Double](repeating: 0, count: count)
+            var samples = [Int](repeating: 0, count: count)
+            for bucket in 0..<min(count, storedSeries.points.count) { points[bucket] = storedSeries.points[bucket] }
+            for bucket in 0..<min(count, storedSeries.samples.count) { samples[bucket] = storedSeries.samples[bucket] }
+            let continued = RhythmSeriesRecord(
+                key: storedSeries.key,
+                kind: storedSeries.kind,
+                label: storedSeries.label,
+                windowMs: storedSeries.windowMs,
+                points: points,
+                samples: samples
+            )
+            series[storedSeries.key] = continued
+            writtenSeries[storedSeries.key] = continued
+        }
+        days[day] = series
+        written[day] = writtenSeries
+        return true
+    }
+}
 
 - [ ] **Step 5: Check the log tag is there**
 
@@ -4052,9 +5377,9 @@ your busy hours are.
 
 Every refresh, the app notes how much of each limit's window has been used and when. From those
 notes it builds a five-minute history of the last 90 days, kept in
-`~/Library/Application Support/OpenUsage/rhythm/`, one file per local day. The app's bundle
-identifier is in the path, so a development build and the installed app never write over each
-other's history.
+`~/Library/Application Support/OpenUsage/rhythm/<bundle id>/`, one file per local day. The app's
+bundle identifier is in the path, so a development build and the installed app never write over
+each other's history.
 
 What a file holds is the share of the window that was used, the provider it came from, the name of
 the metric and a local account id. It never holds a token count, a price, an account name or an
@@ -4063,6 +5388,10 @@ logs of other tools.
 
 Only windows of a day or less are recorded. A weekly limit sampled every few minutes is a slow
 drift, and its hourly rate says nothing about when you are actually working.
+
+A metric whose unit is money is not recorded. A dollar budget is the rate at which money is
+spent, and this app does not chart spending. What the chart carries is the share of each recorded
+window — a percentage or a count — and nothing else.
 
 ## The two views
 
@@ -4078,13 +5407,82 @@ chart is showing; drag that mark to move the window through the day.
 
 ## Reading the chart
 
-A bar's height is how much of the window that slice burned, in points of the window's percentage.
-A darker bar and a tinted band mark the peak. A slice with no bar was never read — the app was
-closed, or the provider was not answering — which is not the same as no usage.
+A bar's height is how much of the window that slice burned, as a share of the window. The peak is
+drawn in the app's blue and the rest in a lighter shade of it. A slice that was read but not used
+shows a thin baseline. A slice nothing was read from stays empty: "we do not know" is not "nothing
+was used".
 
-Turn the recording off in **Settings → Usage → Record Usage Rhythm**. The history stays until you
-delete it.
+The chart adds up the share of every recorded window, including windows of different lengths: two
+accounts whose windows each burned 5% make a bar of 10 points. The unit above the chart says how
+much time each bar covers, so it follows the zoom level — "Percentage Points / Hour" for a whole
+day, "Percentage Points / 5 Minutes" for the narrowest one.
+
+Turn the recording off in **Settings → Display → Usage → Record Usage Rhythm**, and remove what was
+already recorded with **Delete Rhythm History**, which asks before it removes anything. The two are
+separate: turning the recording off keeps the history, and deleting the history leaves the recording
+on. While the recording is on, the current day's file fills up again.
+
+The delete button is greyed out when the settings screen finds no history to remove. It is checked
+when the screen is opened, so a history that is recorded afterwards is only removed once the screen
+is opened again.
 ```
+# Usage Rhythm
+
+The **Rhythm** tab of the dashboard records how fast each account's limits fill up, and shows when
+your busy hours are.
+
+## What is recorded
+
+Every refresh, the app notes how much of each limit's window has been used and when. From those
+notes it builds a five-minute history of the last 90 days, kept in
+`~/Library/Application Support/OpenUsage/rhythm/<bundle id>/`, one file per local day. The app's
+bundle identifier is in the path, so a development build and the installed app never write over
+each other's history.
+
+What a file holds is the share of the window that was used, the provider it came from, the name of
+the metric and a local account id. It never holds a token count, a price, an account name or an
+email address. Nothing leaves this Mac: the history is never uploaded, and the app never reads the
+logs of other tools.
+
+Only windows of a day or less are recorded. A weekly limit sampled every few minutes is a slow
+drift, and its hourly rate says nothing about when you are actually working.
+
+A metric whose unit is money is not recorded. A dollar budget is the rate at which money is
+spent, and this app does not chart spending. What the chart carries is the share of each recorded
+window — a percentage or a count — and nothing else.
+
+## The two views
+
+**This Day** shows one day. The arrows step a day at a time, and a long press on the date opens a
+calendar. **Average** shows the last 7, 30 or 90 days averaged, so the shape of a usual week shows
+through the noise of one day.
+
+## Zooming in
+
+The chart always has 24 bars. The zoom control changes how much of the day they cover: a day, half
+a day, six hours or two hours. Above the chart, the strip of the whole day marks the window the
+chart is showing; drag that mark to move the window through the day.
+
+## Reading the chart
+
+A bar's height is how much of the window that slice burned, as a share of the window. The peak is
+drawn in the app's blue and the rest in a lighter shade of it. A slice that was read but not used
+shows a thin baseline. A slice nothing was read from stays empty: "we do not know" is not "nothing
+was used".
+
+The chart adds up the share of every recorded window, including windows of different lengths: two
+accounts whose windows each burned 5% make a bar of 10 points. The unit above the chart says how
+much time each bar covers, so it follows the zoom level — "Percentage Points / Hour" for a whole
+day, "Percentage Points / 5 Minutes" for the narrowest one.
+
+Turn the recording off in **Settings → Display → Usage → Record Usage Rhythm**, and remove what was
+already recorded with **Delete Rhythm History**, which asks before it removes anything. The two are
+separate: turning the recording off keeps the history, and deleting the history leaves the recording
+on. While the recording is on, the current day's file fills up again.
+
+The delete button is greyed out when the settings screen finds no history to remove. It is checked
+when the screen is opened, so a history that is recorded afterwards is only removed once the screen
+is opened again.
 
 - [ ] **Step 3: Point the other pages at it**
 
