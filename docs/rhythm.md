@@ -23,6 +23,15 @@ A metric whose unit is money is not recorded. A dollar budget is the rate at whi
 spent, and this app does not chart spending. What the chart carries is the share of each recorded
 window — a percentage or a count — and nothing else.
 
+The history is kept in the app's own format, and the app never writes over a file it cannot read.
+If a day's file cannot be read — after a change of time zone, for instance, its five-minute
+buckets no longer fit the day — that day records nothing, the file is left exactly as it is, and
+the chart says the day could not be read.
+
+A burn that crosses the midnight belongs to both days it touches: the part before the midnight to
+the day that ended, the rest to the day that began. Nothing of it is lost, and neither day's
+figure counts it twice.
+
 ## The two views
 
 **This Day** shows one day. The arrows step a day at a time, and a long press on the date opens a

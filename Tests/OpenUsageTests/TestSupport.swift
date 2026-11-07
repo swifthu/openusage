@@ -346,6 +346,9 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
         /// The days whose writes fail, the way a disk that cannot be written fails for one day only.
         var failingDays: Set<Date> = []
         var requestedRanges: [ClosedRange<Date>] = []
+        /// The days the store holds but cannot read, the way a file whose buckets do not fit its
+        /// day is held and refused.
+        var refusedDays: Set<Date> = []
         /// How many reads were started.
         var readAttempts = 0
         /// Whether the next read is the slow failing one.
@@ -383,6 +386,19 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
     /// How many reads were started.
     var readAttempts: Int { lock.withLock { $0.readAttempts } }
 
+    /// Makes one day unreadable, the way a file whose buckets do not fit its day is refused: the
+    /// day is there, and reading it fails.
+    func setRefusing(_ refusing: Bool, on day: Date) {
+        let key = calendar.startOfDay(for: day)
+        lock.withLock { records in
+            if refusing {
+                records.refusedDays.insert(key)
+            } else {
+                records.refusedDays.remove(key)
+            }
+        }
+    }
+
     /// Makes every following read fail, the way a history folder that cannot be read does.
     func setFailingLoad(_ failing: Bool) {
         lock.withLock { $0.failsLoad = failing }
@@ -410,7 +426,11 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
     }
 
     func load(day: Date) throws -> RhythmDayRecord? {
-        lock.withLock { $0.byDay[calendar.startOfDay(for: day)] }
+        let key = calendar.startOfDay(for: day)
+        return try lock.withLock { records in
+            if records.refusedDays.contains(key) { throw RecordingRhythmStoreError.readFailed }
+            return records.byDay[key]
+        }
     }
 
     func load(days: ClosedRange<Date>) throws -> [RhythmDayRecord] {
@@ -429,7 +449,10 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
         let last = calendar.startOfDay(for: days.upperBound)
         let found = try lock.withLock { records -> [RhythmDayRecord] in
             if records.failsLoad { throw RecordingRhythmStoreError.readFailed }
-            return records.byDay.values.filter { $0.day >= first && $0.day <= last }.sorted { $0.day < $1.day }
+            return records.byDay.values
+                .filter { $0.day >= first && $0.day <= last }
+                .filter { !records.refusedDays.contains($0.day) }
+                .sorted { $0.day < $1.day }
         }
         // The read is appended when it finishes: the reads run in the background, so the order is
         // the order of completion, not the order of the requests.
@@ -437,7 +460,9 @@ final class RecordingRhythmStore: RhythmStore, @unchecked Sendable {
         return found
     }
 
-    func recordedDays() throws -> [Date] { lock.withLock { $0.byDay.keys.sorted() } }
+    func recordedDays() throws -> [Date] {
+        lock.withLock { records in Set(records.byDay.keys).union(records.refusedDays).sorted() }
+    }
 
     func delete(before date: Date) throws {
         let cutoff = calendar.startOfDay(for: date)

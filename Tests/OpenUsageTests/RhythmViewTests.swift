@@ -262,6 +262,45 @@ final class RhythmViewTests: QuietWindowTestCase {
         }
     }
 
+    /// A day whose file the store cannot read must not look like a day nothing was recorded on.
+    func testADayThatCouldNotBeReadSaysSo() async throws {
+        let store = RecordingRhythmStore(calendar: .current)
+        try store.save(recordToday())
+        // The day's file is there, and reading it fails.
+        store.setRefusing(true, on: Calendar.current.startOfDay(for: Date()))
+        let container = makeContainer(store: store)
+        let (_, host) = show(rhythmView(container), in: .titled, size: CGSize(width: PanelMetrics.width, height: 400))
+
+        try await waitUntil {
+            texts(in: host).contains { $0.contains("The history of this day could not be read") }
+        }
+        XCTAssertFalse(
+            texts(in: host).contains("Nothing was recorded on this day."),
+            "a day that could not be read does not look like a day nothing was recorded on"
+        )
+    }
+
+    /// The average of a range with a day the store could not read says how many are missing.
+    func testAnAverageWithADayThatCouldNotBeReadSaysHowMany() async throws {
+        let store = RecordingRhythmStore(calendar: .current)
+        try store.save(recordToday())
+        // The day before today has a file the store cannot read.
+        let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: Calendar.current.startOfDay(for: Date()))!
+        store.setRefusing(true, on: yesterday)
+        let container = makeContainer(store: store)
+        let (window, host) = show(rhythmView(container), in: .titled, size: CGSize(width: PanelMetrics.width, height: 400))
+        try await waitUntil { !store.requestedRanges.isEmpty }
+
+        // The average reads the days of its span.
+        try await clickUntil([CGPoint(x: 255, y: 16), CGPoint(x: 250, y: 8), CGPoint(x: 260, y: 24)], window, host) {
+            texts(in: host).contains { $0.contains("could not be read") }
+        }
+        XCTAssertTrue(
+            texts(in: host).contains { $0.contains("of the 30 days in this range could not be read") },
+            "the average says how many of its days are missing"
+        )
+    }
+
     // MARK: - Helpers
 
     private func makeContainer(
