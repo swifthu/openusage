@@ -257,9 +257,18 @@ final class RhythmRecorder {
     /// Writes one day, if it has something waiting to be written, and remembers what was written.
     ///
     /// A day that is on disk and has nothing waiting to be written is let go, unless it is the
-    /// day the recorder records on: that one is still being added to.
+    /// day the recorder records on: that one is still being added to. A day the store could not
+    /// read is not written at all.
     @discardableResult
     private func write(day: Date, at now: Date) -> (wrote: Bool, failed: Bool) {
+        // A file the store refused is never written over. The recorder does not know what it
+        // holds, and replacing it with what the recorder has would destroy it.
+        if unreadableDays.contains(day) {
+            // The recorder lets the day go: it cannot write it and it must not hold it.
+            days.removeValue(forKey: day)
+            written.removeValue(forKey: day)
+            return (false, false)
+        }
         let series = days[day] ?? [:]
         guard !pendingSeries(on: day).isEmpty else {
             if day != recordedDay {
@@ -306,12 +315,28 @@ final class RhythmRecorder {
     /// Returns the day that ended, when this reading crossed the midnight. The part of the burn
     /// that fell before the midnight belongs to that day, and the day is written once every
     /// series of the snapshot has booked its part.
+    ///
+    /// A reading whose day the store could not read is not booked: the app cannot merge with a
+    /// file it cannot read, and writing over one would destroy it.
     private func apply(_ reading: RhythmReading) -> Date? {
         let day = calendar.startOfDay(for: reading.at)
+        // The reading is the baseline of the next one even when its day cannot be kept: the
+        // consumption that follows is measured from here.
+        defer { lastReading[reading.key] = reading }
+        // The day the recorder records on is the newest day a reading belongs to.
+        if let current = recordedDay {
+            if day > current { recordedDay = day }
+        } else {
+            recordedDay = day
+        }
         // The day the reading belongs to is taken back from the store when the recorder does not
-        // hold it, so the part another run of the app recorded is not lost. A day that cannot be
-        // read is recorded anyway: the day the recorder is on is never left empty.
-        holdWholeDay(day)
+        // hold it, so the part another run of the app recorded is not lost.
+        guard holdWholeDay(day) else {
+            // The day's file cannot be read, so the recorder does not know what it holds.
+            // Writing what it has would replace a file it could not read, so the reading is not
+            // booked and the file is left alone.
+            return nil
+        }
         var endedDay: Date?
         if let previous = lastReading[reading.key] {
             let previousDay = calendar.startOfDay(for: previous.at)
@@ -337,12 +362,6 @@ final class RhythmRecorder {
                 burn(from: previous, to: reading, on: day)
             }
         }
-        // The day the recorder records on is the newest day a reading belongs to.
-        if let current = recordedDay {
-            if day > current { recordedDay = day }
-        } else {
-            recordedDay = day
-        }
         var series = days[day] ?? [:]
         var record = series[reading.key] ?? RhythmSeriesRecord(
             key: reading.key,
@@ -358,7 +377,6 @@ final class RhythmRecorder {
         }
         series[reading.key] = record
         days[day] = series
-        lastReading[reading.key] = reading
         return endedDay
     }
 
@@ -423,8 +441,10 @@ final class RhythmRecorder {
     /// caller does not book a fragment of it over a file it cannot see.
     @discardableResult
     private func holdWholeDay(_ day: Date) -> Bool {
-        guard days[day]?.isEmpty ?? true else { return true }
+        // A day the store could not read is never whole, not even when the recorder holds
+        // something for it: what it holds would be a fragment of a day it could not read.
         guard !unreadableDays.contains(day) else { return false }
+        guard days[day]?.isEmpty ?? true else { return true }
         guard continueFromStore(on: day) else {
             // The day is not read again and again: the file is the same one every time.
             unreadableDays.insert(day)
@@ -444,7 +464,7 @@ final class RhythmRecorder {
         do {
             stored = try history.load(day: day)
         } catch {
-            AppLog.warn(.rhythm, "could not read the rhythm history for \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription)")
+            AppLog.warn(.rhythm, "could not read the rhythm history for \(RhythmClock.fileName(for: day, calendar: calendar)): \(error.localizedDescription). The file is left alone and the readings of that day are not kept.")
             return false
         }
         guard let stored else { return true }

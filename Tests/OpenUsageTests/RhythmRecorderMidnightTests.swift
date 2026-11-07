@@ -148,4 +148,146 @@ final class RhythmRecorderMidnightTests: XCTestCase {
             XCTAssertEqual(series.points.reduce(0, +), 0.075, accuracy: 0.0001)
         }
     }
+
+    // MARK: - The files the store refuses
+
+    /// A file the store refuses: it holds 300 buckets where the day has 288, so its buckets do
+    /// not fit the day it is read on. The store skips it with a warning.
+    private func refusedPayload(day: String, buckets: Int = 300) -> String {
+        let points = Array(repeating: "0.5", count: buckets).joined(separator: ",")
+        let samples = Array(repeating: "7", count: buckets).joined(separator: ",")
+        return """
+        {"schema":"openusage.rhythm.v1","day":"\(day)","series":[{"key":"account-1/Session","kind":"claude","label":"Session","windowMs":\(MetricPeriod.sessionMs),"points":[\(points)],"samples":[\(samples)]}]}
+        """
+    }
+
+    /// Writes a file as it is, without the store's own encoding.
+    private func writeRaw(_ directory: URL, _ name: String, _ payload: String) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(payload.utf8).write(to: directory.appendingPathComponent(name))
+    }
+
+    /// Reads a file back as it is on disk.
+    private func readRaw(_ directory: URL, _ name: String) throws -> Data {
+        try Data(contentsOf: directory.appendingPathComponent(name))
+    }
+
+    /// The day that ended had a file the store refuses, and the recorder held that day in memory
+    /// because the app ran on it before the midnight. The file must come out exactly as it went
+    /// in: the recorder does not know what it holds, and replacing it with what the recorder has
+    /// would destroy it.
+    func testAFileTheStoreRefusedIsNotWrittenOver() throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let name = "2026-11-06.json"
+        let payload = refusedPayload(day: "2026-11-06")
+        try writeRaw(directory, name, payload)
+
+        let recorder = recorder(store)
+        // The app runs on that day, so the recorder holds it when the midnight comes.
+        recorder.record(snapshot(fraction: 0.2, at: moment(23, 50)), kind: .claude, at: moment(23, 50))
+        recorder.record(snapshot(fraction: 0.55, at: afterMidnight), kind: .claude, at: afterMidnight)
+
+        XCTAssertEqual(
+            try readRaw(directory, name),
+            Data(payload.utf8),
+            "the refused file is left exactly as it was"
+        )
+    }
+
+    /// The same, but the app was closed across the midnight, so the recorder never held the day
+    /// that ended.
+    func testAFileTheStoreRefusedIsNotWrittenOverWhenItWasNeverHeld() throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let name = "2026-11-06.json"
+        let payload = refusedPayload(day: "2026-11-06")
+        try writeRaw(directory, name, payload)
+
+        let recorder = recorder(store)
+        recorder.adoptBaseline(snapshot(fraction: 0.4, at: moment(23, 50)), kind: .claude)
+        recorder.record(snapshot(fraction: 0.55, at: afterMidnight), kind: .claude, at: afterMidnight)
+
+        XCTAssertEqual(
+            try readRaw(directory, name),
+            Data(payload.utf8),
+            "the refused file is left exactly as it was"
+        )
+    }
+
+    /// The current day's file is refused: it is left exactly as it was, and the day records
+    /// nothing, because the app cannot merge with a file it cannot read.
+    func testAFileTheStoreRefusedIsNotWrittenOverForTheCurrentDay() throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let name = "2026-11-07.json"
+        let payload = refusedPayload(day: "2026-11-07")
+        try writeRaw(directory, name, payload)
+
+        let recorder = recorder(store)
+        recorder.record(snapshot(fraction: 0.55, at: afterMidnight), kind: .claude, at: afterMidnight)
+        recorder.flush(at: afterMidnight)
+
+        XCTAssertEqual(
+            try readRaw(directory, name),
+            Data(payload.utf8),
+            "the refused file is left exactly as it was"
+        )
+        XCTAssertTrue(recorder.pendingDays.isEmpty, "the day records nothing")
+    }
+
+    /// The second account crosses the midnight five minutes after the first one did, by which
+    /// time the day that ended has been written and let go of the memory. The recorder has to
+    /// take that day back from the store, and both accounts keep their own part of the night.
+    func testAnAccountThatCrossesLaterStillBooksItsPartOfTheNight() throws {
+        let (store, directory) = store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = recorder(store)
+
+        // Both accounts are read before the midnight.
+        recorder.record(
+            snapshot(fraction: 0.4, at: moment(23, 50), providerID: "account-1"),
+            kind: .claude,
+            at: moment(23, 50)
+        )
+        recorder.record(
+            snapshot(fraction: 0.4, at: moment(23, 50), providerID: "account-2"),
+            kind: .claude,
+            at: moment(23, 50)
+        )
+
+        // The first account crosses ten minutes after the midnight. It burned 0.15 over the
+        // twenty minutes since its last reading, and ten of those twenty minutes fell before the
+        // midnight, so half of the burn belongs to the day that ended.
+        recorder.record(
+            snapshot(fraction: 0.55, at: afterMidnight, providerID: "account-1"),
+            kind: .claude,
+            at: afterMidnight
+        )
+
+        // The second one crosses five minutes later. It burned 0.25 over twenty-five minutes, and
+        // ten of those fell before the midnight, so two fifths of the burn belongs to the day
+        // that ended.
+        recorder.record(
+            snapshot(fraction: 0.65, at: nextDay.addingTimeInterval(900), providerID: "account-2"),
+            kind: .claude,
+            at: nextDay.addingTimeInterval(900)
+        )
+
+        let ended = try XCTUnwrap(store.load(day: moment(0)))
+        XCTAssertEqual(ended.series.count, 2, "both accounts are on the day that ended")
+        let burned = Dictionary(uniqueKeysWithValues: ended.series.map { ($0.key, $0.points.reduce(0, +)) })
+        XCTAssertEqual(
+            burned["account-1/Session"] ?? 0,
+            0.075,
+            accuracy: 0.0001,
+            "half of the first account's burn fell before the midnight"
+        )
+        XCTAssertEqual(
+            burned["account-2/Session"] ?? 0,
+            0.1,
+            accuracy: 0.0001,
+            "two fifths of the second account's burn fell before the midnight"
+        )
+    }
 }
