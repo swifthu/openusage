@@ -5319,37 +5319,62 @@ Then add the two rows to the `Section("Usage")`:
                 titled("Record Usage Rhythm", info: "Keeps how fast your limits fill up, on this Mac")
             }
             Button("Delete Rhythm History") {
-                deleteRhythmHistory()
+                isConfirmingRhythmDeletion = true
             }
             .disabled(!hasRhythmHistory)
+            .confirmationDialog(
+                "Delete Rhythm History?",
+                isPresented: $isConfirmingRhythmDeletion,
+                titleVisibility: .visible
+            ) {
+                Button("Delete Rhythm History", role: .destructive) { deleteRhythmHistory() }
+            }
 ```
 
-And the state and the two helpers on the view:
+The deletion asks first, the way the other deletions in the app ask. And the state and the two
+helpers on the view:
 
 ```swift
     /// Whether there is any rhythm history to delete. It is state, not a computed property, so
     /// the button can go back to being disabled after the history is gone.
     @State private var hasRhythmHistory = false
+    /// What to tell the user when the history could not be deleted.
+    @State private var rhythmErrorMessage: String?
+    /// Whether the user is asked to confirm the deletion of the history.
+    @State private var isConfirmingRhythmDeletion = false
 ```
 
 ```swift
+    /// Whether there is anything to delete. The history is read from the store, not counted from
+    /// the settings, so the button is only enabled when there is a file to remove.
     private func refreshRhythmHistoryState() {
-        hasRhythmHistory = !((try? container.rhythm.store.recordedDays()) ?? []).isEmpty
+        do {
+            hasRhythmHistory = !(try container.rhythm.store.recordedDays().isEmpty)
+        } catch {
+            // A history that cannot be read is not an empty one: say so instead of offering a
+            // button that would fail the same way.
+            hasRhythmHistory = false
+            AppLog.warn(.rhythm, "the rhythm history could not be read: \(error.localizedDescription)")
+            rhythmErrorMessage = "The rhythm history could not be read: \(error.localizedDescription)"
+        }
     }
 
     private func deleteRhythmHistory() {
-        // The store deletes the days *before* the cutoff, so the cutoff has to be tomorrow to
-        // take today's own record with it.
-        let calendar = Calendar.current
-        let cutoff = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: Date())) ?? Date()
         do {
-            try container.rhythm.store.delete(before: cutoff)
+            // The recorder writes the day it is on again on the next refresh, so the history is
+            // deleted through the recorder, which lets go of what it holds as well.
+            try container.rhythm.deleteHistory()
             AppLog.notice(.rhythm, "the rhythm history was deleted")
+            rhythmErrorMessage = nil
+            refreshRhythmHistoryState()
         } catch {
-            // Say what happened rather than what was meant: the files are still there.
+            // Say what happened rather than what was meant: the files are still there, so the
+            // button stays as it is. The message of the failed deletion is kept: a state refresh
+            // that failed as well must not hide it.
             AppLog.warn(.rhythm, "the rhythm history could not be deleted: \(error.localizedDescription)")
+            rhythmErrorMessage = "The rhythm history could not be deleted: \(error.localizedDescription)"
+            hasRhythmHistory = true
         }
-        refreshRhythmHistoryState()
     }
 ```
 
