@@ -5016,6 +5016,9 @@ struct RhythmView: View {
     @State private var offset: TimeInterval = 0
     @State private var isPickingDay = false
     @State private var records: [RhythmDayRecord] = []
+    /// The days that have a file at all. A day that has a file but no record is a day the store
+    /// could not read, which is not the same as a day nothing was recorded on.
+    @State private var recordedDays: Set<Date> = []
     /// Whether the history holds any day at all, which is what tells "nothing yet" apart from
     /// "not on that day".
     @State private var hasHistory = false
@@ -5182,6 +5185,13 @@ struct RhythmView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
+            // A day the store could not read is left out of the average, and the average is
+            // only the average of the days that are in it.
+            if !unreadableDays.isEmpty, mode == .average, !bars.isEmpty {
+                Text("\(unreadableDays.count) of the \(span.rawValue) days in this range could not be read.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
             // A read that failed leaves the summary out: the card says the history could not be
             // read, and a peak of the data that is still in memory would contradict that.
             if readError == nil, let peak = RhythmAnalytics.peakBars(in: bars), !bars.isEmpty {
@@ -5209,7 +5219,28 @@ struct RhythmView: View {
             }
             return "Nothing recorded yet. The rhythm builds up from today."
         }
+        // A day the store could not read is not a day nothing was recorded on.
+        if !unreadableDays.isEmpty {
+            return mode == .day
+                ? "The history of this day could not be read. The file was left as it is, and nothing was recorded for the day."
+                : "None of the days in this range could be read. Their files were left as they are."
+        }
         return mode == .day ? "Nothing was recorded on this day." : "Nothing was recorded in this range."
+    }
+
+    /// The days of the range that have a file but no record: the store could not read them.
+    ///
+    /// The store skips such a day with a warning and returns the rest, so the days that are
+    /// missing from the records are the ones it refused.
+    private var unreadableDays: [Date] {
+        let calendar = Calendar.current
+        let range = daysToRead
+        let first = calendar.startOfDay(for: range.lowerBound)
+        let last = calendar.startOfDay(for: range.upperBound)
+        let read = Set(records.map { calendar.startOfDay(for: $0.day) })
+        return recordedDays
+            .filter { $0 >= first && $0 <= last && !read.contains(calendar.startOfDay(for: $0)) }
+            .sorted()
     }
 
     /// Whether the days on show hold no reading at all. The chart would be an empty grid then,
@@ -5348,6 +5379,7 @@ struct RhythmView: View {
         switch outcome {
         case .read(let loaded, let recorded):
             records = loaded
+            recordedDays = Set(recorded)
             hasHistory = !recorded.isEmpty
             readError = nil
         case .failed(let message):
@@ -5579,6 +5611,15 @@ drift, and its hourly rate says nothing about when you are actually working.
 A metric whose unit is money is not recorded. A dollar budget is the rate at which money is
 spent, and this app does not chart spending. What the chart carries is the share of each recorded
 window — a percentage or a count — and nothing else.
+
+The history is kept in the app's own format, and the app never writes over a file it cannot read.
+If a day's file cannot be read — after a change of time zone, for instance, its five-minute
+buckets no longer fit the day — that day records nothing, the file is left exactly as it is, and
+the chart says the day could not be read.
+
+A burn that crosses the midnight belongs to both days it touches: the part before the midnight to
+the day that ended, the rest to the day that began. Nothing of it is lost, and neither day's
+figure counts it twice.
 
 ## The two views
 
