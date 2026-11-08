@@ -46,9 +46,11 @@ BUILD_SCRATCH="${SWIFT_SCRATCH_PATH:-$HOME/build}"
 
 # An explicit --scratch-path among the arguments wins over the default.
 scratch_given=no
+has_filter=no
 for arg in "$@"; do
   case "$arg" in
     --scratch-path|--scratch-path=*) scratch_given=yes ;;
+    --filter|--filter=*) has_filter=yes ;;
   esac
 done
 if [ "$scratch_given" = no ]; then
@@ -62,6 +64,22 @@ mkdir -p "$frameworks"
 
 nice -n 19 swift test -j 2 "$@"
 status=$?
+
+# The sample data and the demo app are compiled out of a normal build, so their tests need the
+# development flag and a build of their own. They live in the development scratch directory, the one
+# the dev app build uses, so that build is not repeated. A caller who asked for a filter wants that
+# filter and nothing else.
+if [ "$has_filter" = no ] && [ "$scratch_given" = no ]; then
+  development_scratch="$BUILD_SCRATCH/development"
+  development_frameworks="$development_scratch/out/Products/Debug/PackageFrameworks"
+  mkdir -p "$development_frameworks"
+  [ -L "$development_frameworks/Sparkle.framework" ] \
+    || ln -s ../Sparkle.framework "$development_frameworks/Sparkle.framework"
+  nice -n 19 swift test -j 2 --scratch-path "$development_scratch" -Xswiftc -DOPENUSAGE_DEVELOPMENT \
+    --filter 'DevelopmentDemoTests|DevelopmentDataModeTests'
+  development_status=$?
+  if [ "$development_status" -ne 0 ]; then status=$development_status; fi
+fi
 
 after="$(front_app)"
 if [ -s "$seen" ] || is_test_process "$after"; then

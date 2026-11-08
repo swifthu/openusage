@@ -189,6 +189,7 @@ enum DemoFactory {
         case .copilot: account.organization == nil ? ["Free", "Pro", "Pro+"] : ["Business", "Enterprise"]
         case .devin: ["Core", "Team"]
         case .grok: ["SuperGrok", "SuperGrok Heavy"]
+        case .minimax: ["Token Plan"]
         case .muse: ["Free", "Pro"]
         case .ollama: ["Free", "Pro", "Max"]
         case .opencodeGo: ["Go"]
