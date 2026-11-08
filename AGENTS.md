@@ -146,6 +146,10 @@ Upstream has no MiniMax provider; this fork maintains it.
   `Models/Account.swift`, the `ProviderLoginCatalog` switch in `Services/DeviceProviderLogins.swift`,
   the refresh switch and the reset-claim switch in `Providers/AccountProviderRuntime.swift`, and the
   descriptor switch in `Providers/AccountProviderRuntime+Descriptors.swift`.
+- A fifth place arrived with upstream's sample data: `DemoFactory.plans(for:)` switches over the
+  provider kinds, so a development build does not compile without a MiniMax case. It only exists in
+  a build with `OPENUSAGE_DEVELOPMENT`, which is why the release build and the normal test suite
+  never notice it.
 - Never read a MiniMax key from a file or an environment variable. Upstream forbids it, and a key
   read that way would be a standing fork divergence.
 
