@@ -9,11 +9,10 @@ set -euo pipefail
 # search path so the binary finds it there, and code-sign the framework (the caller signs the outer
 # app bundle afterwards, WITHOUT --deep, so this signature is preserved).
 #
-# Usage: embed_sparkle.sh <app_bundle> <app_binary> [signing_identity] [extra_codesign_flags] [scratch_path]
+# Usage: embed_sparkle.sh <app_bundle> <app_binary> [signing_identity] [extra_codesign_flags] [artifacts_dir]
 #   signing_identity      exact identity name/hash, or empty for ad-hoc ("-")
 #   extra_codesign_flags  e.g. "--options runtime --timestamp" (word-split on purpose)
-#   scratch_path          SwiftPM's scratch directory, where the Sparkle artifact was fetched.
-#                         Defaults to the checkout's .build.
+#   artifacts_dir         SwiftPM artifacts under the selected scratch path; defaults to .build/artifacts
 
 APP_BUNDLE="$1"
 APP_BINARY="$2"
@@ -21,15 +20,15 @@ SIGN_ID="${3:--}"
 EXTRA_FLAGS="${4:-}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRATCH="${5:-$ROOT_DIR/.build}"
+ARTIFACTS_DIR="${5:-$ROOT_DIR/.build/artifacts}"
 
 # Prefer the universal macOS slice; fall back to whatever Sparkle.framework exists in the artifacts.
-SPARKLE_FW="$(/usr/bin/find "$SCRATCH/artifacts" -type d -name "Sparkle.framework" -path "*macos*" 2>/dev/null | head -n1)"
+SPARKLE_FW="$(/usr/bin/find "$ARTIFACTS_DIR" -type d -name "Sparkle.framework" -path "*macos*" 2>/dev/null | head -n1)"
 if [ -z "$SPARKLE_FW" ]; then
-  SPARKLE_FW="$(/usr/bin/find "$SCRATCH/artifacts" -type d -name "Sparkle.framework" 2>/dev/null | head -n1)"
+  SPARKLE_FW="$(/usr/bin/find "$ARTIFACTS_DIR" -type d -name "Sparkle.framework" 2>/dev/null | head -n1)"
 fi
 if [ -z "$SPARKLE_FW" ]; then
-  echo "Sparkle.framework not found under $SCRATCH/artifacts — run 'swift build' first." >&2
+  echo "Sparkle.framework not found under $ARTIFACTS_DIR — run 'swift build' first." >&2
   exit 1
 fi
 

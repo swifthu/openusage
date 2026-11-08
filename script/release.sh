@@ -202,7 +202,7 @@ cat >"$APP_CONTENTS/Info.plist" <<PLIST
 PLIST
 
 # Embed + sign Sparkle (Developer ID, hardened runtime, secure timestamp).
-"$ROOT_DIR/script/embed_sparkle.sh" "$APP_BUNDLE" "$APP_BINARY" "$CODESIGN_IDENTITY" "--options runtime --timestamp" "$BUILD_SCRATCH"
+"$ROOT_DIR/script/embed_sparkle.sh" "$APP_BUNDLE" "$APP_BINARY" "$CODESIGN_IDENTITY" "--options runtime --timestamp" "$BUILD_SCRATCH/artifacts"
 
 echo "==> signing app (Developer ID, hardened runtime)"
 codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$CLI_BINARY"
