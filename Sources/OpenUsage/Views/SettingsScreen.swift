@@ -166,7 +166,7 @@ struct SettingsScreen: View {
             Text("Usage")
         } footer: {
             if let rhythmErrorMessage {
-                SettingsNote(rhythmErrorMessage, isWarning: true)
+                SettingsNote(rhythmErrorMessage)
             }
         }
         .task { refreshRhythmHistoryState() }
