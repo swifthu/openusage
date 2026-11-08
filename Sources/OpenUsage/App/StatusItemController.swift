@@ -190,8 +190,8 @@ final class StatusItemController: NSObject {
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
     }
 
-    /// Shows a strip only when its content or its size changed: setting even an identical image
-    /// costs a full status-item redraw through WindowServer on macOS 26+.
+    /// Shows a strip only when its content changed: setting even an identical image costs a full
+    /// status-item redraw through WindowServer on macOS 26+.
     struct StripGate {
         private var shown: (content: MenuBarContent, scale: Double)?
 
@@ -203,11 +203,12 @@ final class StatusItemController: NSObject {
     }
 
     private func updateImage() {
-        let (accounts, burningFast, limit, updateAvailable, scale) = withObservationTracking {
+        let (accounts, pinned, burningFast, useItOrLoseIt, limit, alwaysShows, updateAvailable, scale) = withObservationTracking {
             let limit = container.hideFromScreenShare.isConcealing ? .iconOnly : container.dataStore.menuBarLimit
             let accounts = limit == .iconOnly ? [] : container.dataStore.accounts(in: container.layout.displayGroups)
             // The size is read inside the tracked closure so changing it redraws the strip.
-            return (accounts, container.dataStore.burningFast, limit, updater.availableUpdateVersion != nil, container.menuBarSize.scale)
+            return (accounts, container.layout.state.priorityPinIDs, container.dataStore.burningFast, container.dataStore.showsUseItOrLoseIt,
+                    limit, container.dataStore.menuBarAlwaysShows, updater.availableUpdateVersion != nil, container.menuBarSize.scale)
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(50))
@@ -215,13 +216,17 @@ final class StatusItemController: NSObject {
             }
         }
         rankingTick?.cancel()
-        showStrip(accounts: accounts, burningFast: burningFast, limit: limit, updateAvailable: updateAvailable, scale: scale)
+        showStrip(accounts: accounts, pinned: pinned, burningFast: burningFast, useItOrLoseIt: useItOrLoseIt, limit: limit,
+                  alwaysShows: alwaysShows, updateAvailable: updateAvailable, scale: scale)
     }
 
-    private func showStrip(accounts: [DashboardAccount], burningFast: BurningFast?, limit: MenuBarLimit, updateAvailable: Bool, scale: Double) {
+    private func showStrip(
+        accounts: [DashboardAccount], pinned: Set<String>, burningFast: BurningFast?, useItOrLoseIt: Bool, limit: MenuBarLimit,
+        alwaysShows: Bool, updateAvailable: Bool, scale: Double
+    ) {
         let now = Date()
-        let board = PriorityBoard.make(accounts: accounts, burningFast: burningFast, now: now)
-        var content = MenuBarContentBuilder.build(board: board, limit: limit)
+        let board = PriorityBoard.make(accounts: accounts, pinned: pinned, burningFast: burningFast, useItOrLoseIt: useItOrLoseIt, now: now)
+        var content = MenuBarContentBuilder.build(board: board, limit: limit, alwaysShows: alwaysShows)
         content.updateAvailable = updateAvailable
         stripGate.show(content, scale: scale) { content, scale in
             statusItem.button?.image = MenuBarStripRenderer.image(for: content, scale: scale)
@@ -233,7 +238,8 @@ final class StatusItemController: NSObject {
         rankingTick = Task { [weak self] in
             try? await Task.sleep(for: .seconds(30), tolerance: .seconds(1))
             guard !Task.isCancelled else { return }
-            self?.showStrip(accounts: accounts, burningFast: burningFast, limit: limit, updateAvailable: updateAvailable, scale: scale)
+            self?.showStrip(accounts: accounts, pinned: pinned, burningFast: burningFast, useItOrLoseIt: useItOrLoseIt, limit: limit,
+                            alwaysShows: alwaysShows, updateAvailable: updateAvailable, scale: scale)
         }
     }
 
