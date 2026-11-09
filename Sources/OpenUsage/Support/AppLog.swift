@@ -11,6 +11,7 @@ enum LogTag: String, Sendable {
     case statusItem = "statusitem"
     case lifecycle
     case notifications
+    case rhythm
 
     static func plugin(_ id: String) -> String { "plugin:\(id)" }
     static func auth(_ id: String) -> String { "auth:\(id)" }

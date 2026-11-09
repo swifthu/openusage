@@ -38,6 +38,10 @@ struct DashboardContentView: View {
     private var widgetContent: some View {
         if layout.registry.providers.isEmpty {
             EmptyDashboardView { popover.isAddingAccount = true }
+        } else if popover.dashboardTab == .rhythm {
+            // The rhythm is recorded from what the provider reports, so it does not depend on
+            // which metrics the user has shown: it stays available when every metric is hidden.
+            RhythmView()
         } else if layout.displayGroups.isEmpty {
             Text("Every metric is hidden. Turn them back on in Accounts.")
                 .font(.system(size: 12))
@@ -53,6 +57,8 @@ struct DashboardContentView: View {
                     reorderSpaceName: reorderSpaceName,
                     reorderLift: $reorderLift
                 )
+            case .rhythm:
+                RhythmView()
             }
         }
     }

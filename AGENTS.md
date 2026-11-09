@@ -69,10 +69,25 @@ never pick silently.
 ## Running / Testing Changes
 
 ```sh
-swift build
+swift build --build-system swiftbuild
 script/test_quiet.sh [--filter <Suite>]
 ./script/build_and_run.sh verify
 ```
+
+The build engine is Swift Build, not SwiftPM's native engine: Swift Build generates the resource
+accessor that finds the app's `Contents/Resources`, and the native engine's accessor cannot, so an
+app packaged with it dies with "Fatal error: could not load resource bundle" the first time a
+dependency reads its resources — opening Settings does it. The scripts pass `--build-system
+swiftbuild` themselves; a bare `swift build` still uses the native engine until SwiftPM makes
+Swift Build the default. The executable product is named `OpenUsageBinary` because Swift Build
+refuses a package whose executable product shares a name with a library target; the shipped
+executable is still `OpenUsage.app/Contents/MacOS/OpenUsage`.
+
+Swift Build builds a **universal** binary unless told otherwise, which doubles both the build time
+and the size of what it produces (a 12 MB executable becomes 25 MB, the whole development app
+31 MB becomes 55 MB). `script/build_and_run.sh` and `script/test_quiet.sh` therefore build the
+host's own architecture; `SWIFT_ARCHS="arm64 x86_64"` asks for both. `script/release.sh` always
+builds both — the release is what Intel Macs run.
 
 `script/test_quiet.sh` is the only way to run the tests on a Mac someone is using: the suite hosts real
 windows, and the script runs it niced, keeps it from taking the keyboard or the screen, and fails the
@@ -146,6 +161,10 @@ Upstream has no MiniMax provider; this fork maintains it.
   `Models/Account.swift`, the `ProviderLoginCatalog` switch in `Services/DeviceProviderLogins.swift`,
   the refresh switch and the reset-claim switch in `Providers/AccountProviderRuntime.swift`, and the
   descriptor switch in `Providers/AccountProviderRuntime+Descriptors.swift`.
+- A fifth place arrived with upstream's sample data: `DemoFactory.plans(for:)` switches over the
+  provider kinds, so a development build does not compile without a MiniMax case. It only exists in
+  a build with `OPENUSAGE_DEVELOPMENT`, which is why the release build and the normal test suite
+  never notice it.
 - Never read a MiniMax key from a file or an environment variable. Upstream forbids it, and a key
   read that way would be a standing fork divergence.
 
@@ -193,7 +212,38 @@ Upstream has none of these; the fork keeps them across a sync.
 - **No yellow of the project's own.** `SeverityPaletteTests` keeps the sources from inventing a
   yellow the app does not use: take the warning colour from `Theme.severityColor`.
 
-### 5. Sync cadence
+### 5. The fork records usage rhythm
+
+Upstream has none of this; the fork keeps it across a sync.
+
+- The **Rhythm** tab records how fast each account's provider-reported window fills up, and shows
+  when the peak hours are. It records the share of each window that was used — the provider's own
+  reported number against its own limit — sampled on every refresh and differenced between
+  readings. No log scanning, no spend estimate, no pricing and no absolute token count anywhere
+  in it, which is what section 3's body bans.
+- The chart carries the share of each **recorded** window, and a provider's money is not one of
+  them: a dollar budget is the rate at which money is spent, and section 3's body bans spend, so
+  a metric whose unit is money is not recorded at all. The shares that are recorded are added up,
+  including the windows of different lengths.
+- Section 3's heading also says "no trend". The rhythm is a time series, so this is the fork's
+  deliberate reading of that heading: the ban is on trends of *spend*, and the rhythm charts the
+  provider's own reported window. It is recorded here so that a sync does not quietly drop it.
+- The history lives in `~/Library/Application Support/OpenUsage/rhythm/<bundle id>/`, one file per
+  local day, and is never uploaded. The Architecture section further up also forbids reading other
+  tools' credentials, files and logs; the rhythm reads none of them.
+- The chart also draws, as a dashed line on its own right-hand axis, the share a **5-hour window**
+  still had left at every reading. A window that resets every five hours is the one whose
+  remaining share says something about the plan, and it is the only window whose share is kept:
+  **Settings → Display → Usage → Track 5-Hour Windows** turns that off, and the line goes with it.
+  A picker above the chart chooses which of the accounts' windows the line follows. This is the
+  provider's own reported window as well — a share, not an estimate — so section 3's body still bans
+  nothing here.
+- Keep the recording and the analysis in `Sources/OpenUsage/Rhythm/`, and the views in
+  `Sources/OpenUsage/Views/Rhythm*.swift`. A future cloud store is one more `RhythmStore`
+  implementation, not a change to the recorder or the chart — and it needs its own stable identity
+  for an account, because the account's card id is local to this Mac.
+
+### 6. Sync cadence
 
 - Sync with upstream every 2–4 weeks. Upstream's `main` moves fast and rewrites whole subsystems.
 - Before syncing, read `docs/superpowers/plans/` — the migration assessment and the MiniMax design

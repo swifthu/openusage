@@ -1,10 +1,10 @@
 # Dashboard
 
-The panel that opens from the menu bar icon. It has two tabs, Priority and All Usage.
+The panel that opens from the menu bar icon. It has three tabs, Priority, All Usage and Rhythm.
 
 - The menu bar icon and the global shortcut open the Default Tab from Settings (Priority by
   default). A usage notification opens All Usage.
-- With no accounts, both tabs show **Add Account**.
+- With no accounts, every tab shows **Add Account**.
 - Closing the panel returns it to the dashboard, scrolled to the top.
 
 ## Priority
@@ -77,6 +77,23 @@ earliest of each can be used.
 - A clock means its values are more than two refresh cycles old.
 
 Hover over the warning or the clock, or right-click the account, to see why.
+
+## Rhythm
+
+Rhythm shows how fast your usage windows fill up over the day, and when the peak hours are.
+
+- The chart draws one bar per slice of the visible window. The peak is drawn in the app's blue,
+  the rest in a lighter shade of it.
+- A slice that was read but not used shows a thin baseline. A slice nothing was read from stays
+  empty: "we do not know" is not "nothing was used".
+- **This Day** shows one recorded day. **Average** shows the same slices averaged over the last 7,
+  30 or 90 days.
+- The zoom slider narrows the chart to a part of the day. While it is narrowed, the strip above
+  the chart shows the whole day; drag the marked window to move it.
+- The arrows step a day back or forward, and a long press on the day opens a calendar to pick one.
+
+The recording behind the tab is turned on and off, and its history is deleted, in
+[Settings → Display → Usage](settings.md#usage-rhythm). See [Usage Rhythm](rhythm.md).
 
 ## Hiding, pinning, and ordering metrics
 

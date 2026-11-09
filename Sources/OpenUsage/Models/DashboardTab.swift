@@ -6,6 +6,7 @@ enum DashboardTab: String, Hashable, Sendable, CaseIterable {
 
     case priority
     case allUsage
+    case rhythm
 
     static func preferred(in defaults: UserDefaults = .standard) -> Self {
         defaults.enumValue(forKey: defaultKey, default: .priority)
@@ -15,6 +16,7 @@ enum DashboardTab: String, Hashable, Sendable, CaseIterable {
         switch self {
         case .priority: "Priority"
         case .allUsage: "All Usage"
+        case .rhythm: "Rhythm"
         }
     }
 }

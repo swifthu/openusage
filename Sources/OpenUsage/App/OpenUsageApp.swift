@@ -53,5 +53,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     public func applicationWillTerminate(_ notification: Notification) {
         container?.telemetry.flush()
+        container?.rhythm.flush(at: Date())
     }
 }

@@ -15,6 +15,8 @@ final class AppContainer {
     let menuBarSize: MenuBarSizeSetting
     let telemetry: TelemetryRecorder
     let hubs: CLIProxyHubSync
+    let rhythm: RhythmRecorder
+    let rhythmSettings: RhythmSettings
     @ObservationIgnored private var providers: [ProviderRuntime]
     @ObservationIgnored private let makeRuntimes: RuntimeFactory
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
@@ -33,7 +35,8 @@ final class AppContainer {
         http: any HTTPClient = URLSessionHTTPClient(),
         telemetry sink: any TelemetrySink,
         telemetryDefaults: UserDefaults,
-        runtimeFactory: RuntimeFactory? = nil
+        runtimeFactory: RuntimeFactory? = nil,
+        rhythmStore: (any RhythmStore)? = nil
     ) {
         self.accounts = accounts
         self.defaults = defaults
@@ -52,11 +55,20 @@ final class AppContainer {
         let providers = makeRuntimes(accounts.accounts, [])
         let registry = WidgetRegistry.from(providers)
         let layout = LayoutStore(registry: registry, defaults: defaults)
+        let rhythmSettings = RhythmSettings(defaults: defaults)
+        let rhythm = RhythmRecorder(
+            store: rhythmStore ?? FileRhythmStore(directory: FileRhythmStore.defaultDirectory, calendar: .current),
+            settings: rhythmSettings,
+            calendar: .current
+        )
+        self.rhythmSettings = rhythmSettings
+        self.rhythm = rhythm
         let dataStore = WidgetDataStore(
             registry: registry,
             providers: providers,
             cache: ProviderSnapshotCache(userDefaults: defaults),
-            defaults: defaults
+            defaults: defaults,
+            rhythm: rhythm
         )
         self.providers = providers
         self.layout = layout
@@ -99,10 +111,22 @@ final class AppContainer {
     func replaceCredential(_ credential: AccountCredential, for providerID: String) async throws {
         guard let runtime = providers.first(where: { $0.provider.id == providerID }) as? AccountProviderRuntime else { return }
         let account = runtime.account
+        let saved: AccountCredential?
+        do {
+            saved = try accounts.credential(for: account.id)
+        } catch {
+            // The saved sign-in cannot be read, so the account behind this slot cannot be checked.
+            AppLog.warn(LogTag.auth("accounts"), "\(account.cardID) could not read its saved sign-in: \(error.localizedDescription)")
+            saved = nil
+        }
         if case .oauth = credential, let signedIn = credential.identity,
-           let saved = (try? accounts.credential(for: account.id))?.identity, saved != signedIn {
+           let savedIdentity = saved?.identity, savedIdentity != signedIn {
             throw ProviderError.unavailable("That's a different account. Sign in to this one, or use Add New Account.")
         }
+        // Whether the account behind this slot may be a different one now. It has to be worked out
+        // here, before the new sign-in is saved: afterwards the saved credential is the new one and
+        // the comparison would always say "the same account".
+        let accountMayHaveChanged = Self.accountMayHaveChanged(credential, saved: saved)
         try accounts.checkForDuplicate(credential, kind: account.kind, organization: account.organization, excluding: account.id)
         // The new sign-in reads into its own runtime and vault: the previous sign-in's history and plan
         // can't be reused, and a refused token can't fall back on the stored one.
@@ -128,11 +152,32 @@ final class AppContainer {
             replacement.adopt(accounts.credentialVault)
             replacement.update(runtime.account) // The account may have been renamed during the read.
             providers[index] = replacement
-            dataStore.replaceProvider(replacement, snapshot: snapshot)
+            dataStore.replaceProvider(replacement, snapshot: snapshot, accountMayHaveChanged: accountMayHaveChanged)
         } catch {
             runtime.resumeRenewals()
             throw error
         }
+    }
+
+    /// Whether the new sign-in may belong to a different account than the one that was saved.
+    ///
+    /// An OAuth sign-in carries the account's identity, and `replaceCredential` refuses one whose
+    /// identity differs from the saved one, so a different identity never reaches this. An API key
+    /// carries a hash of itself: the same key is the same account, and a different key may be
+    /// somebody else's. A sign-in that carries no identity at all is taken for the same account,
+    /// which is what the app does everywhere else.
+    ///
+    /// When the two identities cannot be compared — the saved sign-in could not be read, or either
+    /// of them carries no identity — the account is still taken for the same one, because dropping
+    /// the baseline on every renewal would lose real consumption. The fact that it could not be
+    /// checked is worth saying out loud, though: the identity is what says whether the account
+    /// behind the slot is still the same one.
+    static func accountMayHaveChanged(_ credential: AccountCredential, saved: AccountCredential?) -> Bool {
+        guard let fresh = credential.identity, let old = saved?.identity else {
+            AppLog.info(.auth, "a replaced sign-in could not check whether the account behind the slot is the same one")
+            return false
+        }
+        return fresh != old
     }
 
     /// Once the new sign-in reads usage, the sign-in sheet closes and the panel shows the Default Tab.

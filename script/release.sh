@@ -25,6 +25,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # SwiftPM's scratch directory, on the local disk: the checkout may live on a network volume, where
 # the build database and module cache get corrupted. build_and_run.sh uses the same default.
 BUILD_SCRATCH="${SWIFT_SCRATCH_PATH:-$HOME/build}"
+# The build engine. Swift Build ("swiftbuild") is the one that generates a resource accessor able
+# to find Contents/Resources: its candidate list starts at Bundle.main.resourceURL. SwiftPM's older
+# native engine still generates an accessor that looks only in the app root and in the build tree
+# baked in at compile time, so a shipped app built with it dies with "Fatal error: could not load
+# resource bundle" the first time a dependency reads its resources — opening Settings does it.
+BUILD_SYSTEM="${SWIFT_BUILD_SYSTEM:-swiftbuild}"
 cd "$ROOT_DIR"
 
 : "${CODESIGN_IDENTITY:?set CODESIGN_IDENTITY to your Developer ID Application identity}"
@@ -32,6 +38,10 @@ cd "$ROOT_DIR"
 : "${OPENUSAGE_VERSION:?set OPENUSAGE_VERSION, e.g. 0.7.0}"
 
 APP_NAME="OpenUsage"
+# The SwiftPM product that builds the app executable. It cannot be called "OpenUsage": Swift Build
+# refuses a package whose executable product shares a name with a library target ("Multiple commands
+# produce"). The built binary is staged into the .app as Contents/MacOS/OpenUsage.
+BUILD_PRODUCT="OpenUsageBinary"
 BUNDLE_ID="com.robinebers.openusage"
 MIN_SYSTEM_VERSION="15.0"
 VERSION="$OPENUSAGE_VERSION"
@@ -78,16 +88,17 @@ notarize() {  # $1: artifact to submit (.zip or .dmg)
 }
 
 echo "==> building $APP_NAME $VERSION ($BUILD) — universal (arm64 + x86_64)"
-# Build both arch slices and let SwiftPM lipo-merge them into one universal binary. With multiple
-# --arch, --show-bin-path resolves to the merged products dir (.build/apple/Products/Release), which
-# also holds the *.bundle resources, so the staging loop below is unchanged.
+# Build both arch slices and let the build system lipo-merge them into one universal binary.
+# With multiple --arch, --show-bin-path resolves to the merged products dir
+# (<scratch>/out/Products/Release), which also holds the *.bundle resources, so the staging loop
+# below is unchanged.
 # `-Xswiftc -g` emits DWARF so `dsymutil` can build a real (line-level) dSYM for crash symbolication.
 # This does NOT grow the shipped binary: Mach-O keeps DWARF in the .o files (referenced by the binary's
 # debug map) and dsymutil extracts it into the .dSYM — the executable only carries the symbol table.
-swift build -c release --arch arm64 --arch x86_64 -Xswiftc -g --scratch-path "$BUILD_SCRATCH" --product OpenUsage
-swift build -c release --arch arm64 --arch x86_64 -Xswiftc -g --scratch-path "$BUILD_SCRATCH" --product openusage-cli
-BUILD_DIR="$(swift build -c release --arch arm64 --arch x86_64 -Xswiftc -g --scratch-path "$BUILD_SCRATCH" --show-bin-path)"
-BUILD_BINARY="$BUILD_DIR/$APP_NAME"
+swift build -c release --build-system "$BUILD_SYSTEM" --arch arm64 --arch x86_64 -Xswiftc -g --scratch-path "$BUILD_SCRATCH" --product "$BUILD_PRODUCT"
+swift build -c release --build-system "$BUILD_SYSTEM" --arch arm64 --arch x86_64 -Xswiftc -g --scratch-path "$BUILD_SCRATCH" --product openusage-cli
+BUILD_DIR="$(swift build -c release --build-system "$BUILD_SYSTEM" --arch arm64 --arch x86_64 -Xswiftc -g --scratch-path "$BUILD_SCRATCH" --show-bin-path)"
+BUILD_BINARY="$BUILD_DIR/$BUILD_PRODUCT"
 BUILD_CLI_BINARY="$BUILD_DIR/openusage-cli"
 [ -x "$BUILD_BINARY" ] || { echo "missing built binary: $BUILD_BINARY" >&2; exit 1; }
 [ -x "$BUILD_CLI_BINARY" ] || { echo "missing built CLI: $BUILD_CLI_BINARY" >&2; exit 1; }
@@ -140,6 +151,23 @@ for uuid in $(dwarfdump --uuid "$APP_BINARY" | awk '{print $2}'); do
     || { echo "dSYM UUID mismatch: $uuid (binary) absent from $APP_DSYM — symbolication would fail." >&2; exit 1; }
 done
 echo "    dSYM: $APP_DSYM"
+
+# The resource accessors the build system generates for the dependencies' bundles have to be able to
+# find Contents/Resources: their candidate list starts at Bundle.main.resourceURL. The older
+# accessor ("could not load resource bundle: from") looks only in the app root and in the build tree
+# baked in at compile time, so a shipped app built with it dies with "Fatal error: could not load
+# resource bundle" the first time a dependency reads its resources — opening Settings does it — and
+# the app-root copies that would make it work sit outside the signature's seal, which notarization
+# rejects. So the release refuses a binary that does not carry the newer accessor.
+# `grep -c`, not `grep -q`: under `set -o pipefail` a `-q` match exits early, `strings` takes
+# SIGPIPE, and the pipeline reports failure — the check would silently never fire.
+ACCESSOR_MESSAGE="$(/usr/bin/strings "$APP_BINARY" 2>/dev/null | /usr/bin/grep -c "unable to find bundle named" || true)"
+if [ "${ACCESSOR_MESSAGE:-0}" -eq 0 ]; then
+  echo "ERROR: the built binary does not carry the resource accessor that finds Contents/Resources." >&2
+  echo "       Build the release with the Swift Build engine (SWIFT_BUILD_SYSTEM=swiftbuild); the" >&2
+  echo "       native engine's accessor looks only in the app root and in the build tree." >&2
+  exit 1
+fi
 
 shopt -s nullglob
 for bundle in "$BUILD_DIR"/*.bundle; do

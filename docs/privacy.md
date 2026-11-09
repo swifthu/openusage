@@ -17,6 +17,22 @@ only the provider APIs those accounts need.
 - A [proxy](proxy.md) password stays in your `~/.openusage/config.json`. OpenUsage reads it but never
   writes or logs it.
 
+## Usage rhythm history
+
+- The **Rhythm** tab keeps a five-minute history of how fast each account's limits fill up, in
+  `~/Library/Application Support/OpenUsage/rhythm/<bundle id>/`, one file per local day, for the
+  last 90 days.
+  The app's bundle identifier is in the path, so a development build and the installed app keep
+  separate histories.
+- A file holds the share of each window that was used, the provider, the metric name and a local
+  account id. It holds no token count, no price, no account name and no email address.
+- The history never leaves this Mac. It is not uploaded, and it is not part of the telemetry the
+  app sends — see [Anonymous telemetry](#anonymous-telemetry).
+- **Settings → Display → Usage → Delete Rhythm History** asks before it removes it. Turning
+  **Record Usage Rhythm** off stops the recording but keeps the history.
+
+See [Usage Rhythm](rhythm.md).
+
 ## Privacy Mode
 
 **Settings → Privacy → Privacy Mode** hides usage and account names from screenshots and recordings.

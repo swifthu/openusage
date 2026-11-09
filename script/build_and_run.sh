@@ -20,6 +20,7 @@ set -euo pipefail
 #        SWIFT_BUILD_FLAGS  extra flags for `swift build`, e.g. a module-cache path.
 #                           Word-split on purpose so several flags can be passed at once.
 #        SWIFT_SCRATCH_PATH SwiftPM's scratch directory. Defaults to a folder on the local disk.
+#        SWIFT_BUILD_SYSTEM the build engine: "swiftbuild" (default) or "native". See below.
 
 MODE="${1:-run}"
 CONFIG="${CONFIG:-release}"
@@ -31,8 +32,34 @@ CONFIG="${CONFIG:-release}"
 # agree on it, so they take it as an argument or use the same default.
 BUILD_SCRATCH="${SWIFT_SCRATCH_PATH:-$HOME/build}"
 
-TARGET_NAME="OpenUsage"                 # SwiftPM target / binary name
+# The build engine. Swift Build ("swiftbuild") is the one that generates a resource accessor able
+# to find Contents/Resources: its candidate list starts at Bundle.main.resourceURL. SwiftPM's older
+# native engine still generates an accessor that looks only in the app root and in the build tree
+# baked in at compile time, so an app packaged from it dies with "Fatal error: could not load
+# resource bundle" the moment a dependency reads its resources — opening Settings does it, through
+# the shortcut recorder. See Support/ResourceBundle.swift.
+BUILD_SYSTEM="${SWIFT_BUILD_SYSTEM:-swiftbuild}"
+
+# The architectures to build. Swift Build defaults to a universal binary on Apple silicon, and a
+# development build has no use for the Intel slice: it doubles both the build time and the size of
+# everything it produces (a 12 MB executable becomes 25 MB, the whole app 31 MB becomes 55 MB).
+# So the development build is the host's own architecture unless SWIFT_ARCHS says otherwise — the
+# release keeps both slices, and script/release.sh asks for them explicitly.
+ARCH_ARGS=()
+if [ -n "${SWIFT_ARCHS:-}" ]; then
+  for arch in $SWIFT_ARCHS; do
+    ARCH_ARGS+=(--arch "$arch")
+  done
+else
+  ARCH_ARGS=(--arch "$(uname -m)")
+fi
+
+TARGET_NAME="OpenUsage"                 # name of the executable inside the .app (CFBundleExecutable)
 APP_DISPLAY="OpenUsage"                 # user-facing app name
+# The SwiftPM product that builds the app executable. It cannot be called "OpenUsage": Swift Build
+# refuses a package whose executable product shares a name with a library target ("Multiple commands
+# produce"). The built binary is renamed to TARGET_NAME when it is staged into the .app.
+BUILD_PRODUCT="OpenUsageBinary"
 BUNDLE_ID="${BUNDLE_ID:-com.robinebers.openusage.dev}"
 DEMO_BUNDLE_ID="com.robinebers.openusage.dev.demo"
 DEVELOPMENT_BUILD=false
@@ -80,7 +107,7 @@ for _ in $(seq 1 40); do
 done
 
 echo "==> swift build ($CONFIG)"
-BUILD_ARGS=(-c "$CONFIG" --scratch-path "$BUILD_SCRATCH")
+BUILD_ARGS=(-c "$CONFIG" --scratch-path "$BUILD_SCRATCH" --build-system "$BUILD_SYSTEM" "${ARCH_ARGS[@]}")
 if "$DEVELOPMENT_BUILD"; then
   BUILD_ARGS+=(-Xswiftc -DOPENUSAGE_DEVELOPMENT)
 fi
@@ -89,7 +116,7 @@ BUILD_ARGS+=(${SWIFT_BUILD_FLAGS:-})
 swift build "${BUILD_ARGS[@]}"
 BUILD_DIR="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)"
 BUILD_ARTIFACTS="$BUILD_SCRATCH/artifacts"
-BUILD_BINARY="$BUILD_DIR/$TARGET_NAME"
+BUILD_BINARY="$BUILD_DIR/$BUILD_PRODUCT"
 BUILD_CLI_BINARY="$BUILD_DIR/openusage-cli"
 
 if [ ! -x "$BUILD_BINARY" ]; then
@@ -124,10 +151,12 @@ echo "==> stamping linked SDK 26.0 for Liquid Glass controls (minos stays $MIN_S
 vtool -set-build-version macos "$MIN_SYSTEM_VERSION" 26.0 -replace -output "$APP_BINARY.tmp" "$APP_BINARY"
 mv "$APP_BINARY.tmp" "$APP_BINARY"
 chmod +x "$APP_BINARY"
-# Stage every SwiftPM resource bundle produced by the build (the app's own
-# OpenUsage_OpenUsage.bundle, which carries the provider SVGs + model manifest)
-# into Contents/Resources, the standard app layout. Bundle.openUsageResources
-# (see Support/ResourceBundle.swift) loads it from there.
+# Stage every resource bundle produced by the build (the app's own
+# OpenUsage_OpenUsage.bundle, which carries the provider SVGs + model manifest, and the
+# dependencies' own bundles) into Contents/Resources, the standard app layout.
+# Bundle.openUsageResources (see Support/ResourceBundle.swift) loads the app's bundle from there,
+# and the accessors the build system generates for the dependencies' bundles look there too
+# (Bundle.main.resourceURL is their first candidate).
 shopt -s nullglob
 for bundle in "$BUILD_DIR"/*.bundle; do
   cp -R "$bundle" "$APP_RESOURCES/$(basename "$bundle")"

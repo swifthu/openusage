@@ -27,18 +27,23 @@ jobs:
           persist-credentials: false
 
       - name: Build
-        run: swift build
+        run: swift build --build-system swiftbuild --arch "$(uname -m)"
 
       - name: Run tests
-        run: swift test
+        run: |
+          # Swift Build links the test bundle against PackageFrameworks/ but builds Sparkle one
+          # level up, so the framework has to be reachable under that name.
+          mkdir -p .build/out/Products/Debug/PackageFrameworks
+          ln -sf ../Sparkle.framework .build/out/Products/Debug/PackageFrameworks/Sparkle.framework
+          swift test --build-system swiftbuild --arch "$(uname -m)"
 
       - name: Test development sample data
-        run: swift test -Xswiftc -DOPENUSAGE_DEVELOPMENT --filter 'DevelopmentDemoTests|DevelopmentDataModeTests'
+        run: swift test --build-system swiftbuild --arch "$(uname -m)" -Xswiftc -DOPENUSAGE_DEVELOPMENT --filter 'DevelopmentDemoTests|DevelopmentDataModeTests'
 
       - name: Verify production excludes development sample data
         run: |
           production_scratch="$RUNNER_TEMP/openusage-production"
-          swift build -c release --scratch-path "$production_scratch" --product OpenUsage
-          swift build -c release --scratch-path "$production_scratch" --product openusage-cli
-          production_bin="$(swift build -c release --scratch-path "$production_scratch" --show-bin-path)"
-          ./script/verify_no_demo.sh "$production_bin/OpenUsage" "$production_bin/openusage-cli"
+          swift build -c release --build-system swiftbuild --arch "$(uname -m)" --scratch-path "$production_scratch" --product OpenUsageBinary
+          swift build -c release --build-system swiftbuild --arch "$(uname -m)" --scratch-path "$production_scratch" --product openusage-cli
+          production_bin="$(swift build -c release --build-system swiftbuild --arch "$(uname -m)" --scratch-path "$production_scratch" --show-bin-path)"
+          ./script/verify_no_demo.sh "$production_bin/OpenUsageBinary" "$production_bin/openusage-cli"
