@@ -44,12 +44,30 @@ trap 'kill "$watcher" 2>/dev/null; rm -f "$seen"' EXIT
 # embed_sparkle.sh) use the same default.
 BUILD_SCRATCH="${SWIFT_SCRATCH_PATH:-$HOME/build}"
 
+# The build engine. Swift Build ("swiftbuild") is the one the other scripts build with: it generates
+# the resource accessors that find Contents/Resources, and it is what the release is packaged from.
+# See script/build_and_run.sh.
+BUILD_SYSTEM="${SWIFT_BUILD_SYSTEM:-swiftbuild}"
+
+# The tests only ever run on this Mac, so they are built for its own architecture: Swift Build
+# would otherwise build a universal binary, which doubles the compile time and the scratch space
+# for a slice nothing here runs. See script/build_and_run.sh.
+ARCH_ARGS=(--arch "$(uname -m)")
+
 # An explicit --scratch-path among the arguments wins over the default.
 scratch_given=no
 has_filter=no
+effective_scratch="$BUILD_SCRATCH"
+expect_scratch=no
 for arg in "$@"; do
+  if [ "$expect_scratch" = yes ]; then
+    effective_scratch="$arg"
+    expect_scratch=no
+    continue
+  fi
   case "$arg" in
-    --scratch-path|--scratch-path=*) scratch_given=yes ;;
+    --scratch-path) scratch_given=yes; expect_scratch=yes ;;
+    --scratch-path=*) scratch_given=yes; effective_scratch="${arg#--scratch-path=}" ;;
     --filter|--filter=*) has_filter=yes ;;
   esac
 done
@@ -57,12 +75,14 @@ if [ "$scratch_given" = no ]; then
   set -- --scratch-path "$BUILD_SCRATCH" "$@"
 fi
 
-# The Swift Build layout links the test bundle against PackageFrameworks/ but builds Sparkle one level up.
-frameworks="$BUILD_SCRATCH/out/Products/Debug/PackageFrameworks"
+# The Swift Build layout links the test bundle against PackageFrameworks/ but builds Sparkle one level
+# up, so the framework has to be reachable under that name — without it the test bundle cannot load
+# Sparkle and the suite dies before it runs. The path follows the scratch directory the run uses.
+frameworks="$effective_scratch/out/Products/Debug/PackageFrameworks"
 mkdir -p "$frameworks"
 [ -L "$frameworks/Sparkle.framework" ] || ln -s ../Sparkle.framework "$frameworks/Sparkle.framework"
 
-nice -n 19 swift test -j 2 "$@"
+nice -n 19 swift test -j 2 --build-system "$BUILD_SYSTEM" "${ARCH_ARGS[@]}" "$@"
 status=$?
 
 # The sample data and the demo app are compiled out of a normal build, so their tests need the
@@ -75,7 +95,7 @@ if [ "$has_filter" = no ] && [ "$scratch_given" = no ]; then
   mkdir -p "$development_frameworks"
   [ -L "$development_frameworks/Sparkle.framework" ] \
     || ln -s ../Sparkle.framework "$development_frameworks/Sparkle.framework"
-  nice -n 19 swift test -j 2 --scratch-path "$development_scratch" -Xswiftc -DOPENUSAGE_DEVELOPMENT \
+  nice -n 19 swift test -j 2 --build-system "$BUILD_SYSTEM" "${ARCH_ARGS[@]}" --scratch-path "$development_scratch" -Xswiftc -DOPENUSAGE_DEVELOPMENT \
     --filter 'DevelopmentDemoTests|DevelopmentDataModeTests'
   development_status=$?
   if [ "$development_status" -ne 0 ]; then status=$development_status; fi

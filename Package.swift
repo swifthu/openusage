@@ -7,7 +7,10 @@ let package = Package(
         .macOS(.v15)
     ],
     products: [
-        .executable(name: "OpenUsage", targets: ["OpenUsageApp"]),
+        // The product is not named "OpenUsage": Swift Build's build engine refuses a package whose
+        // executable product shares a name with a library target ("Multiple commands produce").
+        // The binary is still shipped as Contents/MacOS/OpenUsage; the staging scripts rename it.
+        .executable(name: "OpenUsageBinary", targets: ["OpenUsageApp"]),
         .executable(name: "openusage-cli", targets: ["OpenUsageCLI"])
     ],
     dependencies: [

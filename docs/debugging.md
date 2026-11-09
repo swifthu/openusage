@@ -20,6 +20,26 @@ not next to the sources. On a checkout that sits on a network volume those files
 (stale NFS handles, module maps truncated mid-write) and the build fails at random. Override the
 path with `SWIFT_SCRATCH_PATH` when a different location is wanted.
 
+## The build engine
+
+The scripts build with Swift Build (`swift build --build-system swiftbuild`), not SwiftPM's older
+native engine. The difference matters for the packaged app: Swift Build generates a resource
+accessor that looks in the app's `Contents/Resources`, where the scripts stage every resource
+bundle, while the native engine's accessor looks only in the app root and in the build tree baked
+in at compile time. An app packaged with the native engine therefore dies with "Fatal error: could
+not load resource bundle" the first time a dependency reads its resources — opening Settings does
+it, through the shortcut recorder — but only on a machine that does not have the build tree, so a
+locally built app hides it.
+
+`SWIFT_BUILD_SYSTEM=native` switches the scripts back to the old engine. Do not package a release
+with it: `script/release.sh` refuses a binary whose resource accessor cannot find
+`Contents/Resources`.
+
+Swift Build builds a universal binary unless told otherwise. The development and test scripts build
+the host's own architecture, because nothing here runs the other slice and it doubles both the
+build time and the size of what is produced; `SWIFT_ARCHS="arm64 x86_64"` asks for both. The
+release always builds both.
+
 ## Sample Data (Development Only)
 
 The local build script stages `dist/OpenUsage.app` and `dist/OpenUsage Demo.app`. In the normal dev

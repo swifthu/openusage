@@ -3,12 +3,13 @@ import Foundation
 extension Bundle {
     /// The bundle carrying OpenUsage's copied provider icons.
     ///
-    /// SwiftPM generates `Bundle.module` for an executable target that only looks two places: next to
-    /// `Bundle.main.bundleURL` (which, for a packaged `.app`, is the app root) and a path into the build
-    /// tree baked in at compile time. Neither resolves in a shipped `.app`, where the resource bundle
-    /// lives in `Contents/Resources` — so `Bundle.module` hits its `fatalError` and the app crashes on
-    /// launch. (A locally built app appears to work only because the baked-in build path still exists on
-    /// the build machine.)
+    /// The build system generates a `Bundle.module` for every target that carries resources. Under
+    /// the Swift Build engine that accessor looks in `Bundle.main.resourceURL` first — the app's
+    /// `Contents/Resources`, where the packaging scripts stage every resource bundle — so it finds
+    /// the bundle in a shipped `.app`. SwiftPM's older native engine generated an accessor that
+    /// looked only in the app root and in the build tree baked in at compile time, so an app
+    /// packaged with it died with "Fatal error: could not load resource bundle" the first time a
+    /// dependency read its resources. The scripts build with Swift Build for that reason.
     ///
     /// This accessor looks where the resource bundle actually ships first, and only falls back to
     /// `Bundle.module` for `swift run` / `swift test`, where the build path is valid.
