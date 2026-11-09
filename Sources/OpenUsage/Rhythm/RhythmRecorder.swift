@@ -333,17 +333,22 @@ final class RhythmRecorder {
             }
         }
         var series = days[day] ?? [:]
-        var record = series[reading.key] ?? RhythmSeriesRecord(
+        var record = series[reading.key] ?? RhythmSeriesRecord.empty(
             key: reading.key,
             kind: reading.kind,
             label: reading.label,
             windowMs: reading.windowMs,
-            points: Array(repeating: 0, count: RhythmClock.bucketCount(on: day, calendar: calendar)),
-            samples: Array(repeating: 0, count: RhythmClock.bucketCount(on: day, calendar: calendar))
+            bucketCount: RhythmClock.bucketCount(on: day, calendar: calendar)
         )
         if let index = RhythmClock.bucketIndex(for: reading.at, on: day, calendar: calendar),
            index < record.samples.count {
             record.samples[index] += 1
+        }
+        // The share a 5-hour window still had left is what the chart's line draws. Only that
+        // window is kept: it is the one that resets, so its remaining share is a line with runs
+        // in it, and it is the one a user watches while a plan is being used up.
+        if settings.tracksSessionWindows, reading.windowMs == MetricPeriod.sessionMs {
+            record.keep(level: RhythmLevelSample(at: reading.at, remaining: max(0, 1 - reading.fraction)))
         }
         series[reading.key] = record
         days[day] = series
@@ -360,13 +365,12 @@ final class RhythmRecorder {
     private func burn(_ delta: RhythmDelta, of reading: RhythmReading, on day: Date) {
         guard !delta.buckets.isEmpty else { return }
         var series = days[day] ?? [:]
-        var record = series[reading.key] ?? RhythmSeriesRecord(
+        var record = series[reading.key] ?? RhythmSeriesRecord.empty(
             key: reading.key,
             kind: reading.kind,
             label: reading.label,
             windowMs: reading.windowMs,
-            points: Array(repeating: 0, count: RhythmClock.bucketCount(on: day, calendar: calendar)),
-            samples: Array(repeating: 0, count: RhythmClock.bucketCount(on: day, calendar: calendar))
+            bucketCount: RhythmClock.bucketCount(on: day, calendar: calendar)
         )
         for share in delta.buckets where share.index < record.points.count {
             record.points[share.index] += delta.points * share.share
@@ -475,7 +479,10 @@ final class RhythmRecorder {
                 label: storedSeries.label,
                 windowMs: storedSeries.windowMs,
                 points: points,
-                samples: samples
+                samples: samples,
+                // The levels of a day that was written before they were kept are read defensively:
+                // a file another version wrote holds whatever it holds.
+                levels: storedSeries.levels
             )
             series[storedSeries.key] = continued
             writtenSeries[storedSeries.key] = continued

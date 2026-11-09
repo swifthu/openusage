@@ -164,4 +164,90 @@ enum RhythmAnalytics {
         while last < bars.count - 1, bars[last + 1].points >= threshold { last += 1 }
         return first...last
     }
+
+    /// Whether a day holds any reading at all.
+    ///
+    /// The window on show does not matter: a window without readings is a window of a day that
+    /// has them, and the chart stays on show so the reader can move back to the part that has
+    /// them. Only a day that was never read is a day nothing was recorded on.
+    static func hasReadings(_ record: RhythmDayRecord) -> Bool {
+        record.series.contains { series in series.samples.contains { $0 > 0 } }
+    }
+
+    /// Whether any of the days holds a reading.
+    static func hasReadings(in records: [RhythmDayRecord]) -> Bool {
+        records.contains(where: hasReadings)
+    }
+
+    /// The 5-hour windows the days hold, so the chart can offer them.
+    static func sessionWindows(in records: [RhythmDayRecord]) -> [RhythmSessionWindow] {
+        var windows: [String: RhythmSessionWindow] = [:]
+        for record in records {
+            for series in record.series where series.windowMs == MetricPeriod.sessionMs {
+                windows[series.key] = RhythmSessionWindow(
+                    key: series.key, kind: series.kind, label: series.label
+                )
+            }
+        }
+        return windows.values.sorted { $0.key < $1.key }
+    }
+
+    /// The remaining share of a window at each of its readings, over the window on show.
+    ///
+    /// The readings outside the window on show are left out, and the ones inside keep the place
+    /// they were read at: a line is drawn through them in the order they came.
+    static func levelPoints(
+        for record: RhythmDayRecord,
+        seriesKey: String,
+        zoom: RhythmZoom,
+        offset: TimeInterval = 0,
+        calendar: Calendar = .current
+    ) -> [RhythmLevelPoint] {
+        guard let series = record.series.first(where: { $0.key == seriesKey }) else { return [] }
+        let dayStart = calendar.startOfDay(for: record.day)
+        return series.levelSamples.compactMap { sample in
+            let seconds = sample.at.timeIntervalSince(dayStart) - offset
+            guard seconds >= 0, seconds <= zoom.window else { return nil }
+            return RhythmLevelPoint(
+                position: seconds / zoom.window,
+                remaining: min(max(sample.remaining, 0), 1)
+            )
+        }
+    }
+
+    /// The average remaining share of a window over several days.
+    ///
+    /// A slice of the window is divided by the days that were read in it, the way the bars are: a
+    /// day the app was closed does not pull the average down. The point of a slice sits where the
+    /// readings of those days sat on average.
+    static func averageLevelPoints(
+        for records: [RhythmDayRecord],
+        seriesKey: String,
+        zoom: RhythmZoom,
+        offset: TimeInterval = 0,
+        calendar: Calendar = .current
+    ) -> [RhythmLevelPoint] {
+        var remainings = [Double](repeating: 0, count: 24)
+        var positions = [Double](repeating: 0, count: 24)
+        var readings = [Int](repeating: 0, count: 24)
+        for record in records {
+            let dayStart = calendar.startOfDay(for: record.day)
+            for sample in record.series.first(where: { $0.key == seriesKey })?.levelSamples ?? [] {
+                let seconds = sample.at.timeIntervalSince(dayStart) - offset
+                guard seconds >= 0, seconds <= zoom.window else { continue }
+                let slice = Int((seconds / zoom.barDuration).rounded(.down))
+                guard slice >= 0, slice < 24 else { continue }
+                remainings[slice] += min(max(sample.remaining, 0), 1)
+                positions[slice] += seconds / zoom.window
+                readings[slice] += 1
+            }
+        }
+        return (0..<24).compactMap { slice in
+            guard readings[slice] > 0 else { return nil }
+            return RhythmLevelPoint(
+                position: positions[slice] / Double(readings[slice]),
+                remaining: remainings[slice] / Double(readings[slice])
+            )
+        }
+    }
 }

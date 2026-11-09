@@ -55,6 +55,9 @@ Both of these are under **Settings → Display → Usage**.
 - **Record Usage Rhythm.** Keeps how fast your limits fill up, so the **Rhythm** tab can show when
   your busy hours are. On by default. Turning it off stops the recording and keeps what was already
   recorded.
+- **Track 5-Hour Windows.** Keeps how much of each 5-hour window was left at every reading, so the
+  **Rhythm** tab can draw it as a dashed line. On by default. Turning it off stops keeping that
+  share; the rate of the windows is still recorded, and the line disappears.
 - **Delete Rhythm History.** Removes the recorded history from this Mac, after asking for a
   confirmation. The button is greyed out when there is no history to remove; it is checked when the
   screen is opened, so a history that is recorded afterwards is only removed once the screen is

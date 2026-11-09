@@ -301,6 +301,27 @@ final class RhythmViewTests: QuietWindowTestCase {
         )
     }
 
+    /// A window without readings is still a chart: the day it belongs to was read in the morning,
+    /// and the chart has to stay so the reader can move back to the part that has them.
+    func testAWindowWithoutReadingsKeepsTheChartOnShow() async throws {
+        let store = RecordingRhythmStore(calendar: .current)
+        let container = makeContainer(store: store)
+        try store.save(recordToday())
+        // The window on show is the two hours at the start of the day, and the day was read in
+        // the morning.
+        let (_, host) = show(rhythmView(container, zoom: .twoHours), in: .titled, size: CGSize(width: PanelMetrics.width, height: 400))
+
+        try await waitUntil { self.texts(in: host).contains("Percentage Points / 5 Minutes") }
+        XCTAssertFalse(
+            texts(in: host).contains("No readings were taken on this day."),
+            "the day was read in the morning"
+        )
+        XCTAssertTrue(
+            texts(in: host).contains("No readings were taken in this window."),
+            "the window says that it holds nothing"
+        )
+    }
+
     // MARK: - Helpers
 
     private func makeContainer(
@@ -315,8 +336,8 @@ final class RhythmViewTests: QuietWindowTestCase {
         )
     }
 
-    private func rhythmView(_ container: AppContainer) -> some View {
-        RhythmView()
+    private func rhythmView(_ container: AppContainer, zoom: RhythmZoom = .day) -> some View {
+        RhythmView(initialZoom: zoom)
             .environment(container)
             .environment(container.layout)
             .environment(container.popover)

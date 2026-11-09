@@ -294,4 +294,153 @@ final class RhythmAnalyticsTests: XCTestCase {
         XCTAssertEqual(RhythmZoom.sixHours.unit, "Percentage Points / 15 Minutes")
         XCTAssertEqual(RhythmZoom.twoHours.unit, "Percentage Points / 5 Minutes")
     }
+
+    // MARK: - The readings a day holds
+
+    /// A day that was read in the morning is a day that was read, whatever window is on show: a
+    /// window without readings is a window of a day that has them, and the chart has to stay.
+    func testADayWithReadingsHasThemEvenWhenTheWindowOnShowHasNone() {
+        let dayRecord = readDay(6, readBuckets: [108])
+
+        let evening = RhythmAnalytics.bars(
+            for: dayRecord, zoom: .twoHours, offset: 20 * 3600, calendar: calendar
+        )
+
+        XCTAssertTrue(evening.allSatisfy { $0.samples == 0 }, "the evening was not read")
+        XCTAssertTrue(RhythmAnalytics.hasReadings(dayRecord), "the day was read in the morning")
+    }
+
+    /// A day that was never read is a day nothing was recorded on.
+    func testADayThatWasNeverReadHasNoReadings() {
+        let dayRecord = readDay(6, readBuckets: [])
+
+        XCTAssertFalse(RhythmAnalytics.hasReadings(dayRecord))
+    }
+
+    /// A range is read when any of its days is.
+    func testARangeIsReadWhenAnyOfItsDaysIs() {
+        XCTAssertFalse(RhythmAnalytics.hasReadings(in: [readDay(6, readBuckets: [])]))
+        XCTAssertTrue(RhythmAnalytics.hasReadings(in: [readDay(6, readBuckets: []), readDay(7, readBuckets: [1])]))
+    }
+
+    // MARK: - The remaining share of a window
+
+    /// The line is drawn where the reading was taken.
+    func testTheRemainingShareIsDrawnWhereItWasRead() {
+        let dayRecord = readDay(6, readBuckets: [108, 144], levels: [
+            RhythmLevelSample(at: moment(6, 9), remaining: 0.8),
+            RhythmLevelSample(at: moment(6, 12), remaining: 0.5)
+        ])
+
+        let points = RhythmAnalytics.levelPoints(
+            for: dayRecord, seriesKey: "account-1/Session", zoom: .day, offset: 0, calendar: calendar
+        )
+
+        XCTAssertEqual(points.count, 2)
+        XCTAssertEqual(points[0].position, 9.0 / 24.0, accuracy: 0.0001)
+        XCTAssertEqual(points[0].remaining, 0.8, accuracy: 0.0001)
+        XCTAssertEqual(points[1].position, 12.0 / 24.0, accuracy: 0.0001)
+        XCTAssertEqual(points[1].remaining, 0.5, accuracy: 0.0001)
+    }
+
+    /// A reading outside the window on show is not on the line.
+    func testAReadingOutsideTheWindowOnShowIsLeftOut() throws {
+        let dayRecord = readDay(6, readBuckets: [108, 276], levels: [
+            RhythmLevelSample(at: moment(6, 9), remaining: 0.8),
+            RhythmLevelSample(at: moment(6, 23), remaining: 0.2)
+        ])
+
+        // The window on show is the two hours that end at 23:00.
+        let points = RhythmAnalytics.levelPoints(
+            for: dayRecord, seriesKey: "account-1/Session", zoom: .twoHours, offset: 21 * 3600, calendar: calendar
+        )
+
+        XCTAssertEqual(points.count, 1)
+        XCTAssertEqual(try XCTUnwrap(points.first).remaining, 0.2, accuracy: 0.0001)
+    }
+
+    /// A window that is not followed has no line.
+    func testAWindowThatIsNotFollowedHasNoLine() {
+        let dayRecord = readDay(6, readBuckets: [108], levels: [
+            RhythmLevelSample(at: moment(6, 9), remaining: 0.8)
+        ])
+
+        let points = RhythmAnalytics.levelPoints(
+            for: dayRecord, seriesKey: "account-2/Session", zoom: .day, offset: 0, calendar: calendar
+        )
+
+        XCTAssertTrue(points.isEmpty)
+    }
+
+    /// The average counts the days that were read in a slice, the way the bars do: a day the app
+    /// was closed does not pull the average down.
+    func testTheAverageOfTheRemainingShareCountsTheDaysThatWereRead() {
+        let morning = readDay(6, readBuckets: [108], levels: [RhythmLevelSample(at: moment(6, 9), remaining: 0.8)])
+        let evening = readDay(7, readBuckets: [276], levels: [RhythmLevelSample(at: moment(7, 23), remaining: 0.4)])
+
+        let points = RhythmAnalytics.averageLevelPoints(
+            for: [morning, evening], seriesKey: "account-1/Session", zoom: .day, offset: 0, calendar: calendar
+        )
+
+        XCTAssertEqual(points.count, 2)
+        // The morning slice was read on the first day only, so it is that day's share.
+        XCTAssertEqual(points[0].remaining, 0.8, accuracy: 0.0001)
+        // The evening slice was read on the second day only.
+        XCTAssertEqual(points[1].remaining, 0.4, accuracy: 0.0001)
+    }
+
+    /// Only the 5-hour windows are on offer: they are the ones that reset, so their remaining
+    /// share is a line with runs in it.
+    func testTheWindowsOnOfferAreTheFiveHourOnes() {
+        var points = [Double](repeating: 0, count: 288)
+        var samples = [Int](repeating: 0, count: 288)
+        let record = RhythmDayRecord(day: day(6), series: [
+            RhythmSeriesRecord(
+                key: "account-1/Session", kind: .claude, label: "Session",
+                windowMs: MetricPeriod.sessionMs, points: points, samples: samples
+            ),
+            RhythmSeriesRecord(
+                key: "account-1/Weekly", kind: .claude, label: "Weekly",
+                windowMs: MetricPeriod.weekMs, points: points, samples: samples
+            )
+        ])
+
+        let windows = RhythmAnalytics.sessionWindows(in: [record])
+
+        XCTAssertEqual(windows.count, 1)
+        XCTAssertEqual(windows.first?.key, "account-1/Session")
+        XCTAssertEqual(windows.first?.name, "Claude · Session")
+    }
+
+    // MARK: - Helpers
+
+    /// A day that was read in the given buckets, with the levels those readings carried.
+    private func readDay(
+        _ dayNumber: Int,
+        readBuckets: [Int],
+        levels: [RhythmLevelSample] = []
+    ) -> RhythmDayRecord {
+        var points = [Double](repeating: 0, count: 288)
+        var samples = [Int](repeating: 0, count: 288)
+        for bucket in readBuckets {
+            points[bucket] = 0.4
+            samples[bucket] = 1
+        }
+        return RhythmDayRecord(day: day(dayNumber), series: [
+            RhythmSeriesRecord(
+                key: "account-1/Session",
+                kind: .claude,
+                label: "Session",
+                windowMs: MetricPeriod.sessionMs,
+                points: points,
+                samples: samples,
+                levels: levels
+            )
+        ])
+    }
+
+    /// A moment of the given day.
+    private func moment(_ dayNumber: Int, _ hour: Int) -> Date {
+        calendar.date(from: DateComponents(year: 2026, month: 11, day: dayNumber, hour: hour))!
+    }
 }

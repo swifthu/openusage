@@ -54,6 +54,19 @@ final class RhythmSettingsTests: QuietWindowTestCase {
         XCTAssertFalse(container.rhythmSettings.isEnabled, "the switch turned the recording off")
     }
 
+    /// The remaining share of the 5-hour windows is the user's choice: the switch turns it off.
+    func testTheSwitchTurnsTheTrackingOfTheFiveHourWindowsOff() async throws {
+        let container = makeContainer(store: RecordingRhythmStore(calendar: .current))
+        XCTAssertTrue(container.rhythmSettings.tracksSessionWindows, "the tracking is on by default")
+
+        let (_, host) = showSettings(container: container)
+        try await waitUntil { self.switchControl(for: "Track 5-Hour Windows", in: host) != nil }
+        switchControl(for: "Track 5-Hour Windows", in: host)?.performClick(nil)
+
+        try await waitUntil { !container.rhythmSettings.tracksSessionWindows }
+        XCTAssertFalse(container.rhythmSettings.tracksSessionWindows, "the switch turned the tracking off")
+    }
+
     /// Removing the history takes today's own record with it, and the recorder lets go of what it
     /// holds, so the day is not written out again on the next refresh.
     func testRemovingTheHistoryEmptiesItAndLetsTheRecorderLetGo() throws {
@@ -122,12 +135,17 @@ final class RhythmSettingsTests: QuietWindowTestCase {
             .map(\.enabled)
     }
 
-    /// The switch of the "Record Usage Rhythm" row. It is the checkbox that comes right after the
-    /// row's text in the tree, and the switches of the tab are in the same order.
+    /// The switch of the "Record Usage Rhythm" row.
     private func rhythmSwitch(in host: NSView) -> NSSwitch? {
+        switchControl(for: "Record Usage Rhythm", in: host)
+    }
+
+    /// The switch of a row. It is the checkbox that comes right after the row's text in the tree,
+    /// and the switches of the tab are in the same order.
+    private func switchControl(for label: String, in host: NSView) -> NSSwitch? {
         let tree = nodes(in: host)
         guard let textIndex = tree.firstIndex(where: {
-            $0.role == NSAccessibility.Role.staticText.rawValue && ($0.value == "Record Usage Rhythm" || $0.label == "Record Usage Rhythm")
+            $0.role == NSAccessibility.Role.staticText.rawValue && ($0.value == label || $0.label == label)
         }) else { return nil }
         let boxesBefore = tree[..<textIndex].filter { $0.role == NSAccessibility.Role.checkBox.rawValue }.count
         var switches: [NSSwitch] = []

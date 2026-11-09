@@ -2,10 +2,10 @@ import SwiftUI
 
 /// The rhythm tab: when each account's window fills up, and when the peak hours are.
 struct RhythmView: View {
-    @Environment(AppContainer.self) private var container
+    @Environment(AppContainer.self) var container
 
     /// Which of the two views is showing.
-    private enum Mode: String, CaseIterable, Identifiable {
+    enum Mode: String, CaseIterable, Identifiable {
         case day
         case average
         var id: String { rawValue }
@@ -32,13 +32,13 @@ struct RhythmView: View {
         case failed(String)
     }
 
-    @State private var mode: Mode = .day
+    @State var mode: Mode = .day
     @State private var day = Date()
     @State private var span: Span = .month
-    @State private var zoom: RhythmZoom = .day
-    @State private var offset: TimeInterval = 0
+    @State var zoom: RhythmZoom
+    @State var offset: TimeInterval
     @State private var isPickingDay = false
-    @State private var records: [RhythmDayRecord] = []
+    @State var records: [RhythmDayRecord] = []
     /// The days that have a file at all. A day that has a file but no record is a day the store
     /// could not read, which is not the same as a day nothing was recorded on.
     @State private var recordedDays: Set<Date> = []
@@ -47,6 +47,18 @@ struct RhythmView: View {
     @State private var hasHistory = false
     /// What went wrong while reading the history, if anything.
     @State private var readError: String?
+
+    /// The window the chart starts at.
+    ///
+    /// The tab starts at the whole day. A test starts it at the window it wants to look at: the
+    /// zoom control cannot be driven from a test, and a window that holds no reading is a case
+    /// worth pinning down.
+    init(initialZoom: RhythmZoom = .day, initialOffset: TimeInterval = 0) {
+        let dayLength = Calendar.current.dateInterval(of: .day, for: Date())?.duration
+            ?? RhythmZoom.day.window
+        _zoom = State(initialValue: initialZoom)
+        _offset = State(initialValue: Self.clampedOffset(initialOffset, zoom: initialZoom, dayLength: dayLength))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.l) {
@@ -81,7 +93,7 @@ struct RhythmView: View {
     }
 
     /// The day on show, when it was recorded.
-    private var selectedRecord: RhythmDayRecord? {
+    var selectedRecord: RhythmDayRecord? {
         records.first { Calendar.current.isDate($0.day, inSameDayAs: day) }
     }
 
@@ -97,10 +109,15 @@ struct RhythmView: View {
                     ? "No readings were taken on this day."
                     : "No readings were taken in this range.")
             } else {
-                // What the bars are counted in, so the chart says what it adds up.
-                Text(zoom.unit)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
+                // What the bars are counted in, so the chart says what it adds up, and which
+                // window the dashed line follows.
+                HStack(spacing: 8) {
+                    Text(zoom.unit)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    windowPicker
+                }
                 if zoom != .day {
                     RhythmContextStrip(
                         dayBars: contextBars,
@@ -108,8 +125,13 @@ struct RhythmView: View {
                         onMove: { share in move(to: share) }
                     )
                 }
-                RhythmChart(bars: bars, peak: RhythmAnalytics.peakBars(in: bars), zoom: zoom)
+                RhythmChart(bars: bars, peak: RhythmAnalytics.peakBars(in: bars), zoom: zoom, levels: levelPoints)
                     .frame(height: 96)
+                if windowHasNoReadings {
+                    Text("No readings were taken in this window.")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                }
                 axis
                 zoomSlider
             }
@@ -266,9 +288,23 @@ struct RhythmView: View {
             .sorted()
     }
 
-    /// Whether the days on show hold no reading at all. The chart would be an empty grid then,
-    /// with nothing on it to say why.
+    /// Whether the days on show hold no reading at all.
+    ///
+    /// The window on show does not matter: a window without readings is a window of a day that has
+    /// them, and the chart stays on show so the reader can move back to the part that has them.
+    /// Only a day that was never read is a day nothing was recorded on.
     private var hasNoReadings: Bool {
+        switch mode {
+        case .day:
+            guard let record = selectedRecord else { return false }
+            return !RhythmAnalytics.hasReadings(record)
+        case .average:
+            return !RhythmAnalytics.hasReadings(in: records)
+        }
+    }
+
+    /// Whether the window on show holds no reading of its own.
+    private var windowHasNoReadings: Bool {
         !bars.isEmpty && bars.allSatisfy { $0.samples == 0 }
     }
 

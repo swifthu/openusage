@@ -12,6 +12,18 @@ struct RhythmSeries: Hashable, Sendable, Codable {
     var windowMs: Int
 }
 
+/// One reading that carried the share the window still had left.
+///
+/// The levels are kept apart from the buckets: a burn is a rate and can be spread over the
+/// buckets an interval covered, but a level is a reading of the window at one instant, and a
+/// window that resets makes the levels of a day a series of separate runs rather than one line.
+struct RhythmLevelSample: Hashable, Sendable, Codable {
+    /// When the reading was taken.
+    var at: Date
+    /// The share of the window that was still left, 0...1.
+    var remaining: Double
+}
+
 /// One series' buckets for one day.
 struct RhythmSeriesRecord: Hashable, Sendable, Codable {
     var key: String
@@ -23,6 +35,12 @@ struct RhythmSeriesRecord: Hashable, Sendable, Codable {
     /// One entry per bucket: how many samples landed in it. Zero means nothing was read, which is
     /// not the same as nothing being used.
     var samples: [Int]
+    /// The readings that carried the window's remaining share, oldest first.
+    ///
+    /// Nil when the window is not tracked — the setting in Settings is off, or the file was
+    /// written before the levels were kept. An empty array is a window that is tracked and has
+    /// been read nothing yet.
+    var levels: [RhythmLevelSample]?
 
     var series: RhythmSeries {
         RhythmSeries(key: key, kind: kind, label: label, windowMs: windowMs)
@@ -52,6 +70,27 @@ struct RhythmReading: Hashable, Sendable {
     var resetsAt: Date?
     /// When the reading was taken.
     var at: Date
+}
+
+/// One point of the chart's line: where it sits in the chart and how much was left.
+struct RhythmLevelPoint: Hashable, Sendable {
+    /// Where the point sits in the chart, 0...1 from the left.
+    var position: Double
+    /// The share of the window that was still left, 0...1.
+    var remaining: Double
+}
+
+/// A 5-hour window the chart can follow.
+///
+/// The key holds the account's card id, which is local to this Mac: a window that is not in the
+/// history any more is simply not on offer.
+struct RhythmSessionWindow: Hashable, Sendable, Identifiable {
+    var id: String { key }
+    var key: String
+    var kind: ProviderKind
+    var label: String
+    /// The name the picker shows.
+    var name: String { "\(kind.displayName) · \(label)" }
 }
 
 /// How much of a window was burned between two readings, and the buckets it belongs to.

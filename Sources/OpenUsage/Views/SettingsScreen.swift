@@ -148,6 +148,9 @@ struct SettingsScreen: View {
             Toggle(isOn: $rhythmSettings.isEnabled) {
                 titled("Record Usage Rhythm", info: "Keeps how fast your limits fill up, on this Mac")
             }
+            Toggle(isOn: $rhythmSettings.tracksSessionWindows) {
+                titled("Track 5-Hour Windows", info: "Keeps how much of each 5-hour window is left, so the rhythm chart can draw it")
+            }
             Button("Delete Rhythm History") {
                 isConfirmingRhythmDeletion = true
             }

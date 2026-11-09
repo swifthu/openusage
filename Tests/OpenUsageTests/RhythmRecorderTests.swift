@@ -387,7 +387,76 @@ final class RhythmRecorderTests: XCTestCase {
         XCTAssertNil(recorder.lastWriteError)
     }
 
-    private func snapshot(fraction: Double, resetsAt: Date? = nil, providerID: String = "account-1") -> ProviderSnapshot {
+    // MARK: - The remaining share of a window
+
+    /// The share a 5-hour window still had left is kept at every reading: it is what the chart's
+    /// dashed line draws.
+    func testTheRemainingShareOfAFiveHourWindowIsKept() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        recorder.record(snapshot(fraction: 0.35), kind: .claude, at: moment(14, 5))
+
+        let pending = try XCTUnwrap(recorder.pendingSeries.first)
+        let levels = try XCTUnwrap(pending.levels)
+        XCTAssertEqual(levels.count, 2)
+        XCTAssertEqual(levels[0].at, moment(14, 0))
+        XCTAssertEqual(levels[0].remaining, 0.8, accuracy: 0.0001)
+        XCTAssertEqual(levels[1].at, moment(14, 5))
+        XCTAssertEqual(levels[1].remaining, 0.65, accuracy: 0.0001)
+    }
+
+    /// The tracking is the user's choice: with it off, nothing of the remaining share is kept.
+    func testTheRemainingShareIsNotKeptWhenTheTrackingIsOff() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let settings = RhythmSettings(defaults: isolatedDefaults())
+        settings.tracksSessionWindows = false
+        let recorder = RhythmRecorder(store: store, settings: settings, calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+
+        let pending = try XCTUnwrap(recorder.pendingSeries.first)
+        XCTAssertNil(pending.levels, "the remaining share is not kept")
+    }
+
+    /// Only the 5-hour window is kept: it is the one that resets, so its remaining share says
+    /// something about the plan. A window of another length is recorded as a rate like any other.
+    func testTheRemainingShareOfAnotherWindowIsNotKept() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let recorder = RhythmRecorder(store: store, settings: RhythmSettings(defaults: isolatedDefaults()), calendar: calendar)
+
+        recorder.record(snapshot(fraction: 0.2, periodMs: 3 * 60 * 60 * 1000), kind: .claude, at: moment(14, 0))
+
+        let pending = try XCTUnwrap(recorder.pendingSeries.first)
+        XCTAssertNil(pending.levels, "another window's remaining share is not kept")
+    }
+
+    /// The levels of a day that was written before they were kept are read as they are.
+    func testTheLevelsOfADaySurviveARestart() throws {
+        let store = RecordingRhythmStore(calendar: calendar)
+        let settings = RhythmSettings(defaults: isolatedDefaults())
+        let recorder = RhythmRecorder(store: store, settings: settings, calendar: calendar)
+        recorder.record(snapshot(fraction: 0.2), kind: .claude, at: moment(14, 0))
+        recorder.flush(at: moment(14, 1))
+
+        // A second run of the app takes the day back from the store.
+        let restarted = RhythmRecorder(store: store, settings: settings, calendar: calendar)
+        restarted.record(snapshot(fraction: 0.4), kind: .claude, at: moment(14, 5))
+
+        let pending = try XCTUnwrap(restarted.pendingSeries.first)
+        let levels = try XCTUnwrap(pending.levels)
+        XCTAssertEqual(levels.count, 2, "the level of the first run is still there")
+        XCTAssertEqual(levels[0].remaining, 0.8, accuracy: 0.0001)
+        XCTAssertEqual(levels[1].remaining, 0.6, accuracy: 0.0001)
+    }
+
+    private func snapshot(
+        fraction: Double,
+        resetsAt: Date? = nil,
+        providerID: String = "account-1",
+        periodMs: Int = MetricPeriod.sessionMs
+    ) -> ProviderSnapshot {
         ProviderSnapshot(
             providerID: providerID,
             displayName: "Claude",
@@ -397,7 +466,7 @@ final class RhythmRecorderTests: XCTestCase {
                 limit: 100,
                 format: .percent,
                 resetsAt: resetsAt ?? moment(19, 0),
-                periodDurationMs: MetricPeriod.sessionMs
+                periodDurationMs: periodMs
             )]
         )
     }

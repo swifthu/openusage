@@ -19,6 +19,11 @@ logs of other tools.
 Only windows of a day or less are recorded. A weekly limit sampled every few minutes is a slow
 drift, and its hourly rate says nothing about when you are actually working.
 
+What is kept about a window is its rate: how much of it was burned between two readings. The share
+that was left at every reading is kept for the 5-hour windows only, and only when **Track 5-Hour
+Windows** is on — that is what the chart's dashed line draws. It is the share of the provider's own
+window, never a token count, a price or an estimate of anything.
+
 A metric whose unit is money is not recorded. A dollar budget is the rate at which money is
 spent, and this app does not chart spending. What the chart carries is the share of each recorded
 window — a percentage or a count — and nothing else.
@@ -58,6 +63,29 @@ The chart adds up the share of every recorded window, including windows of diffe
 accounts whose windows each burned 5% make a bar of 10 points. The unit above the chart says how
 much time each bar covers, so it follows the zoom level — "Percentage Points / Hour" for a whole
 day, "Percentage Points / 5 Minutes" for the narrowest one.
+
+A window that holds no reading of its own is still a chart: the day it belongs to was read
+somewhere else, and the chart stays so the reader can move back to the part that has them. Only a
+day that was never read says that nothing was recorded on it.
+
+## The remaining share of a 5-hour window
+
+Above the chart, next to the unit, a picker chooses the 5-hour window the dashed line follows.
+Every account has its own, and the choice is kept, so the chart shows the same window the next
+time. A window that is not in the history any more is not on offer, and the first one takes its
+place.
+
+The line is the share the chosen window still had left at every reading. A window that resets
+every five hours therefore shows as a line that climbs back up: the share before a reset and the
+share after it are two runs of the same window.
+
+The bars and the line are counted in different things — a bar is a rate, the line is a share — so
+the chart has an axis for each. The left axis is the bars', from zero to the tallest bar; the
+right axis is the line's, from 0% to 100%.
+
+Keeping the share is a setting of its own: **Settings → Display → Usage → Track 5-Hour Windows**.
+With it off, the app keeps the rate of every window as before and no share is kept, so the line
+is gone.
 
 Turn the recording off in **Settings → Display → Usage → Record Usage Rhythm**, and remove what was
 already recorded with **Delete Rhythm History**, which asks before it removes anything. The two are

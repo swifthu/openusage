@@ -65,6 +65,50 @@ final class RhythmStoreTests: XCTestCase {
         ])
     }
 
+    /// A file that was written before the remaining share was kept is still read: the levels it
+    /// does not hold are simply none.
+    func testAFileWrittenBeforeTheLevelsWereKeptIsStillRead() throws {
+        let store = makeStore()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let count = RhythmClock.bucketCount(on: day(11, 6), calendar: calendar)
+        let points = Array(repeating: "0.0", count: count).joined(separator: ",")
+        let samples = Array(repeating: "1", count: count).joined(separator: ",")
+        let payload = """
+        {"schema":"openusage.rhythm.v1","day":"2026-11-06","series":[{"key":"account-1/Session","kind":"claude","label":"Session","windowMs":18000000,"points":[\(points)],"samples":[\(samples)]}]}
+        """
+        try Data(payload.utf8).write(to: directory.appendingPathComponent(fileName(11, 6)))
+
+        let loaded = try XCTUnwrap(try store.load(day: day(11, 6)))
+
+        XCTAssertEqual(loaded.series.count, 1)
+        XCTAssertNil(loaded.series.first?.levels, "a file written without levels holds none")
+    }
+
+    /// The remaining share of a window comes back with the day it belongs to.
+    func testTheLevelsOfADayComeBack() throws {
+        let store = makeStore()
+        let day = day(11, 6)
+        let count = RhythmClock.bucketCount(on: day, calendar: calendar)
+        let record = RhythmDayRecord(day: day, series: [
+            RhythmSeriesRecord(
+                key: "account-1/Session",
+                kind: .claude,
+                label: "Session",
+                windowMs: MetricPeriod.sessionMs,
+                points: Array(repeating: 0, count: count),
+                samples: Array(repeating: 1, count: count),
+                levels: [RhythmLevelSample(at: day.addingTimeInterval(3600), remaining: 0.8)]
+            )
+        ])
+        try store.save(record)
+
+        let loaded = try XCTUnwrap(try store.load(day: day))
+
+        let levels = try XCTUnwrap(loaded.series.first?.levels)
+        XCTAssertEqual(levels.count, 1)
+        XCTAssertEqual(levels[0].remaining, 0.8, accuracy: 0.0001)
+    }
+
     func testTwoBundleIdentifiersGiveTwoDifferentFolders() {
         let installed = FileRhythmStore.directory(forBundleIdentifier: "com.example.openusage")
         let development = FileRhythmStore.directory(forBundleIdentifier: "com.example.openusage.dev")
